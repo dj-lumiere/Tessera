@@ -316,6 +316,13 @@ public sealed partial class Compiler
             return true;
         for (int i = 0; i < o.Args.Count; i++)
         {
+            // A routine written for one value (`Box[2].get`) is for that value only, and a value a generic body is
+            // checked with stands for every value, so it isn't that routine's.
+            if (o.Args[i] is TypeArgInt written)
+            {
+                if (actual[i] is not ConstArg { StandIn: false } value || value.Value != written.Value) return false;
+                continue;
+            }
             if (o.Args[i] is not TypeArgType { Type: var t }) continue;
             if (t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)) continue;
             // A type parameter being checked (an archetype) stands for any type: a routine written for one named
@@ -331,11 +338,12 @@ public sealed partial class Compiler
         return true;
     }
 
-    /// Whether a routine names a type among its owner's arguments (`Thread[Void].put_work`), so it is meant for those
-    /// arguments only, ahead of the one for every argument.
+    /// Whether a routine names a type or a value among its owner's arguments (`Thread[Void].put_work`, `Box[2].get`), so it
+    /// is meant for those arguments only, ahead of the one for every argument.
     public bool OwnerArgsSpecific(RoutineDecl m) =>
         m.Owner is { Args.Count: > 0 } o
-        && o.Args.Any(a => a is TypeArgType { Type: var t } && !(t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)));
+        && o.Args.Any(a => a is TypeArgInt
+                           || a is TypeArgType { Type: var t } && !(t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)));
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
     /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is

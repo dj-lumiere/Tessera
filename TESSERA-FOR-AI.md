@@ -943,7 +943,9 @@ routine start() -> None
   its type: `price.round(places: 2)` on a `Decimal` is `round(places: U64)`, never `round(rule: RoundingRule)`. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
   one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_callable`) beats the
-  generic receiver type's (`Thread[T].put_callable`) for that receiver. A receiver type argument may nest the routine's type parameter:
+  generic receiver type's (`Thread[T].put_callable`) for that receiver, as one with a value named (`routine
+  Box[2].get`) beats `Box[L].get` for a `Box[2]`; two that each name a different argument (`Pair[2, B].get` and
+  `Pair[A, 3].get` on a `Pair[2, 3]`) are ambiguous. A receiver type argument may nest the routine's type parameter:
   `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
   routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
