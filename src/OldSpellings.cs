@@ -2,51 +2,10 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// The names and modules that are gone, each with what takes its place: a program that names one gets a build error
+/// The names that are gone, each with what takes its place: a program that names one gets a build error
 /// that says what to write instead.
 public static class OldSpellings
 {
-    public static readonly IReadOnlyDictionary<string, string> Gone = new Dictionary<string, string>
-    {
-        ["Standard/Core"] = Compiler.SystemModule,
-        ["Standard/Format"] = Compiler.TextModule,
-        ["Standard/Alloc"] = Compiler.MemoryModule,
-        ["Standard/Json"] = Compiler.SystemModule + "/Serialization",
-    };
-
-    /// The modules that are gone whose names are in a module a file imports, each with that module.
-    public static readonly IReadOnlyDictionary<string, string> Moved = new Dictionary<string, string>
-    {
-        ["Standard/Os"] = Compiler.HostedModule,
-        ["Standard/Boot"] = Compiler.UnhostedModule,
-    };
-
-    /// The message for a module that is gone, else null. The standard library's modules have no `Standard/` in front
-    /// (`import Collections`), so a path that starts with it names the path without it.
-    public static string? OldModule(string module)
-    {
-        if (Gone.TryGetValue(module, out var now))
-            return $"{module} is gone: its names are in {now}, which every file sees without an import";
-        if (Moved.TryGetValue(module, out var moved))
-            return $"{module} is gone: its names are in {moved}, so write import {moved}";
-        if (module.StartsWith("Standard/Os/", StringComparison.Ordinal))
-            return $"{module} is gone: Standard/Os is {Compiler.HostedModule} now, so write "
-                + $"{Compiler.HostedModule}{module["Standard/Os".Length..]}";
-        string bare = module.StartsWith(Compiler.StandardRoot + "/", StringComparison.Ordinal)
-            ? module[(Compiler.StandardRoot.Length + 1)..]
-            : module;
-        if (bare == Compiler.SystemModule + "/Cpu")
-            return $"{module} is gone: its names are in {Compiler.HostedModule} on a target with an operating system and "
-                + $"in {Compiler.UnhostedModule} on one without, so import the side for the target";
-        if (bare != module || module == Compiler.StandardRoot)
-            return bare == module
-                ? $"{module} is not a module: the standard library's modules have no {Compiler.StandardRoot}/ in front "
-                  + "(import Collections, import Hosted)"
-                : $"{module} is written {bare}: the standard library's modules have no {Compiler.StandardRoot}/ in "
-                  + $"front, so write {bare}";
-        return null;
-    }
-
     /// The message for a type that is gone or renamed, else null.
     public static string? OldTypeName(string name) => name switch
     {

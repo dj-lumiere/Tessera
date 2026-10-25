@@ -36,13 +36,12 @@ each (`Thread.te`, `Wait.te` and `CpuEvents.te` are on both now: `wait_on`, `wak
 A file for one kind of target imports its side, and importing only the other one is a build error that names the
 side for the target ("Hosted needs an operating system, and target ... has none; its names for this target
 are in Unhosted"). A file for both kinds imports both sides (`import Hosted` and `import
-Unhosted`): the target keeps one, so each name means the target's. `Standard/Os` and `System/Cpu`
-are gone, and importing either is a build error naming the side to import. Importing a module brings
+Unhosted`): the target keeps one, so each name means the target's. Importing a module brings
 that module, not the modules under it. A standard library module is its folder below `Standard/`, and its path has
 no prefix: `Standard/System/Memory/` is `System/Memory`, `Standard/Collections/` is `Collections`, so a file writes
 `import Collections`, `import Text/Patterns`. Another library puts its name in front (`import Ingrid/Decimal`). A path
-that starts with `Standard/` is a build error that names the path without it ("Standard/Collections is written
-Collections: ..."). A stdlib file's `module` line that names another module is a build error. A program's module
+that starts with `Standard/` names a module that doesn't exist (`import Standard/Collections` is "unknown module
+'Standard/Collections'"). A stdlib file's `module` line that names another module is a build error. A program's module
 can't have the path of a library module, and can't be under `System`, `Hosted`, or `Unhosted`: both are build
 errors at the program's module line or file ("your module Random has the same path as the standard library's
 module Random, so the two would be one module: give yours another path"). A `secret` name is seen in

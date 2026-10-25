@@ -198,7 +198,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// `System/Text`: PascalCase names joined by `/`.
     private string ParseModulePath()
     {
-        var start = Cur.Pos;
         var parts = new List<string>();
         do
         {
@@ -207,17 +206,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(name.Pos, $"module names are PascalCase: '{name.Text}'");
             parts.Add(name.Text);
         } while (Accept(TokenKind.Slash));
-        string path = string.Join("/", parts);
-        RejectStandardPrefix(path, start);
-        return path;
-    }
-
-    /// A module path that starts with `Standard` is a build error that names the path without it: the standard
-    /// library's modules are `Collections`, `Hosted`, `System/Text`, ...
-    private static void RejectStandardPrefix(string path, Pos pos)
-    {
-        if (path != Compiler.StandardRoot && !path.StartsWith(Compiler.StandardRoot + "/", StringComparison.Ordinal)) return;
-        throw new CompileError(pos, OldSpellings.OldModule(path)!);
+        return string.Join("/", parts);
     }
 
     // ── Tokens ──────────────────────────────────────────────────────────────
@@ -1276,7 +1265,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private (string? Path, Token Name) ParseQualifiedName(string what)
     {
         var name = Expect(TokenKind.Ident, what);
-        var start = name;
         string? path = null;
         while (IsPathSeparator(name, first: path is null))
         {
@@ -1284,7 +1272,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             path = path is null ? name.Text : $"{path}/{name.Text}";
             name = Next();
         }
-        if (path is not null) RejectStandardPrefix(path, start.Pos);
         return (path, name);
     }
 
@@ -1297,8 +1284,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         && (!first || StartsPath(before));
 
     /// Whether `name` can start a module path: it isn't a value bound here (a value divides), and it is a module
-    /// root this file knows: a standard library module's first name (or Standard, the old prefix), the first name of its module's path or of an import, a define, or the first
-    /// name of a module another file of the program declares (a qualified path reaches a module without an import).
+    /// root this file knows: a standard library module's first name, the first name of its module's path or of an
+    /// import, a define, or the first name of a module another file of the program declares (a qualified path reaches a module without an import).
     /// A parse that sees no such name (a fragment the language server or a lint reparses) takes any name that isn't a
     /// value.
     private bool StartsPath(Token name) =>
@@ -1327,8 +1314,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (programModuleRoots is not null) roots.UnionWith(programModuleRoots);
             if (roots.Count == 0) return null;
             roots.UnionWith(Compiler.StandardModuleRoots);
-            // A path written the old way, `Standard/...`, parses as one, so its build error names the new path.
-            roots.Add(Compiler.StandardRoot);
             return _moduleRoots = roots;
         }
     }

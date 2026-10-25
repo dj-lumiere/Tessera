@@ -132,8 +132,8 @@ These change code written for the pre-release builders. Where a spelling changed
 - A standard library module is its folder, and the base is `System` (`Standard/Core`, `Format`, `Alloc`,
   `Boot` and `Json` moved into it).
 - A standard library module's path has no `Standard/` in front: `import Collections`, `import Hosted`,
-  `System/Text/write_str`. A path written with the prefix is a build error that names the path without it, and a
-  program's module with the path of a standard library module is a build error.
+  `System/Text/write_str`. A path written with the prefix names a module that doesn't exist, and a program's module
+  with the path of a standard library module is a build error.
 - Iterators hand out values with `emit` and places with `next`. Collections use `add_last`, `remove_last`, `has`
   and `lacks`.
 - A variant arm is matched with `is T as v`, and `Option` is `Maybe`.

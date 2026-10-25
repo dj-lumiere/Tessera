@@ -156,11 +156,11 @@ public sealed partial class Compiler
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
-                throw new CompileError(imp.Pos, OldSpellings.OldModule(imp.Path) ?? (IsUnder(imp.Path, StandardLibrary.IngridRoot)
+                throw new CompileError(imp.Pos, IsUnder(imp.Path, StandardLibrary.IngridRoot)
                     && !_modules.Contains(StandardLibrary.IngridRoot)
                     ? $"unknown module '{imp.Path}': Ingrid's library wasn't found (an Ingrid folder next to the standard "
                       + "library, or Ingrid/tessera above it); set TESSERA_INGRID to its folder"
-                    : $"unknown module '{imp.Path}'"));
+                    : $"unknown module '{imp.Path}'");
             // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
             // start nobody asked for.
             if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)
@@ -343,9 +343,7 @@ public sealed partial class Compiler
             // A variant written inline is checked where it is used.
             if (a.Target is { Name: TypeRef.UnionName, Path: null }) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
-                throw new CompileError(a.Target.Pos, OldSpellings.OldModule(FullPath(a.Target))
-                    ?? (a.Target.Path is { } gone && OldSpellings.OldModule(gone) is { } moved ? moved : null)
-                    ?? $"define {a.Name} = {a.Target}: that's neither a module nor a type");
+                throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
                 .FirstOrDefault(d => d.Module == a.Module);
@@ -883,8 +881,7 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
-    /// The standard library's folder. Its modules' paths start below it (`Standard/Collections/` holds `Collections`),
-    /// and a path that starts with it is a build error that names the path without it.
+    /// The standard library's folder. Its modules' paths start below it (`Standard/Collections/` holds `Collections`).
     public const string StandardRoot = "Standard";
 
     /// The first name of every standard library module's path: the folders right under `Standard/`. A file's parser
