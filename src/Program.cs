@@ -1208,6 +1208,18 @@ static class Cli
             if (want != got) return "the destructs the builder writes: " + FirstDifference(want.Split('\n'), got.Split('\n'));
         }
 
+        // A test for a board without an operating system runs in the emulator its `<name>.qemu` file names. Where that
+        // emulator isn't installed the test is skipped before it links, as the board's link needs ld.lld, which such a
+        // host may not have either.
+        string[]? emulator = null;
+        if (!target.HasOs)
+        {
+            var (command, missing) = EmulatorFor(stem);
+            if (missing is not null) return missing;
+            if (command is null) return null;
+            emulator = command;
+        }
+
         string exe = TempExe();
         // A program for a board links with the board's link script, written next to the temporary executable.
         string? script = manifest?.Board is { } board ? Path.ChangeExtension(exe, ".ld") : null;
@@ -1231,8 +1243,7 @@ static class Cli
             if (target.HasOs)
                 result = Exec(exe, captureOutput: true, input,
                     limitSeconds: race ? TestSeconds * RaceCheckSlowdown : TestSeconds);
-            else if (Emulate(stem, exe, input) is { } emulated) result = emulated;
-            else return null;
+            else result = Emulate(emulator!, exe, input);
             var (code, stdout, stderr) = result;
             int expectedCode = File.Exists(stem + ".exit") ? int.Parse(File.ReadAllText(stem + ".exit").Trim()) : 0;
             if (code != expectedCode) return $"exit code {code}, expected {expectedCode}{(stderr.Length > 0 ? $"; stderr: {stderr}" : "")}";
@@ -1259,16 +1270,15 @@ static class Cli
     /// Whether the note that an emulator is missing was written already: once per run.
     private static int _emulatorNoted;
 
-    /// Runs a test built for a board without an operating system in the emulator its `<name>.qemu` file names: one
+    /// The emulator a test built for a board without an operating system runs in, from its `<name>.qemu` file: one
     /// line, the emulator and its arguments, the program's path going last (`qemu-system-aarch64 -M virt -cpu
-    /// cortex-a53 -nographic -nic none -kernel`). The program's serial port is the emulator's standard output, and the
-    /// program ends the emulator itself (psci_power_off). Null when the emulator isn't installed: the test is skipped,
-    /// with a note on the error output.
-    private static (int, string, string)? Emulate(string stem, string exe, byte[]? input)
+    /// cortex-a53 -nographic -nic none -kernel`). The command is null when the emulator isn't installed: the test is
+    /// skipped, with a note on the error output. The reason it fails is set when the test has no `.qemu` file.
+    private static (string[]? Command, string? Missing) EmulatorFor(string stem)
     {
         string file = stem + ".qemu";
         if (!File.Exists(file))
-            return (-1, "", $"a test for a board without an operating system names its emulator in {Path.GetFileName(file)}");
+            return (null, $"a test for a board without an operating system names its emulator in {Path.GetFileName(file)}");
         var words = File.ReadAllLines(file).Select(l => l.Trim()).First(l => l.Length > 0 && !l.StartsWith('#'))
             .Split(' ', StringSplitOptions.RemoveEmptyEntries);
         string? emulator = FindOnPath(words[0]);
@@ -1276,9 +1286,16 @@ static class Cli
         {
             if (Interlocked.Exchange(ref _emulatorNoted, 1) == 0)
                 Console.Error.WriteLine($"note: {words[0]} isn't installed, so the tests that run in it are skipped");
-            return null;
+            return (null, null);
         }
-        var (code, stdout, stderr) = Exec(emulator, captureOutput: true, input, programArgs: [.. words[1..], exe],
+        return ([emulator, .. words[1..]], null);
+    }
+
+    /// Runs a test built for a board in its emulator (EmulatorFor). The program's serial port is the emulator's
+    /// standard output, and the program ends the emulator itself (psci_power_off).
+    private static (int, string, string) Emulate(string[] emulator, string exe, byte[]? input)
+    {
+        var (code, stdout, stderr) = Exec(emulator[0], captureOutput: true, input, programArgs: [.. emulator[1..], exe],
             limitSeconds: TestSeconds);
         // The serial port writes \n, and QEMU's console may turn it into \r\n.
         return (code, stdout.Replace("\r\n", "\n"), stderr);

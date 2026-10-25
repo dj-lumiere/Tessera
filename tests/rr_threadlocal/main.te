@@ -12,6 +12,10 @@ global STACKS: &Array[U64, 8192]
 ### Each thread's own count.
 @threadlocal
 global COUNT: &U64 <- 100
+### The COUNT thread 1 and thread 2 saw at their end. The flow of run prints them once both threads are done, so a
+### thread that runs out of its slice in the middle of a line doesn't mix it with the other's.
+global SEEN_1: &U64
+global SEEN_2: &U64
 
 ### The serial port of QEMU's virt machine.
 ### :returns: The port.
@@ -38,15 +42,18 @@ routine prepare_threads() -> None
         slice: Duration.from_milliseconds(1), interrupts: GIC))
     return
 
-### Counts its own COUNT up from 100 by 1 for each step, yielding after each step, then prints it.
+### Counts its own COUNT up from 100 by 1 for each step, yielding after each step, then keeps it in SEEN_1 or SEEN_2
+### for its thread number.
 ### :param arg: How many steps, as an address.
 routine counter(arg: Addr) -> None
     steps: U64 = ptrtoint[Addr, U64](arg)
-    port: &Pl011 <- serial()
     each i in 0 til steps
         COUNT.poke(COUNT.peek() + 1)
         THREADS.yield_now()
-    port.write("thread {THREADS.current_number()}: {COUNT.peek()}\n")
+    if THREADS.current_number() == 1
+        SEEN_1.poke(COUNT.peek())
+    else
+        SEEN_2.poke(COUNT.peek())
     return
 
 ### Turns the managers on and puts the reporting routine in the Crash service's slot.
@@ -55,7 +62,8 @@ routine when_power_on() -> None
     Crash.report_with(report.to[Callable]())
     return
 
-### Sets the flow's own COUNT, runs two counters of 3 and 5 steps, and prints the flow's COUNT after them.
+### Sets the flow's own COUNT, runs two counters of 3 and 5 steps, and prints what each saw and the flow's COUNT after
+### them.
 routine start() -> None
     port: &Pl011 <- serial()
     COUNT.poke(7)
@@ -63,6 +71,8 @@ routine start() -> None
     THREADS.launch(entry: counter.to[Callable](), arg: inttoptr[U64, Addr](3))
     THREADS.launch(entry: counter.to[Callable](), arg: inttoptr[U64, Addr](5))
     THREADS.run()
+    port.write("thread 1: {SEEN_1.peek()}\n")
+    port.write("thread 2: {SEEN_2.peek()}\n")
     port.write("run's flow: {COUNT.peek()}\n")
     psci_power_off()
     return
