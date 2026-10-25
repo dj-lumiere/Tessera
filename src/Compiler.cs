@@ -868,9 +868,15 @@ public sealed partial class Compiler
 
     /// The functions with trace_push, trace_at and trace_pop called out of line. LLVM may work out a thread-local's
     /// address once per function, so the inlined ones would go on writing the trace of the thread a passable fiber started on
-    /// after it wakes on another: called, each finds the trace of the thread it runs on.
+    /// after it wakes on another: called, each finds the trace of the thread it runs on. The frame trace_push gave may be
+    /// in the other thread's trace by then, so trace_at_moving, which finds the innermost frame itself, takes trace_at's
+    /// place.
     private string TraceOutOfLine(string functions)
     {
+        if (_traceRoutines.GetValueOrDefault("trace_at") is { } traceAt && _traceRoutines.GetValueOrDefault("trace_at_moving") is { } moving)
+            functions = System.Text.RegularExpressions.Regex.Replace(functions,
+                $@"(\bcall [^@\n]*)@{System.Text.RegularExpressions.Regex.Escape(Quote(traceAt.Symbol))}\(",
+                m => $"{m.Groups[1].Value}@{Quote(moving.Symbol)}(");
         foreach (var inst in _traceRoutines.Values)
         {
             string head = $" @{Quote(inst.Symbol)}(";

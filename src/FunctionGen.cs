@@ -1324,7 +1324,8 @@ public sealed partial class FunctionGen
         if (at.File != FramePlace.File) at = FramePlace;
         if (_tracedAt is { } last && last.Block == _cur && last.Pos == at) return;
         _tracedAt = (_cur, at);
-        Line(_c.TraceCall("trace_at", at.Line.ToString(CultureInfo.InvariantCulture), at.Col.ToString(CultureInfo.InvariantCulture)));
+        Line(_c.TraceCall("trace_at", Compiler.TraceFrameValue, at.Line.ToString(CultureInfo.InvariantCulture),
+            at.Col.ToString(CultureInfo.InvariantCulture)));
     }
 
     /// Ends the routine: its frame comes off the trace, then it returns.
