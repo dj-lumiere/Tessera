@@ -1,0 +1,58 @@
+# Tessera stdlib: an Arm PL011 serial port, on a board without an operating system
+#
+# The PL011 is the serial port of QEMU's virt machines (at 0x09000000) and of the Raspberry Pi boards. A `Pl011` is a
+# Writer over its data register: each byte waits while the port's transmit queue is full, then goes out. It sets
+# nothing up: the board's loader (or QEMU) has the port on, at its rate, before the program starts.
+#
+# AArch64's PSCI firmware call that turns the machine off is here too: psci_power_off, which QEMU's virt machine
+# answers by ending the emulator.
+
+module Standard/Unhosted
+
+### The serial port whose registers start at `base`, as a Writer: `port.write("ready\n")`.
+@target(os: "none")
+record Pl011
+obeys Writer[Pl011]
+    ### The first register (UARTDR, the data register).
+    base: Addr
+
+### The serial port whose registers start at `base`.
+### :param base: The address of its data register.
+### :returns: The port.
+@target(os: "none")
+common routine Pl011.construct(base: Addr) -> Me
+    return Me(base)
+
+### Sends `count` bytes from `data`, each once the transmit queue has room (UARTFR's TXFF bit clear).
+### :param data: The first byte.
+### :param count: How many bytes.
+@target(os: "none")
+routine @Pl011.write_bytes(data: @Byte, count: U64) -> None
+    base: U64 = ptrtoint[Addr, U64](me.base.peek())
+    register: @U32 = inttoptr[U64, @U32](base)
+    flags: @U32 = inttoptr[U64, @U32](base + 0x18)
+
+    each i in 0 til count
+        loop
+            if (flags.peek_volatile() & 0x20) == 0
+                break
+            continue
+        byte: U8 = data.stride(i).peek().to[U8]()
+        register.poke_volatile(byte.to[U32]())
+    return
+
+### Turns the machine off through the PSCI firmware (SYSTEM_OFF, by `hvc`): QEMU's virt machine ends. It doesn't
+### return on a machine whose firmware answers.
+@target(arch: "aarch64", os: "none")
+routine psci_power_off() -> None
+    psci_call(0x84000008)
+    return
+
+### Calls the PSCI firmware with `hvc #0`, the way QEMU's virt machine takes PSCI calls at EL1.
+### :param function: The PSCI function's number, in X0.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine psci_call(function: U64 = R0) -> None
+    block entry()
+        hvc(0)  # hvc #0
+        return

@@ -1,6 +1,6 @@
 namespace Tessera;
 
-/// The accesses a routine takes from the AccessManager (Standard/Os): `p.get_exclusive_access()` gives an
+/// The accesses a routine takes from the AccessManager (Standard/Hosted): `p.get_exclusive_access()` gives an
 /// `Authorized[T]` and `p.get_shared_read_access()` a `ReadAuthorized[T]`, read and written through `getview()`, and
 /// `drop` ends the access. An access comes from
 /// a manager, so the memory check follows it as it follows memory: it is given back on every path, once, its view isn't
@@ -39,7 +39,7 @@ public sealed partial class FunctionGen
     private static bool IsAccessType(DType? t) =>
         (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType
         { Decl.Name: "Authorized" or "ReadAuthorized" or "AuthorizedSlice" or "ReadAuthorizedSlice", Args.Count: 1 } r
-        && r.Decl.Module == "Standard/Os";
+        && r.Decl.Module == Compiler.HostedModule;
 
     /// Whether `t` is `Authorized[T]` or `AuthorizedSlice[T]`, exclusive access.
     private static bool IsExclusiveAccessType(DType? t) =>

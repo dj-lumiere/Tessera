@@ -1,0 +1,169 @@
+# Tessera stdlib: who is waiting
+#
+# Code waits in one of two ways, by what runs it. A thread sleeps: the operating system puts it to sleep until it is
+# woken. A fiber parks through its CoroutineManager: the fiber stops, its thread goes on with the manager's other
+# fibers, and whoever finishes what the fiber waits for wakes it through the manager. current_waiter() says which one
+# runs here, as a Waiter, and both are parked and woken the same way: something being waited for (a ticket's work, a
+# channel) keeps the Waiter of whoever waits on it and wakes it when it is done.
+#
+# A wake that comes before the park isn't lost: the next park returns at once. A park may also return without a wake, so
+# the waiter looks again at what it waits for, in a loop. A CoroutineManager puts its fiber in RUNNING_FIBER while the
+# fiber runs and takes it out when the fiber stops, so the waiter is always the code running on this thread right now.
+
+module Standard/Hosted
+
+### The fiber running on this thread, put there by its CoroutineManager while it runs, or a hollow Waiter outside every
+### fiber.
+@threadlocal
+@target(os: not "none")
+global RUNNING_FIBER: &Waiter
+
+### The word a thread outside every fiber sleeps on when it parks: 1 once it was woken and hasn't parked since.
+@threadlocal
+@target(os: not "none")
+global THREAD_WAKE: &U32
+
+### How long a fiber parks at a time in wait_while.
+preset FIBER_POLL: Duration = 50us
+
+### Who is waiting, and how to park and wake it: a fiber, with its manager and the manager's routines, or a thread,
+### with a null `fiber` and the word it sleeps on.
+record Waiter
+obeys Equatable[Waiter]
+    ### The fiber's handle, or null for a thread.
+    fiber: Addr
+    ### The fiber's manager, or the word the thread sleeps on: what the routines here are given.
+    manager: Addr
+    ### Parks until a wake or a deadline in `Clock.monotonic()` time (`Duration.MAX` for none), given `manager`. It may
+    ### return without either.
+    park_fn: Callable[(Addr, Duration), None]
+    ### Wakes the waiter from any thread, given `manager` and `fiber`: makes its park return, now or at once when it
+    ### parks next.
+    wake_fn: Callable[(Addr, Addr), None]
+
+### What runs here: the running fiber, or this thread. Never inlined, like the other readers of RUNNING_FIBER on the
+### way to a park: a ThreadPoolManager's job may go on on another thread after a park, and a caller that kept this
+### thread's address of RUNNING_FIBER across it would read another thread's.
+### :returns: The waiter.
+@target(os: not "none")
+@noinline
+routine current_waiter() -> Waiter
+    fiber: Waiter = RUNNING_FIBER.peek()
+    if fiber.is_fiber()
+        return fiber
+    word: Addr = THREAD_WAKE
+    return Waiter(fiber: .hollow(), manager: word, park_fn: thread_park.to[Callable](),
+        wake_fn: thread_wake.to[Callable]())
+
+### An address unique to the running thread while it runs: two threads never share it. A CoroutineManager keeps its
+### thread's, so it knows whether a call comes from that thread.
+### :returns: The running thread's mark.
+@target(os: not "none")
+routine thread_mark() -> Addr
+    mark: Addr = RUNNING_FIBER
+    return mark
+
+### Whether the waiter is a fiber, which parks through its manager, rather than a thread.
+### :returns: True for a fiber.
+routine Waiter.is_fiber() -> Bool
+    return me.fiber.is_not_hollow()
+
+### Whether two waiters are the same one: `me == other`.
+### :param other: The other waiter.
+### :returns: True for the same fiber, or the same thread.
+routine Waiter.eq(other: Me) -> Bool
+    return (me.fiber === other.fiber) and (me.manager === other.manager)
+
+### Parks until a wake. It may return without one, so the waiter looks again at what it waits for.
+routine Waiter.park() -> None
+    me.park_fn.call(me.manager, Duration.MAX)
+    return
+
+### Parks until a wake or until `deadline`, in `Clock.monotonic()` time. It may return before either, so the waiter looks
+### again at what it waits for and at the time.
+### :param deadline: When to stop waiting.
+routine Waiter.park_until(deadline: Duration) -> None
+    me.park_fn.call(me.manager, deadline)
+    return
+
+### Wakes the waiter, from any thread. Nothing for a hollow one.
+routine Waiter.wake() -> None
+    if me.manager.is_hollow()
+        return
+    me.wake_fn.call(me.manager, me.fiber)
+    return
+
+### Waits at least `duration`, the way the running code waits: a thread sleeps, and a fiber parks while its thread
+### goes on with the other fibers.
+### :param duration: The least time to wait.
+@target(os: not "none")
+routine waitfor(duration: Duration) -> None
+    deadline: Duration = Clock.monotonic() +^ duration
+    waiter: Waiter = current_waiter()
+
+    until Clock.monotonic() >= deadline
+        waiter.park_until(deadline)
+    then
+        return
+
+### How a thread parks: sleeps on its word until a wake marks it, or the deadline.
+### :param word: The thread's THREAD_WAKE.
+### :param deadline: When to stop, in `Clock.monotonic()` time, or `Duration.MAX`.
+@target(os: not "none")
+secret routine thread_park(word: Addr, deadline: Duration) -> None
+    at: @U32 = word.to[@U32]()
+
+    if at.unbroken_swap(0) == 1
+        return
+    if deadline == Duration.MAX
+        wait_on(at, expected: 0)
+    else
+        now: Duration = Clock.monotonic()
+        if now >= deadline
+            return
+        wait_on_for(at, expected: 0, timeout: deadline - now)
+    at.poke_unbroken(0)
+    return
+
+### How a thread is woken: its word is marked, and it wakes if it sleeps.
+### :param word: The thread's THREAD_WAKE.
+### :param fiber: Unused, null for a thread.
+@target(os: not "none")
+secret routine thread_wake(word: Addr, fiber: Addr) -> None
+    at: @U32 = word.to[@U32]()
+    at.poke_unbroken(1)
+    wake_all(at)
+    return
+
+### Waits while the U32 at `at` holds `expected`, the way the running code waits: a thread sleeps on it, and a fiber
+### parks for a short while at a time, so the other fibers of its thread go on. It may return early, so the caller
+### looks again in a loop. For a word whose changer doesn't know who waits (the AccessManager's).
+### :param at: The word.
+### :param expected: The value it holds while waiting goes on.
+@target(os: not "none")
+@noinline
+routine wait_while(at: @U32, expected: U32) -> None
+    waiter: Waiter = RUNNING_FIBER.peek()
+    if not waiter.is_fiber()
+        wait_on(at, expected)
+        return
+    if not (at.peek_unbroken() == expected)
+        return
+    waiter.park_until(Clock.monotonic() +^ FIBER_POLL)
+    return
+
+### As {wait_while}, giving up `timeout` after the call.
+### :param at: The word.
+### :param expected: The value it holds while waiting goes on.
+### :param timeout: The longest wait.
+@target(os: not "none")
+@noinline
+routine wait_while_for(at: @U32, expected: U32, timeout: Duration) -> None
+    waiter: Waiter = RUNNING_FIBER.peek()
+    if not waiter.is_fiber()
+        wait_on_for(at, expected, timeout)
+        return
+    if not (at.peek_unbroken() == expected)
+        return
+    waiter.park_until(Clock.monotonic() +^ timeout.min(FIBER_POLL))
+    return

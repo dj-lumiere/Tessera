@@ -4,9 +4,9 @@ namespace Tessera;
 
 /// The program's entry. A program's entry point is `routine start() -> None`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
-/// (Standard/Os) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
+/// (Standard/Hosted) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
 /// the core there, its prologue sets the stack pointer from `__stack_top` (on Cortex-M the vector table's first word
-/// does that), and its body is the program's `when_power_on()`, which turns the managers on itself (Standard/System/Cpu's
+/// does that), and its body is the program's `when_power_on()`, which turns the managers on itself (Standard/Unhosted's
 /// prepare_core: .bss zeroed, .data copied from flash, the FPU on), puts its reporting routine in the Crash service's
 /// slot, and readies the board. The builder adds no step of its own there, so a program with `start` and without
 /// `when_power_on` is a build error. Then `start()` runs, then a loop that halts the core. Without `start` such a
@@ -20,7 +20,7 @@ public sealed partial class Compiler
     public const string WhenPowerOnName = "when_power_on";
 
     /// The module of the startup steps the generated entry calls on a target without an operating system.
-    private const string BootModule = CpuModule;
+    private const string BootModule = UnhostedModule;
 
     /// The generated entry, appended to the module by Output.
     private readonly StringBuilder _entry = new();
@@ -69,7 +69,7 @@ public sealed partial class Compiler
         if (r.TypeParams.Count != 0 || r.Params.Count != 0 || !returnsVoid)
             throw new CompileError(r.Pos,
                 r.Name == StartName
-                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard/Os sets the exit status)"
+                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard/Hosted sets the exit status)"
                     : $"{what}, declared '{shape}'");
         if (r.Blocks is null || IsAsm(r) || r.AnnotationNamed("export") is not null || r.AnnotationNamed("inline") is not null)
             throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no @external, @export, or @inline)");
@@ -93,7 +93,7 @@ public sealed partial class Compiler
             throw new CompileError(start.Pos,
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has no operating system, so the reset lands in the program's own "
                 + "'routine when_power_on() -> None', and this program has none: write one that calls prepare_core() "
-                + "(Standard/System/Cpu) first, which puts the globals in place, then puts a reporting routine in the Crash "
+                + "(Standard/Unhosted) first, which puts the globals in place, then puts a reporting routine in the Crash "
                 + "service's slot (Crash.report_with(report.to[Callable]())), then readies the board. start runs after it");
     }
 
@@ -129,21 +129,21 @@ public sealed partial class Compiler
     /// The attributes of a function the builder writes itself.
     private string EntryAttrs(Pos pos) => $"nounwind{UnwindTable} {CpuModel.For(Target, pos).FnAttrs}";
 
-    /// The platform's C `main`: the arguments handed to Standard/Os (`OsEnvironment.argument`), `start`, then the exit
-    /// status from Standard/Os's exit_code (what set_exit_code stored last, 0 when nothing did). A crash ends the
+    /// The platform's C `main`: the arguments handed to Standard/Hosted (`OsEnvironment.argument`), `start`, then the exit
+    /// status from Standard/Hosted's exit_code (what set_exit_code stored last, 0 when nothing did). A crash ends the
     /// process before that with its own status.
     private void PlanHostedMain(RoutineDecl start, Instance startInst)
     {
-        var exitCode = EntryHelper(OsModule, "exit_code", start.Pos);
-        var setArguments = EntryHelper(OsModule, "set_arguments", start.Pos);
+        var exitCode = EntryHelper(HostedModule, "exit_code", start.Pos);
+        var setArguments = EntryHelper(HostedModule, "set_arguments", start.Pos);
         if (ExposeDefinitions) NoteExposed("main");
         _entry.AppendLine("; The program's entry: the arguments kept, start, then the exit status set_exit_code stored.");
         _entry.AppendLine($"define i32 @main(i32 %argc, ptr %argv) {EntryAttrs(start.Pos)} {{");
         _entry.AppendLine("entry:");
         _entry.AppendLine($"  call {setArguments.CcPrefix(Target)}void @{Quote(setArguments.Symbol)}(i32 %argc, ptr %argv)");
-        // A traced build reports a hardware fault the way it reports a crash (Standard/Os/Faults.te). The race check
+        // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.te). The race check
         // reports faults itself.
-        if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(CpuModule, "install_fault_handlers", start.Pos))}");
+        if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(HostedModule, "install_fault_handlers", start.Pos))}");
         _entry.AppendLine($"  {EntryCall(startInst)}");
         _entry.AppendLine($"  %status = {EntryCall(exitCode)}");
         _entry.AppendLine("  ret i32 %status");
@@ -169,7 +169,7 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board, startInst, halt };
-        // The CpuEventManager's table calls tessera_cpu_event, Standard/System/Cpu's routine for the target.
+        // The CpuEventManager's table calls tessera_cpu_event, Standard/Unhosted's routine for the target.
         string? cpuEvent = Target.Arch switch
         {
             "aarch64" => "aarch64_cpu_event",

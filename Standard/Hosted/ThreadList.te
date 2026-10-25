@@ -1,0 +1,140 @@
+# Tessera stdlib: lists of thread tickets
+#
+# Work spread over several threads keeps their tickets in a List[Thread[T]], and these routines handle them together:
+# take every result (waiting for each), give all back, wait for whichever finishes first, cancel all, and take out or
+# give back the ones that have finished.
+
+module Standard/Hosted
+
+import Standard/Collections
+
+### The results of the thread tickets' work, in the list's order, each waited for, in a list from `manager`.
+### :param manager: Where the list comes from.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].retrieve_all(manager: @MemoryManager) -> List[T]
+needs T: typename
+    results: &List[T] <- .construct(manager)
+
+    each i in 0 til me.count()
+        results.add_last(me[i].retrieve())
+    then
+        return results
+
+### The results of the thread tickets' work, in the list's order, each waited for, in a list from HEAP.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].retrieve_all() -> List[T]
+needs T: typename
+    return me.retrieve_all(manager: HEAP)
+
+### Gives every thread ticket in the list back, and empties the list.
+### :throws: Crashes as each ticket's `drop` does, when its work still runs.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].give_back_all() -> None
+needs T: typename
+    each i in 0 til me.count()
+        drop me.getslot(i)
+    me.clear()
+    return
+
+### Asks the work of every thread ticket in the list to stop.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].cancel_all() -> None
+needs T: typename
+    each i in 0 til me.count()
+        me[i].cancel()
+    then
+        return
+
+### Waits until the work of one of the thread tickets in the list has finished, and says which: the first in the list
+### among those finished when it looks.
+### :returns: The position of a ticket whose work has finished.
+### :throws: Crashes with `UnacceptedValueError` for an empty list.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].wait_any_finished() -> U64
+needs T: typename
+    waiter: Waiter = current_waiter()
+
+    if me.count() == 0
+        throw UnacceptedValueError(
+            description: "wait_any_finished of an empty list waits for nothing.")
+    # Each ticket keeps the waiter, so the first to finish wakes it: then it forgets every one.
+    loop with i: U64 = 0
+        values2: (U64, U64) = when
+            i >= me.count() =>
+                waiter.park()
+                becomes (0, me.count())
+            else =>
+                if me[i].work_slot().register(waiter)
+                    becomes (0, i)
+                else
+                    continue with i: i + 1
+        k, result = values2
+
+        each k2 in k til me.count()
+            me[k2].work_slot().unregister(waiter)
+        then
+            # After a park, the tickets are looked at again.
+            if result < me.count()
+                return result
+            continue with i: 0
+
+### Takes the thread tickets whose work has finished out of the list, into a list from `manager`, keeping the others
+### in order.
+### :param manager: Where the list of finished tickets comes from.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].take_finished(manager: @MemoryManager) -> Me
+needs T: typename
+    finished: &Me <- .construct(manager)
+
+    each i in 0 til me.count() with kept: U64 = 0
+        ticket: Thread[T] <- steal me.getslot(i)
+        if ticket.check_finished()
+            finished.add_last(steal ticket)
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: Thread[T] <- me.remove_last()
+            drop removed
+        then
+            return finished
+
+### Takes the thread tickets whose work has finished out of the list, into a list from HEAP.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].take_finished() -> Me
+needs T: typename
+    return me.take_finished(manager: HEAP)
+
+### Gives back the thread tickets whose work has finished, and takes them out of the list: for work whose result
+### nobody needs.
+@target(os: not "none")
+@track_caller
+routine @List[Thread[T]].give_back_finished() -> None
+needs T: typename
+    each i in 0 til me.count() with kept: U64 = 0
+        ticket: Thread[T] <- steal me.getslot(i)
+        if ticket.check_finished()
+            drop ticket
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: Thread[T] <- me.remove_last()
+            drop removed
+        then
+            return

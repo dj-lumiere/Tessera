@@ -1,0 +1,625 @@
+# Tessera stdlib: threads
+#
+# A thread is a ticket a ThreadManager hands out: `get_thread[T]()` takes one from DEFAULT_THREADS, the hosted
+# manager, whose threads are the operating system's, and `get_thread[T](manager)` from a manager of the program's own.
+# The ticket runs one piece of work at a time, in the flow of Work.te: `put_work` starts it, `check_finished`
+# looks, `retrieve` waits for it and takes the result, and `drop` gives the thread back to its manager, which keeps it
+# asleep for the next ticket instead of ending it. Until then the same ticket takes more work, one piece after
+# another.
+#
+# A ticket given back with its work still running crashes: no work runs on that nobody looks at, and nothing it uses
+# goes away under it. Work with no result is a `Thread[None]`, waited for
+# and given back the same way. Before each piece of work the thread puts every `@threadlocal` global back to its
+# starting value, so no work sees what the one before left.
+
+module Standard/Hosted
+
+### The hosted thread manager: the operating system's threads, with the work blocks from HEAP. Ready before
+### `start` runs.
+@target(os: not "none")
+global DEFAULT_THREADS: &ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), guard: 0, idle: .hollow(), manager: HEAP)
+
+### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
+### none), until it is given back with `drop`.
+### :typeparam T: The type of the work's result.
+record Thread[T]
+needs T: typename
+    worker: @ThreadWorker
+    ### The ticket's number: the worker's until the ticket is given back.
+    issued: U64
+
+### A thread a manager hands out: its work and, while it waits for the next ticket, its place among the idle ones.
+secret entity ThreadWorker
+    slot: WorkSlot
+    ### The next idle worker of the manager.
+    next: @ThreadWorker
+    manager: @ThreadManager
+
+### Hands out threads. Its routine starts a thread, and the threads it started and got back wait among the idle ones
+### for the next ticket. `DEFAULT_THREADS` is the hosted one, and a program without an operating system makes its own.
+entity ThreadManager
+    ### Starts a thread that runs `(entry, arg)` and ends when it returns, given `state`: false when none starts.
+    launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool]
+    ### What `launch_fn` is given.
+    state: Addr
+    ### The byte whose exclusive access guards `idle`.
+    guard: U8
+    ### The threads given back, asleep until a ticket takes one.
+    idle: @ThreadWorker
+    ### Where the workers and the work blocks come from.
+    manager: @MemoryManager
+
+### Makes a `ThreadWorker` from its fields.
+### :param slot: Its `slot`.
+### :param next: Its `next`.
+### :param manager: Its `manager`.
+### :returns: The new value.
+secret common routine ThreadWorker.construct(slot: WorkSlot, next: @Me,
+    manager: @ThreadManager) -> Me
+    return Me(slot: steal slot, next, manager)
+
+### Gives back the block of its last work.
+secret routine @ThreadWorker.destruct() -> None
+    me.slot.destruct()
+    return
+
+### Gives the ticket back: hands the thread back to its manager, which keeps it for the next ticket. A ticket given
+### back already, or a copy of one, gives nothing back. Written `drop t`.
+### A result of its last work that nobody retrieved is destructed first: `drop t` is the ticket's destruct.
+### :throws: Crashes with `TicketBusyError` while the work runs.
+@track_caller
+routine @Thread[T].destruct() -> None
+needs T: typename
+    worker: @ThreadWorker = me.worker.peek()
+    if worker.is_hollow()
+        return
+    if worker.slot.issued.peek() != me.issued.peek()
+        return
+    worker.slot.give_back()
+    manager: @ThreadManager = worker.manager.peek()
+    held: Authorized[U8] <- manager.guard.get_exclusive_access()
+    worker.next.poke(manager.idle.peek())
+    manager.idle.poke(worker)
+    drop held
+    return
+
+### A manager whose threads `launch_fn` starts.
+### :param launch_fn: Starts a thread that runs `(entry, arg)` and ends when it returns, given `state`: false when none
+###     starts.
+### :param state: What `launch_fn` is given.
+### :param manager: Where the workers and the work blocks come from.
+### :returns: The manager, with no threads yet.
+common routine ThreadManager.construct(
+    launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool], state: Addr,
+    manager: @MemoryManager) -> Me
+    return Me(launch_fn, state, guard: 0, idle: .hollow(), manager)
+
+### A manager of the operating system's threads, with the workers and the work blocks from `manager`.
+### :param manager: Where the workers and the work blocks come from.
+### :returns: The manager, with no threads yet.
+@target(os: not "none")
+common routine ThreadManager.construct(manager: @MemoryManager) -> Me
+    return Me(launch_fn: os_launch_fn.to[Callable](), state: .hollow(), guard: 0, idle: .hollow(),
+        manager)
+
+### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
+### that is gone, and its thread never ends.
+routine @ThreadManager.destruct() -> None
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
+
+    loop
+        worker2: @ThreadWorker = me.idle.peek()
+        if worker2.is_hollow()
+            break
+        me.idle.poke(worker2.next.peek())
+        worker2.slot.state.poke_unbroken(TICKET_QUIT)
+        wake_all(worker2.slot.state)
+        continue
+    drop held
+    return
+
+### A ticket for a thread of DEFAULT_THREADS, the operating system's.
+### :typeparam T: The type of the work's result, `Void` for none.
+### :returns: The ticket, with no work yet.
+### :throws: Crashes with `TaskSpawnError` when the operating system starts no thread, and with
+###     `OutOfMemoryError` when there is no memory for it.
+@target(os: not "none")
+@track_caller
+routine get_thread[T]() -> Thread[T]
+needs T: typename
+    return get_thread[T](manager: DEFAULT_THREADS)
+
+### A ticket for a thread of `manager`: one it got back, or a new one.
+### :typeparam T: The type of the work's result, `Void` for none.
+### :param manager: The manager.
+### :returns: The ticket, with no work yet.
+### :throws: Crashes with `TaskSpawnError` when the manager starts no thread, and with `OutOfMemoryError` when
+###     there is no memory for it.
+@track_caller
+routine get_thread[T](manager: @ThreadManager) -> Thread[T]
+needs T: typename
+    worker: @ThreadWorker = manager.take_worker()
+    return Thread[T](worker, issued: worker.slot.issued.peek())
+
+### Starts a thread that runs `entry(arg)` and ends when it returns, which nobody waits for: for a runtime's own
+### threads that run as long as the program does. Work that ends is a ticket's (`get_thread`), so its end is seen.
+### :typeparam T: The type of the state the thread works on.
+### :param entry: The routine.
+### :param arg: The state it works on, which must outlive the thread.
+### :throws: Crashes with `TaskSpawnError` when no thread starts.
+@track_caller
+@expensive("starts a thread")
+routine @ThreadManager.launch_unwatched[T](entry: Callable[(@T,), None], arg: @T) -> None
+needs T: typename
+    erased: Callable[(Addr,), None] = bitcast(entry)
+    state: Addr = arg
+    if me.launch_fn.peek().call(erased, state, me.state.peek())
+        return
+    throw TaskSpawnError()
+
+### An idle worker, or a new one on a thread of its own.
+### :returns: The worker, with an empty slot.
+@track_caller
+secret routine @ThreadManager.take_worker() -> @ThreadWorker
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
+    idle: @ThreadWorker = me.idle.peek()
+    if idle.is_hollow()
+        drop held
+        manager: @MemoryManager = me.manager.peek()
+        worker: @ThreadWorker = allocate[ThreadWorker](count: 1, manager)
+        if worker.is_hollow()
+            throw OutOfMemoryError()
+        worker.poke(ThreadWorker(slot: .construct(manager), next: .hollow(), manager: me))
+        place: Addr = worker
+        if me.launch_fn.peek().call(worker_main.to[Callable](), place, me.state.peek())
+            return worker
+        deallocate(data: worker, manager)
+        throw TaskSpawnError()
+    me.idle.poke(idle.next.peek())
+    drop held
+    idle.next.poke(.hollow())
+    idle.slot.state.poke_unbroken(TICKET_EMPTY)
+    return idle
+
+### A worker thread's loop: runs each piece of work put on its slot, and sleeps on the slot's state in between, until
+### its manager tells it to end.
+### :param raw: The {ThreadWorker}.
+@target(os: not "none")
+secret routine worker_main(raw: Addr) -> None
+    worker: @ThreadWorker = raw.to[@ThreadWorker]()
+
+    loop
+        state2: U32 = worker.slot.state.peek_unbroken()
+        if state2 == TICKET_RUNNING
+            # Every piece of work starts from the thread-local values a new thread has.
+            ThreadLocalManager.reset()
+            RUNNING_WORK.poke(worker.slot)
+            runner: Callable[(Addr,), None] = worker.slot.runner.peek()
+            runner.call(worker.slot.work.peek())
+            cleanup: Callable[(), None] = THREAD_CLEANUP.peek()
+            if cleanup.addr().is_hollow()
+                RUNNING_WORK.poke(.hollow())
+                worker.slot.complete()
+                continue
+            cleanup.call()
+            RUNNING_WORK.poke(.hollow())
+            worker.slot.complete()
+            continue
+        if state2 == TICKET_QUIT
+            break
+        wait_on(at: worker.slot.state, expected: state2)
+        continue
+    manager: @MemoryManager = worker.slot.manager.peek()
+    worker.destruct()
+    deallocate(data: worker, manager)
+    return
+
+### The slot the ticket's work lives in, for code that waits on several tickets at once.
+### :returns: The slot.
+### :throws: Crashes with `TicketGivenBackError` for a ticket given back.
+@track_caller
+routine Thread[T].work_slot() -> @WorkSlot
+needs T: typename
+    worker: @ThreadWorker = me.worker
+    worker.slot.check_ticket(me.issued)
+    return worker.slot
+
+### Starts the work in `work`, run by `runner`.
+### :param runner: Runs the work.
+### :param discard: Destructs the block, for a result nobody retrieves.
+### :param work: Its block.
+@track_caller
+secret routine Thread[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
+    work: Addr) -> None
+needs T: typename
+    me.work_slot().put(runner, discard, work)
+    return
+
+### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` waits for it and gives its
+### result. The ticket runs a copy of the work's block in memory from its manager. Work whose arguments have nothing
+### to give back may go on more tickets. Work with an argument that has something to give back (an entity, an access)
+### runs once: it is handed over with steal, `t.put_work(steal work)`.
+### :param work: The work, made with `f.to[Work](...)`.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket given
+###     back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_work(work: Work[T]) -> None
+needs T: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    me.start(runner: work.runner, discard: work.discard, work: work.copy_for(slot))
+    return
+
+### Starts `entry` on the ticket. It runs from here on.
+### :param entry: The routine.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_callable(entry: Callable[(), T]) -> None
+needs T: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_work0[T](entry, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket. It runs from here on.
+### :param entry: The routine.
+### :param args: Its argument.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
+needs T: typename, A: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_work1[T, A](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+needs T: typename, A: typename, B: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_work2[T, A, B](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+needs T: typename, A: typename, B: typename, C: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_work3[T, A, B, C](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+    args: (A, B, C, D)) -> None
+needs T: typename, A: typename, B: typename, C: typename, D: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_work4[T, A, B, C, D](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on the ticket, a routine with no result. It runs from here on.
+### :param entry: The routine.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[None].put_callable(entry: Callable[(), None]) -> None
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_voidwork0(entry, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
+### :param entry: The routine.
+### :param args: Its argument.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
+needs A: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_voidwork1[A](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+needs A: typename, B: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_voidwork2[A, B](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[None].put_callable[A, B, C](entry: Callable[(A, B, C), None],
+    args: (A, B, C)) -> None
+needs A: typename, B: typename, C: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_voidwork3[A, B, C](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
+### :param entry: The routine.
+### :param args: Its arguments, in a tuple.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
+###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
+@track_caller
+routine Thread[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
+    args: (A, B, C, D)) -> None
+needs A: typename, B: typename, C: typename, D: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    runner, discard, work = make_voidwork4[A, B, C, D](entry, args, manager: slot.manager.peek())
+    me.start(runner, discard, work)
+    return
+
+### Whether the work has finished, without waiting: true once it has, and for a ticket with no work.
+### :returns: True unless the work runs.
+@track_caller
+routine Thread[T].check_finished() -> Bool
+needs T: typename
+    return me.work_slot().is_finished()
+
+### Makes the next `retrieve()` wait at most `timeout`: `t.waitfor(5s).retrieve()` throws `TaskTimeoutError` when the
+### work hasn't finished by then.
+### :param timeout: The longest wait, from now.
+### :returns: The ticket, for its `retrieve()`.
+@target(os: not "none")
+@track_caller
+routine Thread[T].waitfor(timeout: Duration) -> Me
+needs T: typename
+    me.work_slot().set_deadline(timeout)
+    return me
+
+### Waits until the work has finished, and checks that it wasn't cancelled: work with no result. Inside a fiber only
+### the fiber waits: its thread goes on with the other fibers, and the thread that finishes the work wakes it.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
+@target(os: not "none")
+@track_caller
+failable routine Thread[None].retrieve() -> None
+    slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
+    slot.result_place[Byte]()
+    if slot.is_cancelled()
+        throw CancelRequested()
+    return
+
+### Waits until the work has finished, and gives its result. Inside a fiber only the fiber waits: its thread goes on
+### with the other fibers, and the thread that finishes the work wakes it.
+### :returns: The result.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
+@target(os: not "none")
+@track_caller
+failable routine Thread[T].retrieve() -> T
+needs T: typename
+    slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
+    place: @T = slot.result_place[T]()
+    if slot.is_cancelled()
+        throw CancelRequested()
+    taken: &T <- steal place.stride(0)
+    slot.result_taken[T]()
+    return taken
+
+### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
+@track_caller
+routine Thread[T].cancel() -> None
+needs T: typename
+    me.work_slot().request_cancel()
+    return
+
+# -- the hosted manager -----------------------------------------------------------------------------------------
+
+### What a new operating system thread starts with.
+secret record ThreadStart
+    entry: Callable[(Addr,), None]
+    arg: Addr
+
+### Every new operating system thread's first Tessera routine, whatever the system's entry signature: frees the start
+### record, then calls the entry.
+### :param raw: The {ThreadStart} record.
+@target(os: not "none")
+secret routine thread_body(raw: Addr) -> None
+    start: @ThreadStart = raw.to[@ThreadStart]()
+    entry: Callable[(Addr,), None] = start.entry.peek()
+    arg: Addr = start.arg.peek()
+    deallocate(data: start, manager: HEAP)
+    fault_stack: Addr = give_fault_stack()
+    entry.call(arg)
+    release_fault_stack(fault_stack)
+    return
+
+### The start record of a new thread, from HEAP, or null when there is no memory for it.
+### :param entry: The routine the thread runs.
+### :param arg: What it is given.
+### :returns: The record, or null.
+@target(os: not "none")
+secret routine thread_start(entry: Callable[(Addr,), None], arg: Addr) -> @ThreadStart
+    start: @ThreadStart = allocate[ThreadStart](count: 1, manager: HEAP)
+    if start.is_hollow()
+        return .hollow()
+    start.poke(ThreadStart(entry, arg))
+    return start
+
+# -- POSIX -------------------------------------------------------------------------------------------------------
+
+### Binds the C `pthread_create` function, which starts a thread.
+### :param thread: Where the new thread's id goes.
+### :param attr: The thread attributes, or null for the defaults.
+### :param start: The routine the thread runs.
+### :param arg: What `start` is called with.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_create")
+@target(os: ("linux", "macos"))
+secret routine c_pthread_create(thread: @Addr, attr: Addr, start: Callable[(Addr,), Addr],
+    arg: Addr) -> CInt
+
+### Binds the C `pthread_detach` function, which lets a thread's resources go when it returns, with nobody joining.
+### :param thread: The thread's id.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_detach")
+@target(os: ("linux", "macos"))
+secret routine c_pthread_detach(thread: Addr) -> CInt
+
+### The pthread entry point: runs the thread's body and returns null.
+### :param arg: The {ThreadStart} record.
+### :returns: Always null.
+@target(os: ("linux", "macos"))
+secret routine posix_thread_main(arg: Addr) -> Addr
+    thread_body(arg)
+    return .hollow()
+
+### DEFAULT_THREADS' `launch_fn`: an operating system thread that runs `entry(arg)` and ends when it returns. Its
+### manager's workers don't return until they are told to end, and nobody waits for the thread itself.
+### :param entry: The routine.
+### :param arg: What it is given.
+### :param state: Unused.
+### :returns: False when the operating system starts no thread, or there is no memory for its start record.
+@target(os: ("linux", "macos"))
+secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
+    start: @ThreadStart = thread_start(entry, arg)
+    if start.is_hollow()
+        return false
+    handle: &Addr <- .hollow()
+    result: CInt = c_pthread_create(handle, .hollow(), posix_thread_main.to[Callable](), start)
+    if result != 0
+        deallocate(data: start, manager: HEAP)
+        return false
+    c_pthread_detach(handle.load())
+    return true
+
+### _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
+### :returns: The sysconf number.
+@target(os: "macos")
+secret routine sc_nprocessors_onln() -> CInt
+    return 58
+
+### _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
+### :returns: The sysconf number.
+@target(os: "linux")
+secret routine sc_nprocessors_onln() -> CInt
+    return 84
+
+### The number of processors the system has online, at least 1.
+### :returns: The processor count, 1 when it can't be told.
+@target(os: ("linux", "macos"))
+routine cpu_count() -> U64
+    n: CLong = c_sysconf(sc_nprocessors_onln())
+    if n < 1
+        return 1
+    return n.to[U64]()
+
+# -- Windows -----------------------------------------------------------------------------------------------------
+
+### Binds the Win32 `CreateThread` function, which starts a thread.
+### :param attrs: The thread handle's security attributes, or null.
+### :param stack: The stack size in bytes, 0 for the default.
+### :param start: The routine the thread runs.
+### :param arg: What `start` is called with.
+### :param flags: The creation flags, 0 to run at once.
+### :param id: Where the thread id goes, or null.
+### :returns: The thread's handle, or null with the last error set.
+@external("c")
+@symbol("CreateThread")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_create_thread(attrs: Addr, stack: CSize,
+    start: Callable[@callconv("stdcall"), (Addr,), U32], arg: Addr, flags: U32, id: Addr) -> Addr
+
+### Binds the Win32 `GetActiveProcessorCount` function, which counts the active processors.
+### :param group: The processor group, or `ALL_PROCESSOR_GROUPS` (0xFFFF) for all of them.
+### :returns: The number of active processors, 0 on failure.
+@external("c")
+@symbol("GetActiveProcessorCount")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_active_processor_count(group: U16) -> U32
+
+### The Windows thread entry point: runs the thread's body and returns 0.
+### :param arg: The {ThreadStart} record.
+### :returns: Always 0.
+@target(os: "windows")
+@callconv("stdcall")
+secret routine windows_thread_main(arg: Addr) -> U32
+    thread_body(arg)
+    return 0
+
+### DEFAULT_THREADS' `launch_fn`: an operating system thread that runs `entry(arg)` and ends when it returns. Its
+### manager's workers don't return until they are told to end, and nobody waits for the thread itself.
+### :param entry: The routine.
+### :param arg: What it is given.
+### :param state: Unused.
+### :returns: False when the operating system starts no thread, or there is no memory for its start record.
+@target(os: "windows")
+secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
+    start: @ThreadStart = thread_start(entry, arg)
+    if start.is_hollow()
+        return false
+    handle: Addr = c_create_thread(.hollow(), 0, windows_thread_main.to[Callable](), start, 0,
+        .hollow())
+    if handle.is_hollow()
+        deallocate(data: start, manager: HEAP)
+        return false
+    c_close_handle(handle)
+    return true
+
+### The number of processors the system has online, at least 1.
+### :returns: The processor count, 1 when it can't be told.
+@target(os: "windows")
+routine cpu_count() -> U64
+    # ALL_PROCESSOR_GROUPS
+    n: U32 = c_get_active_processor_count(0xFFFF)
+    if n < 1
+        return 1
+    return n.to[U64]()

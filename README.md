@@ -64,7 +64,7 @@ way: each level is made of whole pieces of the level below.
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a place borrowed with `<-` (`count: &S64 <- 0`), a call, a `return`.                              |
 | **routine**   | A body of statements: `if` / `else`, `each` / `until` / `loop` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
-| **module**    | A namespace for routines, types, and constants (`Standard/Os`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
+| **module**    | A namespace for routines, types, and constants (`Standard/Hosted`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
 | **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |
 
@@ -168,9 +168,10 @@ sources = ["src"]
 - **Threads and fibers:** a piece of work is `f.to[Work](param: value)`, a plain value. A ticket a `ThreadManager`,
   `CoroutineManager` or `ThreadPoolManager` lends (`Thread`, `Fiber`, `PassableFiber`) takes it with `put_work`, its
   `retrieve()` waits and gives the result, and `drop` gives the ticket back.
-- **Standard library:** written in Tessera and layered so that only `Standard/Os` and the hosted files of
-  `Standard/System` (the heap and page managers, the CPU events) need libc, and a target without an operating system
-  builds without them.
+- **Standard library:** written in Tessera and layered so that only `Standard/Hosted` and the hosted files of
+  `Standard/System` (the heap and page managers) need libc. A target without an operating system builds without them
+  and uses `Standard/Unhosted` (the startup steps, the CPU events, the interrupt controller, the timer, the serial port,
+  and the round robin threads).
 - **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Tessera.tmbundle/`](Tessera.tmbundle/)).
 

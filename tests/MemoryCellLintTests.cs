@@ -69,7 +69,7 @@ public class MemoryCellLintTests
 
     private static List<string> Lint(string source)
     {
-        var decls = Parse("import Standard/Collections\nimport Standard/Os\n\n" + source);
+        var decls = Parse("import Standard/Collections\nimport Standard/Hosted\n\n" + source);
         var compiler = new Compiler(BuildTarget.Host(), WithStdlib(decls));
         Assert.Empty(compiler.CheckAll(scope: f => f == "t.te"));
         return StyleLint.Check(decls, built: [compiler]).Where(w => w.Contains("shows the cell")).ToList();

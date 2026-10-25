@@ -11,15 +11,28 @@ public static class OldSpellings
         ["Standard/Core"] = Compiler.SystemModule,
         ["Standard/Format"] = Compiler.TextModule,
         ["Standard/Alloc"] = Compiler.MemoryModule,
-        ["Standard/Boot"] = Compiler.CpuModule,
         ["Standard/Json"] = Compiler.SystemModule + "/Serialization",
+    };
+
+    /// The modules that are gone whose names are in a module a file imports, each with that module.
+    public static readonly IReadOnlyDictionary<string, string> Moved = new Dictionary<string, string>
+    {
+        ["Standard/Os"] = Compiler.HostedModule,
+        ["Standard/Boot"] = Compiler.UnhostedModule,
     };
 
     /// The message for a module that is gone, else null.
     public static string? OldModule(string module) =>
         Gone.TryGetValue(module, out var now)
             ? $"{module} is gone: its names are in {now}, which every file sees without an import"
-            : null;
+        : Moved.TryGetValue(module, out var moved)
+            ? $"{module} is gone: its names are in {moved}, so write import {moved}"
+        : module == Compiler.SystemModule + "/Cpu"
+            ? $"{module} is gone: its names are in {Compiler.HostedModule} on a target with an operating system and in "
+              + $"{Compiler.UnhostedModule} on one without, so import the side for the target"
+        : module.StartsWith("Standard/Os/", StringComparison.Ordinal)
+            ? $"{module} is gone: Standard/Os is {Compiler.HostedModule} now, so write {Compiler.HostedModule}{module["Standard/Os".Length..]}"
+        : null;
 
     /// The message for a type that is gone or renamed, else null.
     public static string? OldTypeName(string name) => name switch

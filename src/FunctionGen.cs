@@ -55,7 +55,7 @@ public sealed partial class FunctionGen
     /// The value a template hole or `Console.show(x)` writes, while it is written: the memory-cell warning is for it.
     private Expr? _shownCell;
 
-    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/System/Cpu's
+    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/Unhosted's
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
     private bool? _memoryReady;
@@ -926,7 +926,7 @@ public sealed partial class FunctionGen
             if (_memoryReady == false)
                 throw Err(_decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
-                    + "(Standard/System/Cpu), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
+                    + "(Standard/Unhosted), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
@@ -3733,7 +3733,7 @@ public sealed partial class FunctionGen
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
-                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/System/Cpu) "
+                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Unhosted) "
                     + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
             return c is null ? null : PresetValue(c, null);
@@ -4916,11 +4916,11 @@ public sealed partial class FunctionGen
             throw Err(c.Pos, UnknownCall(c));
         }
         if (_memoryReady == false && plan.Decl is { IsLibrary: true } ready
-            && (ready is { Module: Compiler.CpuModule, Owner: null, Name: "prepare_core" }
+            && (ready is { Module: Compiler.UnhostedModule, Owner: null, Name: "prepare_core" }
                 || ready is { Module: Compiler.MemoryModule, Owner.Name: "GlobalManager", Name: "prepare" or "zero_bss" }))
             _memoryReady = true;
         // x86_64 without an operating system has no vector table the CpuEventManager points the CPU at.
-        if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: Compiler.CpuModule, Owner.Name: "CpuEventManager" }
+        if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: Compiler.UnhostedModule, Owner.Name: "CpuEventManager" }
             && _c.Target is { Arch: "x86_64", HasOs: false })
             throw Err(e.Pos, $"CpuEventManager.{plan.Decl.Name} isn't there yet on x86_64 without an operating system: the standard "
                 + "library sets up no interrupt descriptor table for it, so a program that takes interrupts or faults there "

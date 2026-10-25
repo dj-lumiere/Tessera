@@ -1,0 +1,89 @@
+# Tessera stdlib: SignalCaster
+#
+# A condition variable for an exclusive access, in one U32: a sequence number that every
+# wake changes. A waiter reads it while it holds the access, gives it back, and sleeps
+# (wait_while: a thread sleeps, a fiber parks) while it still holds what it read, so a wake that comes between the
+# give-back and the sleep has changed it and the sleep returns at once: no wake
+# is lost. A wait may also return without a wake, so a waiter checks its
+# condition again in a loop. The same design as Rust's futex condition
+# variable, the same on every operating system. It starts with seq 0 and needs
+# nothing to free.
+
+module Standard/Hosted
+
+### A condition variable: threads wait on it with an exclusive access held until another thread changes what they wait
+### for and wakes them. A waiter holds the access, checks its condition, and calls {SignalCaster.wait} while it doesn't
+### hold, again after every return: a wait may return without a wake, and another thread may have taken what it was
+### woken for. A waker changes the condition with the access held, then calls {SignalCaster.cast_one} or
+### {SignalCaster.cast_all}, with the access held or after giving it back. No wake is lost: a waiter that checked before the change is woken.
+### One U32 that every wake changes. It starts at 0, needs nothing to free, and works the same on every operating
+### system.
+record SignalCaster
+    seq: U32
+
+### A condition with no waiters.
+### :returns: A {SignalCaster} with seq 0.
+common routine SignalCaster.construct() -> Me
+    c: Me = Me(seq: 0)
+    return c
+
+### Gives `access` back, sleeps until a wake, and takes it again before returning: the caller holds it afterward as
+### before. It may return without a wake, so the caller checks its condition again in a loop.
+### :typeparam T: The type of the value the access covers.
+### :param access: The exclusive access the caller holds, which guards the condition.
+@track_caller
+routine @SignalCaster.wait[T](access: Authorized[T]) -> None
+needs T: typename
+    seen: U32 = me.seq.peek_unbroken()
+    AccessManager.give_back(at: access.getview())
+    wait_while(at: me.seq, expected: seen)
+    AccessManager.take(
+        request: AccessRequest(at: access.getview(), size: sizeof[T](), mode: ACCESS_WRITE),
+        deadline: Duration.MAX, place: caller_location())
+    return
+
+### As {SignalCaster.wait}, but gives up `timeout` after the call (it may wait a little longer, down to
+### the operating system's clock unit, never forever). It takes `access` again before returning either way.
+### :typeparam T: The type of the value the access covers.
+### :param access: The exclusive access the caller holds, which guards the condition.
+### :param timeout: The longest wait.
+### :returns: Whether it returned before the timeout passed: false means the time is up, true means woken (or
+### returned without a wake) in time, and the caller checks its condition again.
+@track_caller
+routine @SignalCaster.wait_for[T](access: Authorized[T], timeout: Duration) -> Bool
+needs T: typename
+    deadline: Duration = Clock.monotonic() +^ timeout
+    return me.wait_until[T](access, deadline)
+
+### As {SignalCaster.wait}, but gives up at `deadline` on the {Clock.monotonic} clock. A loop that waits for a condition
+### keeps one deadline across its waits, so the wakes that don't satisfy it don't extend the wait. It takes `access`
+### again before returning either way, and gives it back even when the deadline has already passed.
+### :typeparam T: The type of the value the access covers.
+### :param access: The exclusive access the caller holds, which guards the condition.
+### :param deadline: When to give up, in {Clock.monotonic} time.
+### :returns: Whether it returned before the deadline: false means the time is up, true means woken (or returned
+### without a wake) in time, and the caller checks its condition again.
+@track_caller
+routine @SignalCaster.wait_until[T](access: Authorized[T], deadline: Duration) -> Bool
+needs T: typename
+    seen: U32 = me.seq.peek_unbroken()
+    AccessManager.give_back(at: access.getview())
+    now: Duration = Clock.monotonic()
+    left: Duration = deadline -^ now
+    wait_while_for(at: me.seq, expected: seen, timeout: left)
+    AccessManager.take(
+        request: AccessRequest(at: access.getview(), size: sizeof[T](), mode: ACCESS_WRITE),
+        deadline: Duration.MAX, place: caller_location())
+    return Clock.monotonic() < deadline
+
+### Wakes one thread waiting on the condition, if any. Call it after changing the condition with the access held.
+routine @SignalCaster.cast_one() -> None
+    me.seq.unbroken_fetch_add(1)
+    wake_one(me.seq)
+    return
+
+### Wakes every thread waiting on the condition. Call it after changing the condition with the access held.
+routine @SignalCaster.cast_all() -> None
+    me.seq.unbroken_fetch_add(1)
+    wake_all(me.seq)
+    return

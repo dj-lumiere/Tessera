@@ -244,7 +244,7 @@ public sealed record Module(List<Decl> Decls);
 /// `module Standard/System/Text`: the module every declaration in the file belongs to. At most one, first in the file.
 public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `import Standard/Os`: a module the file uses. Imports follow the module line, before any other declaration.
+/// `import Standard/Hosted`: a module the file uses. Imports follow the module line, before any other declaration.
 public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
 /// `define Fmt = Standard/System/Text` or `define Numbers = Standard/Collections/List[S64]`: a second name for a module
@@ -449,7 +449,7 @@ public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(
     /// routine that isn't generic.
     public List<TypeRef> TypeArgs { get; init; } = [];
 
-    /// The module of a qualified routine: `Standard/Os` in `Standard/Os/wake_one.to[Callable]()`.
+    /// The module of a qualified routine: `Standard/Hosted` in `Standard/Hosted/wake_one.to[Callable]()`.
     public string? Path { get; init; }
 }
 

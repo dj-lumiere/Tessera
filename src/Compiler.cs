@@ -159,8 +159,11 @@ public sealed partial class Compiler
                 throw new CompileError(imported.Pos,
                     $"this file has top-level lines, and {Path.GetFileName(imp.File)} imports it (line {imp.Pos.Line}): only "
                     + "the program's entry file runs top-level lines, so put these in a routine the importer calls");
-            if (!imp.IsLibrary && IsOsModule(imp.Path) && !Target.HasOs)
-                throw new CompileError(imp.Pos, NoOs(imp.Path));
+            // A file that runs on both kinds of target imports both sides, and the target keeps one: each name then
+            // means the target's side. Importing only the other side is a build error.
+            if (!imp.IsLibrary && IsOtherSide(imp.Path)
+                && !(_fileImports.TryGetValue(imp.File, out var both) && both.Any(m => IsUnder(m, SideModule))))
+                throw new CompileError(imp.Pos, OtherSide(imp.Path));
         }
         // A routine on a declared type names the type as its own file sees it; the lookups say why it can't.
         foreach (var m in _methods.Values.SelectMany(g => g))
@@ -456,9 +459,10 @@ public sealed partial class Compiler
 
     private bool Selected(Decl d)
     {
-        // The hosted layer exists only on a target with an operating system. Without one, its library declarations
-        // drop out as a whole. The module itself stays, so importing it or naming something in it can say why.
-        if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
+        // Each side of the standard library exists only on its kind of target: Standard/Hosted with an operating
+        // system, Standard/Unhosted without. The other side's library declarations drop out as a whole. Its module
+        // stays, so importing it or naming something in it can say why.
+        if (d.IsLibrary && d is not ModuleDecl && IsOtherSide(d.Module)) return false;
         if (!TraceSelected(d)) return false;
         if (!HeapCheckSelected(d)) return false;
         if (!RaceCheckSelected(d)) return false;
@@ -880,9 +884,6 @@ public sealed partial class Compiler
     /// The memory managers, `BorrowedSlice[T]`'s regions, and unbroken values.
     public const string MemoryModule = SystemModule + "/Memory";
 
-    /// The startup steps and the CpuEventManager.
-    public const string CpuModule = SystemModule + "/Cpu";
-
     /// Formatting, reading values from text, and UTF-8.
     public const string TextModule = SystemModule + "/Text";
 
@@ -902,13 +903,26 @@ public sealed partial class Compiler
 
     /// The file part of a private declaration's symbol.
     public string FileTagPath(Decl d) => FileTagPaths.GetValueOrDefault(d.File, d.File);
-    public const string OsModule = "Standard/Os";
+    /// The side of the standard library for a target with an operating system: files, processes, the console, the
+    /// operating system's threads, and the CpuEventManager over its signals.
+    public const string HostedModule = "Standard/Hosted";
 
-    private static bool IsOsModule(string module) =>
-        module == OsModule || module.StartsWith(OsModule + "/", StringComparison.Ordinal);
+    /// The side of the standard library for a target without one: the startup steps, the CpuEventManager over the
+    /// vector table, the interrupt controller, the timer, the serial port, and the program's own threads.
+    public const string UnhostedModule = "Standard/Unhosted";
 
-    private string NoOs(string module) =>
-        $"{module} needs an operating system, and target {Target.Arch}-{Target.Os}-{Target.Abi} has none";
+    /// The side the target keeps: Standard/Hosted with an operating system, Standard/Unhosted without.
+    public string SideModule => Target.HasOs ? HostedModule : UnhostedModule;
+
+    /// Whether `module` is the side the target doesn't keep, or a module under it.
+    private bool IsOtherSide(string module) => IsUnder(module, Target.HasOs ? UnhostedModule : HostedModule);
+
+    /// Why the other side's module isn't there, and where the names are on this target.
+    private string OtherSide(string module) => Target.HasOs
+        ? $"{module} is for a target without an operating system, and target {Target.Arch}-{Target.Os}-{Target.Abi} has one; "
+          + $"its names for this target are in {HostedModule}"
+        : $"{module} needs an operating system, and target {Target.Arch}-{Target.Os}-{Target.Abi} has none; "
+          + $"its names for this target are in {UnhostedModule}";
 
     private readonly Dictionary<string, string> _fileModule = [];
     private readonly Dictionary<string, HashSet<string>> _fileImports = [];
@@ -958,9 +972,9 @@ public sealed partial class Compiler
         path = ExpandPath(path, file);
         if (candidates is null || candidates.Count == 0)
         {
-            // The hosted layer's declarations aren't there on a target without an operating system (Selected).
-            if (path is not null && IsOsModule(path) && !Target.HasOs)
-                throw new CompileError(pos, $"{what} is in {path}: {NoOs(path)}") { Final = true };
+            // The other side's declarations aren't there on this target (Selected).
+            if (path is not null && IsOtherSide(path))
+                throw new CompileError(pos, $"{what} is in {path}: {OtherSide(path)}") { Final = true };
             return null;
         }
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();

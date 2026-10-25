@@ -2,7 +2,7 @@ namespace Tessera;
 
 /// `f.to[Work](param: value, ...)`: a piece of work, the routine `f` with its arguments named by its parameters, a
 /// plain value bound with `=`. The builder puts the work's block (the routine, the arguments, room for the result: a
-/// `WorkN` / `VoidWorkN` of Standard/Os, a size the build knows) in a frame slot of the routine and makes the `Work[T]`
+/// `WorkN` / `VoidWorkN` of Standard/Hosted, a size the build knows) in a frame slot of the routine and makes the `Work[T]`
 /// over it with `work_from`. What the work is handed is kept by its name, so `t.put_work(work)` is checked like work
 /// put on a ticket with its routine and arguments.
 public sealed partial class FunctionGen

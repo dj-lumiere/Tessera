@@ -1,0 +1,135 @@
+# Tessera stdlib: files and directories, named by their paths
+#
+# A File or a Directory says where, and nothing else: making one touches nothing, and its routines only read the
+# path's text (name, stem, extension, parent, and a Directory's file and go_to). Everything done at a path goes
+# through OsFileManager (FileManager.te): making, opening, reading, writing, mapping, deleting, moving, copying,
+# asking, setting, and listing.
+#
+# The path is a @[Byte]. File.at and Directory.at keep the one they're given, so a borrowed path's text must outlive
+# the File (a literal's does). A routine that makes a path (file, go_to, OsFileManager's absolute and canonical,
+# OsEnvironment's directories) takes a memory manager, and the File or Directory holds that memory in `storage`, which its
+# destruct gives back: a File or a Directory is an entity, kept in a slot and ended with drop
+# (`OsFileManager.is_file(at: File.at(p))` on its own lasts the statement). Ending one over a borrowed path gives
+# nothing back.
+
+module Standard/Hosted
+
+### A file, by its path. Its destruct gives the path's memory back when the File made it.
+entity File
+    path: @[Byte]
+    storage: BorrowedSlice[Byte]  # the path's memory when it was made from a memory manager, hollow when it is borrowed
+
+### A directory, by its path. Its destruct gives the path's memory back when the Directory made it.
+entity Directory
+    path: @[Byte]
+    storage: BorrowedSlice[Byte]  # the path's memory when it was made from a memory manager, hollow when it is borrowed
+
+### A `File` over a borrowed path, which must outlive it.
+### :param path: The path.
+### :returns: The new value.
+common routine File.construct(path: @[Byte]) -> Me
+    return Me(path, storage: .hollow())
+
+### A `File` that takes over the memory of its path, given back by its destruct.
+### :param path: The path's memory.
+### :returns: The new value.
+common routine File.construct(path: BorrowedSlice[Byte]) -> Me
+    return Me(path: path.getslice(), storage: steal path)
+
+### A `Directory` over a borrowed path, which must outlive it.
+### :param path: The path.
+### :returns: The new value.
+common routine Directory.construct(path: @[Byte]) -> Me
+    return Me(path, storage: .hollow())
+
+### A `Directory` that takes over the memory of its path, given back by its destruct.
+### :param path: The path's memory.
+### :returns: The new value.
+common routine Directory.construct(path: BorrowedSlice[Byte]) -> Me
+    return Me(path: path.getslice(), storage: steal path)
+
+# -- File --------------------------------------------------------------------------------
+
+### A file named by `path`. Nothing is touched: the path is only held. A borrowed path's text must outlive the file,
+### and one with a memory manager goes back with drop.
+### :param path: The path of the file, as UTF-8 bytes.
+### :returns: A {File} holding `path`.
+common routine File.at(path: @[Byte]) -> Me
+    return Me.construct(path)
+
+### Gives the path back to the memory manager it came from (a path made by `Directory.file`, or by an OsFileManager routine
+### such as `absolute`) and leaves the path empty. Does nothing when the path is borrowed (a literal, or text
+### someone else gives back).
+@track_caller
+routine @File.destruct() -> None
+    drop me.storage
+    me.path.poke(.hollow())
+    return
+
+### The last part of the path: "/a/b/file.txt" gives "file.txt".
+### :returns: The last part of the path, a view into it.
+routine @File.name() -> @[Byte]
+    return file_name(me.path.peek())
+
+### The name without its extension: "archive.tar.gz" gives "archive.tar".
+### :returns: The name without its extension, a view into the path.
+routine @File.stem() -> @[Byte]
+    return file_stem(me.path.peek())
+
+### The extension without its dot: "file.txt" gives "txt", "file" gives "".
+### :returns: The extension, a view into the path, or empty.
+routine @File.extension() -> @[Byte]
+    return file_extension(me.path.peek())
+
+### The directory the path names the file in (by the text: nothing is looked up).
+### :returns: A {Directory} over the leading part of the path.
+routine @File.parent() -> Directory
+    return Directory.construct(path: parent_path(me.path.peek()))
+
+# -- Directory ---------------------------------------------------------------------------
+
+### A directory named by `path`. Nothing is touched: the path is only held. A borrowed path's text must outlive the
+### directory, and one with a memory manager goes back with drop.
+### :param path: The path of the directory, as UTF-8 bytes.
+### :returns: A {Directory} holding `path`.
+common routine Directory.at(path: @[Byte]) -> Me
+    return Me.construct(path)
+
+### Gives the path back to the memory manager it came from (a path made by `go_to`, or by a routine such as
+### `OsEnvironment.temp_directory`) and leaves the path empty. Does nothing when the path is borrowed (a literal,
+### or text someone else gives back).
+@track_caller
+routine @Directory.destruct() -> None
+    drop me.storage
+    me.path.poke(.hollow())
+    return
+
+### The last part of the path: "/a/b/" gives "b".
+### :returns: The last part of the path, a view into it.
+routine @Directory.name() -> @[Byte]
+    return file_name(me.path.peek())
+
+### The directory this one is in, by the text of the path: nothing is looked up, and no memory is allocated.
+### :returns: A {Directory} over the leading part of the path.
+routine @Directory.parent() -> Me
+    return Me.construct(path: parent_path(me.path.peek()))
+
+### The file name in this directory, its path in memory from manager (drop it).
+### :param name: The file's name.
+### :param manager: The memory manager for the new path.
+### :returns: The {File}.
+### :throws: Crashes with `OutOfMemoryError` when the memory manager fails.
+@track_caller
+@expensive("allocates the joined path")
+routine @Directory.file(name: @[Byte], manager: @MemoryManager) -> File
+    return File.construct(path: join_path(a: me.path.peek(), b: name, manager))
+
+### The directory name in this directory, its path in memory from manager (drop it). Nothing is looked up.
+### :param name: The directory's name.
+### :param manager: The memory manager for the new path.
+### :returns: The {Directory}.
+### :throws: Crashes with `OutOfMemoryError` when the memory manager fails.
+@track_caller
+@expensive("allocates the joined path")
+routine @Directory.go_to(name: @[Byte], manager: @MemoryManager) -> Me
+    return Me.construct(path: join_path(a: me.path.peek(), b: name, manager))

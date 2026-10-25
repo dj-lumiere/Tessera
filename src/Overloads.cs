@@ -239,8 +239,8 @@ public sealed partial class Compiler
         var all = _free.GetValueOrDefault(name);
         if (all is null || all.Count == 0)
         {
-            if (path is not null && IsOsModule(path) && !Target.HasOs)
-                throw new CompileError(pos, $"routine '{name}' is in {path}: {NoOs(path)}") { Final = true };
+            if (path is not null && IsOtherSide(path))
+                throw new CompileError(pos, $"routine '{name}' is in {path}: {OtherSide(path)}") { Final = true };
             return [];
         }
         var visible = all.Where(c => Visible(c, file, path)).ToList();

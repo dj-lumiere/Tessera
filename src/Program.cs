@@ -562,7 +562,7 @@ static class Cli
             throw compiler.MainRoutine is { } main
                 ? new CompileError(main.Pos,
                     "no entry point: an executable's entry point is 'routine start() -> None', and main is an ordinary routine name; " +
-                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard/Os)")
+                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard/Hosted)")
                 : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                     "no entry point: an executable needs 'routine start() -> None' (use 'tessera check' to type-check a file without one)");
         return ir;
@@ -865,7 +865,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
-            // WaitOnAddress and WakeByAddress (Standard/Os/Wait.te) live in synchronization.lib, not kernel32.
+            // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.te) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
