@@ -146,6 +146,21 @@ jobs:
             exit 1
           fi
 
+      # A routine copy every image may hold (a generic instance, a stdlib routine) is hidden, so a program and a shared
+      # library each call their own copy, the one that reads their own globals. Mach-O's loader would otherwise bind
+      # the library's calls to the program's copies (a crash message written into one buffer and read from another).
+      - name: Shared routine copies are hidden
+        if: matrix.target == 'x86_64-linux-gnu'
+        run: |
+          for target in x86_64-linux-gnu aarch64-macos-none; do
+            dotnet bin/Release/net10.0/tessera.dll build --target $target --emit-llvm examples/fizzbuzz.te -o "shared-$target.ll"
+            grep -q '^define linkonce_odr hidden ' "shared-$target.ll" || { echo "$target: no shared routine copy, the search is stale"; exit 1; }
+            if grep -nP '^define linkonce_odr (?!hidden )' "shared-$target.ll"; then
+              echo "$target: shared routine copies that other images can bind to (above)"
+              exit 1
+            fi
+          done
+
       # Every build mode: a test's output must not depend on the optimization level or the debug information. Each
       # mode runs even when another fails, so one run shows which modes break.
       - name: Golden tests (debug)

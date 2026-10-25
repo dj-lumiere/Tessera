@@ -5485,9 +5485,15 @@ public sealed partial class FunctionGen
             }
         }
         if (!shared || (exported && !_decl.IsLibrary)) return ("", "");
-        if (_c.Target.Os == "macos") return (exported ? "weak " : "linkonce_odr ", "");
+        // A linkonce_odr copy is hidden: each image (a program, a shared library) keeps and calls its own. The globals
+        // such a routine reads are internal to its module, so a copy bound to another image's definition would read
+        // that image's globals while the copies inlined here read this one's. Mach-O's loader binds every exported
+        // weak definition to the first image that has one, so without this a crash message written by the program's
+        // copy of a routine was read back empty by the runtime library's.
+        string sharedLinkage = exported ? "weak " : "linkonce_odr hidden ";
+        if (_c.Target.Os == "macos") return (sharedLinkage, "");
         _out.AppendLine($"${Compiler.Quote(_inst.Symbol)} = comdat any");
-        return (exported ? "weak " : "linkonce_odr ", " comdat");
+        return (sharedLinkage, " comdat");
     }
 
     /// A @naked assembly routine: a function whose whole body is the assembly. Its parameters stay where the call put
