@@ -1480,6 +1480,10 @@ public sealed partial class Compiler
     private readonly Dictionary<string, HashSet<string>> _calls = [];
 
     /// Records a direct call, for finding the @inline routines that reach themselves.
+    /// The call that first made each instance, by symbol, and the instance it was written in: a build_error an instance
+    /// reaches is reported at the program's own line that led to it.
+    public Dictionary<string, (Pos Pos, Instance Caller)> MadeBy { get; } = [];
+
     public void RecordCall(Instance caller, Instance callee)
     {
         if (Prechecking) return;
@@ -1689,7 +1693,7 @@ public sealed partial class Compiler
                 {
                     TypeArgType ta => ResolveTypeInner(ta.Type, env),
                     TypeArgInt ti => new ConstArg(ti.Value),
-                    TypeArgExpr te => EvalConstArg(te.Expr, env),
+                    TypeArgExpr te => EvalConstArg(te.Expr, env, kind as ChoiceType),
                     _ => throw new CompileError(pos, $"invalid generic argument for '{owner}'"),
                 };
             }
@@ -1748,9 +1752,10 @@ public sealed partial class Compiler
 
     /// A value type argument written as an expression (`N + 1`, `MemoryOrder.RELAXED`, a preset): an integer, or a
     /// member of a choice when the expression folds to one.
-    public ConstArg EvalConstArg(Expr e, TypeEnv env)
+    /// Where a member of `choice` goes (a default of `needs F: MemoryOrder`), a bare member name is that member.
+    public ConstArg EvalConstArg(Expr e, TypeEnv env, ChoiceType? choice = null)
     {
-        var v = Fold(e, null, env);
+        var v = Fold(e, choice, env);
         return v.Type switch
         {
             null or IntType => new ConstArg(v.Value),

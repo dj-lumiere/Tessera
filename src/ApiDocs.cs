@@ -107,20 +107,32 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
 
     // ── Shared with the language server ─────────────────────────────────────
 
-    /// A declaration's header as its source writes it: its line (1-based `line`) and the unindented clause lines under
-    /// it (`conform`, `require`, `when`), without the body.
+    /// A declaration's header as its source writes it: its line (1-based `line`), the lines it goes on to when a
+    /// parenthesis is still open (a long parameter list), and the unindented clause lines under it (`needs`, `obeys`,
+    /// `conform`, `require`, `when`), without the body.
     public static List<string> HeaderLines(IReadOnlyList<string> lines, int line)
     {
         var header = new List<string> { lines[line - 1].TrimEnd() };
-        for (int i = line; i < lines.Count; i++)
+        int open = Depth(lines[line - 1]);
+        int i = line;
+        for (; open > 0 && i < lines.Count; i++)
+        {
+            header.Add(lines[i].TrimEnd());
+            open += Depth(lines[i]);
+        }
+        for (; i < lines.Count; i++)
         {
             string l = lines[i];
-            if (l.Trim().Length == 0 || char.IsWhiteSpace(l[0]) || l.StartsWith("#") || l.StartsWith('#')) break;
-            if (!l.StartsWith("conform ") && !l.StartsWith("require ") && !l.StartsWith("when ")) break;
+            if (l.Trim().Length == 0 || char.IsWhiteSpace(l[0]) || l.StartsWith('#')) break;
+            if (!l.StartsWith("needs ") && !l.StartsWith("obeys ") && !l.StartsWith("conform ") && !l.StartsWith("require ")
+                && !l.StartsWith("when ")) break;
             header.Add(l.TrimEnd());
         }
         return header;
     }
+
+    /// How many more parentheses a line opens than it closes.
+    private static int Depth(string line) => line.Count(c => c == '(') - line.Count(c => c == ')');
 
     /// A doc split into its summary and its `:field:` lines (`:param x:`, `:typeparam T:`, `:returns:`, `:throws:`,
     /// `:absent:`, `:note:`, `:see:`). A line that opens no field continues the one before it, and a blank line ends

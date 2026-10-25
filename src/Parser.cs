@@ -467,7 +467,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         if (constraints == when)
                             throw Error($"a conformance's conditions take no default: write {name.Text} without '= ...'");
                         Next();
-                        defaults[name.Text] = ParseTypeArg(inClause: true);
+                        // `F: MemoryOrder = if S == ACQ_REL then ACQUIRE else S`: a default chosen by the parameters
+                        // before it, which the builder folds.
+                        defaults[name.Text] = IsIdent("if") ? new TypeArgExpr(ParseIfValue(chained: true)) : ParseTypeArg(inClause: true);
                     }
                 }
                 else constraints.Add(ParseType());
@@ -2114,7 +2116,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// `if c then a else b` as a value, after `return`.
-    private IfExpr ParseIfValue()
+    /// `chained`: in a needs line's default, the else may be another value if (`else if c then a else b`).
+    private IfExpr ParseIfValue(bool chained = false)
     {
         var pos = Next().Pos;
         var cond = ParseExpr();
@@ -2123,7 +2126,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var a = ParseExpr();
         if (!IsIdent("else")) throw Error("a value if is written if c then a else b: the else is missing");
         Next();
-        var b = ParseExpr();
+        Expr b = chained && IsIdent("if") ? ParseIfValue(chained: true) : ParseExpr();
         return new IfExpr(cond, a, b, pos);
     }
 

@@ -214,8 +214,17 @@ public sealed partial class Compiler
                     throw new CompileError(number.Pos, $"a {flags.Name} value is made of its members, or none for no member on, not a number");
             }
         }
+        // Where a choice member goes, a bare name of a member is that member, unless a value parameter or a preset of
+        // the same spelling is in scope.
+        if (hint is ChoiceType { Decl.IsFlags: false } choice && e is PresetRef { Owner: null, Path: null } bareName
+            && env.Get(bareName.Name) is null && choice.Decl.Members.FirstOrDefault(m => m.Name == bareName.Name) is { Name: not null, Value: IntLit memberValue }
+            && !PresetVisible(bareName, env))
+            return new ConstVal(choice, memberValue.Value);
         switch (AsRecordLit(e, env))
         {
+            // `if c then a else b`: the side the condition takes, which the builder knows.
+            case IfExpr pick:
+                return Fold(Truth(pick.Cond, env) ? pick.Then : pick.Else, hint, env);
             case IntLit { Base10: true } whole when WholeAsFloat(whole.Value, hint, whole.Pos) is { } asFloat:
                 return asFloat;
             case IntLit il:
@@ -280,6 +289,13 @@ public sealed partial class Compiler
             default:
                 throw new CompileError(e.Pos, $"this isn't a buildtime constant; a preset is made of {PresetForms}");
         }
+    }
+
+    /// Whether a bare name is a preset seen from here.
+    private bool PresetVisible(PresetRef r, TypeEnv env)
+    {
+        try { return FindPreset("", r.Name, env.File, r.Pos, r.Path) is not null; }
+        catch (CompileError) { return false; }
     }
 
     private ConstVal FoldPresetRef(PresetRef r, TypeEnv env)

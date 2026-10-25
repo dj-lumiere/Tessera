@@ -912,6 +912,59 @@ public sealed partial class FunctionGen
             ? $" (in {_inst.Readable})"
             : "";
 
+    // ── build_error ─────────────────────────────────────────────────────────
+
+    /// The `build_error("...")` lines this instance writes: the block each is in, its text with the value parameters
+    /// filled in, and where it is.
+    private readonly List<(string Block, string Message, Pos Pos)> _buildErrors = [];
+
+    /// `build_error("text")`: a line that is a build error when an instance reaches it. A `when` or an `if` on a value
+    /// type parameter goes straight to the side it takes, so a `build_error` on another side is never reached and
+    /// costs nothing. A `{P}` in the text is the value parameter P of this instance (a choice member by its name). The
+    /// line ends its block like `unreachable`.
+    private void EmitBuildError(CallExpr call)
+    {
+        if (call.Args is not [StrLit text] || call.ArgNames is { Count: > 0 } && call.ArgNames.Any(n => n is not null))
+            throw Err(call.Pos, "build_error takes one text: build_error(\"what is wrong, and what to write\")");
+        string message = System.Text.RegularExpressions.Regex.Replace(text.Value, @"\{([A-Za-z_][A-Za-z0-9_]*)\}", m =>
+            _env.Get(m.Groups[1].Value) is ConstArg { StandIn: false } value
+                ? value.MemberName ?? value.Value.ToString(CultureInfo.InvariantCulture)
+                : m.Value);
+        _buildErrors.Add((_cur.Label, message, call.Pos));
+        Mem(new MemoryRules.Exit(null, false, [], call.Pos));
+        Terminate("unreachable");
+    }
+
+    /// A `build_error` line the instance's blocks reach from its entry is the build error it says. It is reported at
+    /// the call that made the instance, followed up through generic and standard library routines to the program's
+    /// own line, which is where the arguments that chose it are written.
+    private void CheckBuildErrors()
+    {
+        if (_buildErrors.Count == 0 || _c.Prechecking || _env.All.Any(kv => kv.Value is ConstArg { StandIn: true })) return;
+        var successors = new Dictionary<string, List<string>>();
+        foreach (var lb in _lblocks)
+            successors[lb.Label] = lb.Lines
+                .SelectMany(l => System.Text.RegularExpressions.Regex.Matches(l, @"label %([A-Za-z0-9_.]+)").Select(m => m.Groups[1].Value))
+                .ToList();
+        string entry = _head?.Label ?? "b.entry";
+        var reached = new HashSet<string> { entry };
+        var work = new Stack<string>([entry]);
+        while (work.Count > 0)
+            foreach (var next in successors.GetValueOrDefault(work.Pop()) ?? [])
+                if (reached.Add(next)) work.Push(next);
+        foreach (var (block, message, pos) in _buildErrors)
+        {
+            if (!reached.Contains(block)) continue;
+            Pos at = pos;
+            var inst = _inst;
+            var seen = new HashSet<string>();
+            while ((inst.Decl.IsLibrary || _c.IsGenericInstance(inst)) && seen.Add(inst.Symbol)
+                   && _c.MadeBy.TryGetValue(inst.Symbol, out var made))
+                (at, inst) = made;
+            throw new CompileError(at, message);
+        }
+    }
+
     // ── Function skeleton ───────────────────────────────────────────────────
 
     public void Emit()
@@ -1086,6 +1139,7 @@ public sealed partial class FunctionGen
             }
             else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
+        CheckBuildErrors();
         var (linkage, comdat) = Linkage();
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
@@ -1657,6 +1711,9 @@ public sealed partial class FunctionGen
                 }
                 break;
             }
+            case ExprStmt { Value: CallExpr { Name: "build_error", TypeArgs.Count: 0 } stop } when _c.FindFree("build_error", _env.File, stop.Pos) is null:
+                EmitBuildError(stop);
+                break;
             case ExprStmt e:
             {
                 // A call that never returns (`Crash.stop()`) ends the body here.
@@ -2223,7 +2280,8 @@ public sealed partial class FunctionGen
         var type = new TypeRef(c.Name, c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList(), c.Pos) { Path = c.Path };
         return TryResolveOwner(type) is RecordType record
             ? $"a record literal names its fields: {record.Name}({string.Join(", ", _c.Fields(record).Select(f => $"{f.Name}: ..."))})"
-            : OldSpellings.OldName(c.Name) ?? $"unknown routine '{c.Name}'";
+            : OldSpellings.OldName(c.Name)
+              ?? (OldSpellings.OldRoutineName(c.Name) is { } renamed ? $"unknown routine '{c.Name}': {renamed}" : $"unknown routine '{c.Name}'");
     }
 
     private Val EvalAny(Expr e)
@@ -5181,6 +5239,7 @@ public sealed partial class FunctionGen
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
         _c.RecordCall(_inst, inst);
+        if (!_c.Prechecking) _c.MadeBy.TryAdd(inst.Symbol, (plan.Pos, _inst));
         RecordCall(plan, inst);
         NoteAccessCall(plan, inst);
         NoteCallKeepsViews(plan, inst);
@@ -5517,6 +5576,18 @@ public sealed partial class FunctionGen
             if (key.StartsWith("by ", StringComparison.Ordinal))
             {
                 var parts = SplitTopLevel(key[3..]);
+                // `{by O|monotonic|acquire|...}`: for a value type parameter that is a choice, the text for its member,
+                // one text per member in the order the choice lists them.
+                if (sig.Env.Get(parts[0].Trim()) is ConstArg { Kind: ChoiceType choice } member)
+                {
+                    if (parts.Count != choice.Decl.Members.Count + 1)
+                        throw Err(sig.Decl.Pos, $"'{{by {parts[0].Trim()}|...}}' needs one text per member of {choice.Name} "
+                            + $"({Compiler.Members(choice)}), in '{sig.Decl.DisplayName}'");
+                    int index = choice.Decl.Members.FindIndex(m => m.Value is IntLit lit && lit.Value == member.Value);
+                    text = text[..i] + parts[index + 1] + text[(close + 1)..];
+                    i--;
+                    continue;
+                }
                 if (parts.Count != 4 || sig.Env.Get(parts[0].Trim()) is not { } kindOf)
                     throw Err(sig.Decl.Pos, $"'{{by T|float|signed|unsigned}}' needs a type parameter and three texts, in '{sig.Decl.DisplayName}'");
                 var lane = kindOf.Repr is VectorType vt ? vt.Elem.Repr : kindOf.Repr;
@@ -5781,7 +5852,7 @@ public sealed partial class FunctionGen
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             throw Err(pos, _blocks.ContainsKey(c.Name)
                 ? $"'{c.Name}' is a block: jump {c.Name}(...)"
-                : $"no routine named '{c.Name}'");
+                : OldSpellings.OldRoutineName(c.Name) is { } renamed ? $"no routine named '{c.Name}': {renamed}" : $"no routine named '{c.Name}'");
         if (!IsNoReturn(call))
             throw Err(pos, "only a @noreturn routine (such as Crash.stop) or a throw can end a body; this one returns");
         EvalAny(call);

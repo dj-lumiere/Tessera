@@ -63,7 +63,7 @@ The standard library's modules:
 - `System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
   (`Parsable`), UTF-8, and the byte-text views.
 - `System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
-  `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Unbroken`.
+  `GlobalManager`, `ThreadLocalManager`, `ByteSize`, `Unbroken`, and `MemoryOrder`.
 - `System/Temporal` (`Duration`, `Moment`), `System/Serialization` (JSON strings),
   `System/CSubSystem` (C strings, the C memory routines without an OS).
 - Imported: `Collections`, `Hosted` (console, files, storage, the environment, processes, threads,
@@ -806,7 +806,18 @@ routine start() -> None
   arguments). A routine on a type can't give the type's parameter a default (the type's own needs line does), and
   protocols and conformances take none. Inference wins over a default: a parameter the call doesn't write takes what
   the arguments or the place the result goes give it (`kind_of(narrow)` with `narrow: S8` is `kind_of[S8]`, `made:
-  Cell[ACQUIRE] = cell()` is `cell[ACQUIRE]`), and only a parameter nothing gives takes its default.
+  Cell[ACQUIRE] = cell()` is `cell[ACQUIRE]`), and only a parameter nothing gives takes its default. A default may be
+  a buildtime `if c then a else b` over the parameters before it, its `else` another such `if` (`needs S: MemoryOrder =
+  SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S`): where a choice
+  member goes, a bare member name is that member.
+- **`build_error("text")`** is a line that is a build error where an instance reaches it. A `when` or an `if` on a
+  value type parameter goes straight to the side it takes, so a `build_error` on another side is never reached and
+  costs nothing: `if O == MemoryOrder.RELEASE` then `build_error("you gave peek_unbroken the order {O}, ...")` refuses
+  that one instance. A `{P}` in the text is the value parameter P of the instance (a choice member by its name). The
+  error points at the program's own line that made the instance (followed up through generic and standard library
+  routines), and in a routine that isn't generic every `build_error` it reaches is an error. It ends its block like
+  `unreachable`. A routine named `build_error` that the file sees takes the name. In an `@template`, `{by O|a|b|...}`
+  is the text for the choice member O, one text per member in the order the choice lists them.
 - `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
   with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
@@ -1731,12 +1742,25 @@ or an Unbroken, above) (`hits: Unbroken[U64]` in a shared record, `Unbroken[U64]
 0)` or `.construct(value: 0)`). Threads share its place, `@Unbroken[T]`, never copies. Routines: `peek` / `poke`,
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
-`fetch_fsub` (B32, B64), each with the order suffixes LLVM allows: `_relaxed` / `_acquire` / `_release` / `_acq_rel`
-(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `*_unbroken` routines
-(`peek_unbroken`, `poke_unbroken`, `fetch_add_unbroken`, ..., the operation, then `_unbroken`, then the order:
-`fetch_add_unbroken_relaxed`) are for memory whose type the program doesn't choose (from C,
-another process, a futex word). What T allows depends on the target (capability protocols, a wider access is a build
-error). `Bool` has none: use a `U8`.
+`fetch_fsub` (B32, B64). The memory order is a type argument, a member of the choice `MemoryOrder` (`RELAXED`,
+`ACQUIRE`, `RELEASE`, `ACQ_REL`, `SEQ_CST`, bare or with the choice): `hits.fetch_add[RELAXED](1)`,
+`flag.peek[ACQUIRE]()`, and a call that names none is `SEQ_CST`. Each instance is one LLVM instruction with that
+order, nothing tested at run time. An order the operation doesn't have is a build error at the call that names the
+orders it takes: a load (`peek`) takes `RELAXED` / `ACQUIRE` / `SEQ_CST`, a store (`poke`) `RELAXED` / `RELEASE` /
+`SEQ_CST`, `swap` and the `fetch_` routines all five, a fence anything but `RELAXED`. `compare_exchange[S, F]` takes the
+order when it writes (S) and when it doesn't (F, then it only reads): F is `RELAXED`, `ACQUIRE` or `SEQ_CST` and no
+stronger than S (`RELAXED` with S `RELAXED` or `RELEASE`, also `ACQUIRE` with S `ACQUIRE` or `ACQ_REL`), and when it
+isn't written it comes from S: `ACQUIRE` for `ACQ_REL`, `RELAXED` for `RELEASE`, S itself otherwise
+(`compare_exchange[ACQ_REL]` is `[ACQ_REL, ACQUIRE]`). `@T`'s `*_unbroken` routines (`peek_unbroken`, `poke_unbroken`,
+`fetch_add_unbroken[RELAXED]`, `compare_exchange_unbroken_raw[ACQUIRE]`, ..., the operation, then `_unbroken`, with
+the same type arguments) are for memory whose type the program doesn't choose (from C,
+another process, a futex word). The fences are `fence[O]()` (between threads and cores) and `compiler_fence[O]()`
+(for the builder only, against an interrupt handler on the same core). The `_unchecked` forms (`peek_unbroken_unchecked`,
+`compare_exchange_unbroken_raw_unchecked`, `fence_unchecked`, ...) are the bare instructions the checked routines
+call, and LLVM refuses an order they don't take. A name with the order at its end (`fetch_add_relaxed`,
+`peek_unbroken_acquire`, `compare_exchange_unbroken_acquire_raw`, `fence_release`) is a build error that names the new
+form. What T allows depends on the target (capability protocols, a wider access is a build error). `Bool` has none:
+use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
 stdlib wait does what fits the code running it. The `AccessManager` (Standard/Hosted/AccessManager.te) hands out access to

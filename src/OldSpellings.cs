@@ -36,15 +36,21 @@ public static class OldSpellings
     private static string Renamed(string name, string now) => $"'{name}' is called {now}";
 
     /// The message for a routine that took a new name, else null: the routines that change a value as one unbroken
-    /// step are the operation, then `_unbroken`, then the memory order (`peek_unbroken`, `fetch_add_unbroken`,
-    /// `compare_exchange_weak_unbroken_acq_rel_raw`). An `atomic_...` or `unbroken_...` name says the new one.
+    /// step are the operation, then `_unbroken`, with the memory order as a type argument (`peek_unbroken`,
+    /// `fetch_add_unbroken[RELAXED]`, `compare_exchange_weak_unbroken_raw[ACQ_REL]`). An `atomic_...` or `unbroken_...`
+    /// name, and one that ends with its order (`fetch_add_unbroken_relaxed`, an `Unbroken[T]`'s `peek_acquire`,
+    /// `fence_release`), says the new one.
     public static string? OldRoutineName(string name)
     {
         string? now = name.StartsWith("atomic_", StringComparison.Ordinal) ? UnbrokenNames.ForOperation(name["atomic_".Length..])
             : name.StartsWith("unbroken_", StringComparison.Ordinal) ? UnbrokenNames.ForOperation(name["unbroken_".Length..])
-            : name.Contains("_atomic", StringComparison.Ordinal) ? name.Replace("_atomic", "_unbroken")
-            : null;
-        return now is null ? null : $"'{name}' is called '{now}' now";
+            : name.Contains("_atomic", StringComparison.Ordinal) ? UnbrokenNames.ForOrderSuffix(name.Replace("_atomic", "_unbroken"))
+                ?? name.Replace("_atomic", "_unbroken")
+            : UnbrokenNames.ForOrderSuffix(name);
+        if (now is null) return null;
+        return now.Contains('[')
+            ? $"'{name}' is '{now}' now: the memory order is a type argument, and SEQ_CST when none is given"
+            : $"'{name}' is called '{now}' now";
     }
 
     /// The message for a name that is gone, else null.

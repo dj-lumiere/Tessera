@@ -3,10 +3,11 @@
 # A value whose every access is unbroken is an Unbroken[T]: the type says it, and its operations are the ones below
 # without the _unbroken in their names. Memory whose type the program doesn't choose (from C, shared with another
 # process, a futex word) is reached per access instead, like a volatile access: the *_unbroken routines on @T next to
-# peek and poke (the operation, then _unbroken, then the order: fetch_add_unbroken_relaxed).
-# The memory order is a name suffix: none is sequentially consistent, _relaxed, _acquire, _release, and
-# _acq_rel choose weaker ones, and each operation has only the orders LLVM allows for it (a load can't release, a
-# store can't acquire). compare_exchange's failure order follows its success order.
+# peek and poke (the operation, then _unbroken: fetch_add_unbroken).
+# The memory order is a type argument, a MemoryOrder: fetch_add_unbroken[RELAXED](1). A routine that names none is
+# SEQ_CST. Each routine takes only the orders its operation has (a load can't release, a store can't acquire, a fence
+# can't be RELAXED), and another order is a build error at the call. compare_exchange takes two, the order when it
+# writes and the order when it doesn't, and the second comes from the first when it isn't written.
 #
 # What an Unbroken[T] can do depends on T and on the target, so each routine requires a marker concept, declared below
 # per type and target: UnbrokenStorable (load, store), UnbrokenExchangeable (swap, compare_exchange: integers, bytes, and
@@ -267,371 +268,139 @@ obeys UnbrokenAddable[S128], UnbrokenAddable[U128]
 @feature("cx16")
 obeys UnbrokenMaskable[S128], UnbrokenMaskable[U128]
 
+# -- memory orders ---------------------------------------------------------------
+
+### How an unbroken access is ordered with the other memory accesses of its thread, as other threads see them. It is a
+### type argument of every unbroken routine (`fetch_add_unbroken[RELAXED](1)`, `c.peek[ACQUIRE]()`), and a routine that
+### names none is SEQ_CST.
+choice MemoryOrder: U8
+    ### Only unbroken: no order with the accesses around it.
+    RELAXED
+    ### No later access of this thread is moved before it, so after reading what a RELEASE write wrote, the thread sees
+    ### what came before that write.
+    ACQUIRE
+    ### No earlier access of this thread is moved after it, so a thread that reads it with ACQUIRE sees what came
+    ### before it.
+    RELEASE
+    ### ACQUIRE and RELEASE together, for an operation that reads and writes.
+    ACQ_REL
+    ### ACQ_REL, and every thread sees all the SEQ_CST operations in one order.
+    SEQ_CST
+
 # -- load and store --------------------------------------------------------------
 
-### Reads the T at this address unbroken, sequentially consistent.
+### Reads the T at this address unbroken.
+### :typeparam O: The memory order: RELAXED, ACQUIRE or SEQ_CST (a read can't release), SEQ_CST when none is given.
+### :returns: The value read.
+@inline
+routine PointedCell[T].peek_unbroken[O]() -> T
+needs T: typename, UnbrokenStorable[T], O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.RELEASE or O == MemoryOrder.ACQ_REL
+        build_error("you gave peek_unbroken the order {O}, and a read can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    return me.peek_unbroken_unchecked[O]()
+
+### Reads the T at this address unbroken, with an order that isn't checked: LLVM refuses RELEASE and ACQ_REL, and
+### peek_unbroken checks it first.
+### :typeparam O: The memory order.
 ### :returns: The value read.
 @external("llvm")
-@template("{result} = load atomic {T}, ptr {me} seq_cst, align {sizeof T}")
-routine PointedCell[T].peek_unbroken() -> T
-needs T: typename, UnbrokenStorable[T]
+@template("{result} = load atomic {T}, ptr {me} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].peek_unbroken_unchecked[O]() -> T
+needs T: typename, UnbrokenStorable[T], O: MemoryOrder
 
-### Reads the T at this address unbroken, relaxed (only unbroken).
-### :returns: The value read.
-@external("llvm")
-@template("{result} = load atomic {T}, ptr {me} monotonic, align {sizeof T}")
-routine PointedCell[T].peek_unbroken_relaxed() -> T
-needs T: typename, UnbrokenStorable[T]
+### Writes value to this address unbroken.
+### :typeparam O: The memory order: RELAXED, RELEASE or SEQ_CST (a write can't acquire), SEQ_CST when none is given.
+### :param value: The value to write.
+@inline
+routine PointedCell[T].poke_unbroken[O](value: T) -> None
+needs T: typename, UnbrokenStorable[T], O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.ACQUIRE or O == MemoryOrder.ACQ_REL
+        build_error("you gave poke_unbroken the order {O}, and a write can't acquire: give it RELAXED, RELEASE or SEQ_CST")
+    me.poke_unbroken_unchecked[O](value)
+    return
 
-### Reads the T at this address unbroken, acquire.
-### :returns: The value read.
-@external("llvm")
-@template("{result} = load atomic {T}, ptr {me} acquire, align {sizeof T}")
-routine PointedCell[T].peek_unbroken_acquire() -> T
-needs T: typename, UnbrokenStorable[T]
-
-### Writes value to this address unbroken, sequentially consistent.
+### Writes value to this address unbroken, with an order that isn't checked: LLVM refuses ACQUIRE and ACQ_REL, and
+### poke_unbroken checks it first.
+### :typeparam O: The memory order.
 ### :param value: The value to write.
 @external("llvm")
-@template("store atomic {T} {value}, ptr {me} seq_cst, align {sizeof T}")
-routine PointedCell[T].poke_unbroken(value: T) -> None
-needs T: typename, UnbrokenStorable[T]
-
-### Writes value to this address unbroken, relaxed (only unbroken).
-### :param value: The value to write.
-@external("llvm")
-@template("store atomic {T} {value}, ptr {me} monotonic, align {sizeof T}")
-routine PointedCell[T].poke_unbroken_relaxed(value: T) -> None
-needs T: typename, UnbrokenStorable[T]
-
-### Writes value to this address unbroken, release.
-### :param value: The value to write.
-@external("llvm")
-@template("store atomic {T} {value}, ptr {me} release, align {sizeof T}")
-routine PointedCell[T].poke_unbroken_release(value: T) -> None
-needs T: typename, UnbrokenStorable[T]
+@template("store atomic {T} {value}, ptr {me} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].poke_unbroken_unchecked[O](value: T) -> None
+needs T: typename, UnbrokenStorable[T], O: MemoryOrder
 
 # -- read-modify-write -----------------------------------------------------------
 
-### Writes value and returns what was there, unbroken and sequentially consistent.
+### Writes value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to write.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw xchg ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].swap_unbroken(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
+@template("{result} = atomicrmw xchg ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].swap_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenExchangeable[T], O: MemoryOrder = SEQ_CST
 
-### Writes value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to write.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xchg ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].swap_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes value and returns what was there, unbroken and acquire.
-### :param value: The value to write.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xchg ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].swap_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes value and returns what was there, unbroken and release.
-### :param value: The value to write.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xchg ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].swap_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes value and returns what was there, unbroken and acquire and release.
-### :param value: The value to write.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xchg ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].swap_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-
-### Adds value (wrapping) and returns what was there, unbroken and sequentially consistent.
+### Adds value (wrapping) and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to add.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw add ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_add_unbroken(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
+@template("{result} = atomicrmw add ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_add_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenAddable[T], O: MemoryOrder = SEQ_CST
 
-### Adds value (wrapping) and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw add ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_add_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Adds value (wrapping) and returns what was there, unbroken and acquire.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw add ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_add_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Adds value (wrapping) and returns what was there, unbroken and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw add ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_add_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Adds value (wrapping) and returns what was there, unbroken and acquire and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw add ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_add_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Subtracts value (wrapping) and returns what was there, unbroken and sequentially consistent.
+### Subtracts value (wrapping) and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to subtract.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw sub ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_sub_unbroken(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
+@template("{result} = atomicrmw sub ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_sub_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenAddable[T], O: MemoryOrder = SEQ_CST
 
-### Subtracts value (wrapping) and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw sub ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_sub_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Subtracts value (wrapping) and returns what was there, unbroken and acquire.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw sub ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_sub_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Subtracts value (wrapping) and returns what was there, unbroken and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw sub ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_sub_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### Subtracts value (wrapping) and returns what was there, unbroken and acquire and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw sub ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_sub_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-
-### ANDs in value and returns what was there, unbroken and sequentially consistent.
+### ANDs in value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The mask to AND in.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw and ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_and_unbroken(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
+@template("{result} = atomicrmw and ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_and_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T], O: MemoryOrder = SEQ_CST
 
-### ANDs in value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask to AND in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw and ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_and_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ANDs in value and returns what was there, unbroken and acquire.
-### :param value: The mask to AND in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw and ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_and_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ANDs in value and returns what was there, unbroken and release.
-### :param value: The mask to AND in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw and ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_and_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ANDs in value and returns what was there, unbroken and acquire and release.
-### :param value: The mask to AND in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw and ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_and_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ORs in value and returns what was there, unbroken and sequentially consistent.
+### ORs in value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The mask to OR in.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw or ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_or_unbroken(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
+@template("{result} = atomicrmw or ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_or_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T], O: MemoryOrder = SEQ_CST
 
-### ORs in value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask to OR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw or ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_or_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ORs in value and returns what was there, unbroken and acquire.
-### :param value: The mask to OR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw or ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_or_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ORs in value and returns what was there, unbroken and release.
-### :param value: The mask to OR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw or ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_or_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### ORs in value and returns what was there, unbroken and acquire and release.
-### :param value: The mask to OR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw or ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_or_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### XORs in value and returns what was there, unbroken and sequentially consistent.
+### XORs in value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The mask to XOR in.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw xor ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_xor_unbroken(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
+@template("{result} = atomicrmw xor ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_xor_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T], O: MemoryOrder = SEQ_CST
 
-### XORs in value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask to XOR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xor ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_xor_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### XORs in value and returns what was there, unbroken and acquire.
-### :param value: The mask to XOR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xor ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_xor_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### XORs in value and returns what was there, unbroken and release.
-### :param value: The mask to XOR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xor ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_xor_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### XORs in value and returns what was there, unbroken and acquire and release.
-### :param value: The mask to XOR in.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw xor ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_xor_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-
-### Adds value and returns what was there, unbroken and sequentially consistent.
+### Adds value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to add.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw fadd ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_fadd_unbroken(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
+@template("{result} = atomicrmw fadd ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_fadd_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenFloatAddable[T], O: MemoryOrder = SEQ_CST
 
-### Adds value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fadd ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_fadd_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Adds value and returns what was there, unbroken and acquire.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fadd ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_fadd_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Adds value and returns what was there, unbroken and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fadd ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_fadd_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Adds value and returns what was there, unbroken and acquire and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fadd ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_fadd_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Subtracts value and returns what was there, unbroken and sequentially consistent.
+### Subtracts value and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to subtract.
 ### :returns: The value that was there before.
 @external("llvm")
-@template("{result} = atomicrmw fsub ptr {me}, {T} {value} seq_cst, align {sizeof T}")
-routine PointedCell[T].fetch_fsub_unbroken(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Subtracts value and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fsub ptr {me}, {T} {value} monotonic, align {sizeof T}")
-routine PointedCell[T].fetch_fsub_unbroken_relaxed(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Subtracts value and returns what was there, unbroken and acquire.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fsub ptr {me}, {T} {value} acquire, align {sizeof T}")
-routine PointedCell[T].fetch_fsub_unbroken_acquire(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Subtracts value and returns what was there, unbroken and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fsub ptr {me}, {T} {value} release, align {sizeof T}")
-routine PointedCell[T].fetch_fsub_unbroken_release(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-
-### Subtracts value and returns what was there, unbroken and acquire and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-@external("llvm")
-@template("{result} = atomicrmw fsub ptr {me}, {T} {value} acq_rel, align {sizeof T}")
-routine PointedCell[T].fetch_fsub_unbroken_acq_rel(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
+@template("{result} = atomicrmw fsub ptr {me}, {T} {value} {by O|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}")
+routine PointedCell[T].fetch_fsub_unbroken[O](value: T) -> T
+needs T: typename, UnbrokenFloatAddable[T], O: MemoryOrder = SEQ_CST
 
 # -- compare and exchange --------------------------------------------------------
 
@@ -639,269 +408,133 @@ needs T: typename, UnbrokenFloatAddable[T]
 # here in previous either way: the shape of LLVM's cmpxchg, for code that wants the flag and the value side by side.
 # The forms without `_raw` give a Maybe: None when they wrote, the value found when not.
 
-### Writes `new` if the value here is `expected`, unbroken and sequentially consistent, and returns whether it did. The value that was here is stored through `previous` either way. It fails only when the value differs. The failure order is sequentially consistent.
+### Writes `new` if the value here is `expected`, unbroken, and returns whether it did. The value that was here is stored
+### through `previous` either way. It fails only when the value differs.
 ### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
 ### :param expected: The value the memory is expected to hold.
 ### :param new: The value to write when it matches.
 ### :param previous: Receives the value that was in memory.
 ### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} seq_cst seq_cst, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_unbroken_raw(expected: T, new: T, previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and sequentially consistent: None if it did,
-### the value found if not. It fails only when the value differs.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_unbroken(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_unbroken_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and relaxed (only unbroken), and returns whether it did. The value that was here is stored through `previous` either way. It fails only when the value differs. The failure order is relaxed.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} monotonic monotonic, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_unbroken_relaxed_raw(expected: T, new: T,
+@inline
+routine PointedCell[T].compare_exchange_unbroken_raw[S, F](expected: T, new: T,
     previous: Me) -> Bool
 needs T: typename, UnbrokenExchangeable[T]
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange_unbroken_raw the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange_unbroken_raw the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange_unbroken_raw the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
+    return me.compare_exchange_unbroken_raw_unchecked[S, F](expected, new, previous)
 
-### Writes new if the value here is expected, unbroken and relaxed (only unbroken): None if it did,
-### the value found if not. It fails only when the value differs.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_unbroken_relaxed(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_unbroken_relaxed_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and acquire, and returns whether it did. The value that was here is stored through `previous` either way. It fails only when the value differs. The failure order is acquire.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
+### compare_exchange_unbroken_raw with orders that aren't checked: LLVM refuses a failure order of RELEASE or ACQ_REL, and
+### compare_exchange_unbroken_raw checks both first.
+### :typeparam S: The memory order when it writes.
+### :typeparam F: The memory order when it doesn't.
 ### :param expected: The value the memory is expected to hold.
 ### :param new: The value to write when it matches.
 ### :param previous: Receives the value that was in memory.
 ### :returns: True when the exchange happened.
 @external("llvm")
-@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} acquire acquire, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_unbroken_acquire_raw(expected: T, new: T,
+@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} {by S|monotonic|acquire|release|acq_rel|seq_cst} {by F|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
+routine PointedCell[T].compare_exchange_unbroken_raw_unchecked[S, F](expected: T, new: T,
+    previous: Me) -> Bool
+needs T: typename, UnbrokenExchangeable[T], S: MemoryOrder, F: MemoryOrder
+
+### Writes new if the value here is expected, unbroken: None if it did, the value found if not. It fails only when the value differs.
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
+### :param expected: The value the memory is expected to hold.
+### :param new: The value to write when it matches.
+### :returns: `None` when `new` was written, the value found when not.
+@inline
+routine PointedCell[T].compare_exchange_unbroken[S, F](expected: T, new: T) -> Maybe[T]
+needs T: typename, UnbrokenExchangeable[T]
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange_unbroken the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange_unbroken the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange_unbroken the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
+    previous: &T <- .hollow()
+
+    swapped: Bool = me.compare_exchange_unbroken_raw_unchecked[S, F](expected, new, previous)
+    value: T = previous.load()
+    if swapped
+        return None()
+    return value
+
+### Writes `new` if the value here is `expected`, unbroken, and returns whether it did. The value that was here is stored
+### through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
+### :param expected: The value the memory is expected to hold.
+### :param new: The value to write when it matches.
+### :param previous: Receives the value that was in memory.
+### :returns: True when the exchange happened.
+@inline
+routine PointedCell[T].compare_exchange_weak_unbroken_raw[S, F](expected: T, new: T,
     previous: Me) -> Bool
 needs T: typename, UnbrokenExchangeable[T]
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange_weak_unbroken_raw the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange_weak_unbroken_raw the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange_weak_unbroken_raw the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
+    return me.compare_exchange_weak_unbroken_raw_unchecked[S, F](expected, new, previous)
 
-### Writes new if the value here is expected, unbroken and acquire: None if it did,
-### the value found if not. It fails only when the value differs.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_unbroken_acquire(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_unbroken_acquire_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and release, and returns whether it did. The value that was here is stored through `previous` either way. It fails only when the value differs. The failure order is relaxed.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
+### compare_exchange_weak_unbroken_raw with orders that aren't checked: LLVM refuses a failure order of RELEASE or ACQ_REL, and
+### compare_exchange_weak_unbroken_raw checks both first.
+### :typeparam S: The memory order when it writes.
+### :typeparam F: The memory order when it doesn't.
 ### :param expected: The value the memory is expected to hold.
 ### :param new: The value to write when it matches.
 ### :param previous: Receives the value that was in memory.
 ### :returns: True when the exchange happened.
 @external("llvm")
-@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} release monotonic, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_unbroken_release_raw(expected: T, new: T,
+@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} {by S|monotonic|acquire|release|acq_rel|seq_cst} {by F|monotonic|acquire|release|acq_rel|seq_cst}, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
+routine PointedCell[T].compare_exchange_weak_unbroken_raw_unchecked[S, F](expected: T, new: T,
     previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
+needs T: typename, UnbrokenExchangeable[T], S: MemoryOrder, F: MemoryOrder
 
-### Writes new if the value here is expected, unbroken and release: None if it did,
-### the value found if not. It fails only when the value differs.
+### Writes new if the value here is expected, unbroken: None if it did, the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
 ### :param expected: The value the memory is expected to hold.
 ### :param new: The value to write when it matches.
 ### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_unbroken_release(expected: T, new: T) -> Maybe[T]
+@inline
+routine PointedCell[T].compare_exchange_weak_unbroken[S, F](expected: T, new: T) -> Maybe[T]
 needs T: typename, UnbrokenExchangeable[T]
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange_weak_unbroken the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange_weak_unbroken the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange_weak_unbroken the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
     previous: &T <- .hollow()
 
-    swapped: Bool = me.compare_exchange_unbroken_release_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and acquire and release, and returns whether it did. The value that was here is stored through `previous` either way. It fails only when the value differs. The failure order is acquire.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg ptr {me}, {T} {expected}, {T} {new} acq_rel acquire, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_unbroken_acq_rel_raw(expected: T, new: T,
-    previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and acquire and release: None if it did,
-### the value found if not. It fails only when the value differs.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_unbroken_acq_rel(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_unbroken_acq_rel_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and sequentially consistent, and returns whether it did. The value that was here is stored through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop. The failure order is sequentially consistent.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} seq_cst seq_cst, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_weak_unbroken_raw(expected: T, new: T, previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and sequentially consistent: None if it did,
-### the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_weak_unbroken(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_weak_unbroken_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and relaxed (only unbroken), and returns whether it did. The value that was here is stored through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop. The failure order is relaxed.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} monotonic monotonic, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_weak_unbroken_relaxed_raw(expected: T, new: T,
-    previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and relaxed (only unbroken): None if it did,
-### the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_weak_unbroken_relaxed(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_weak_unbroken_relaxed_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and acquire, and returns whether it did. The value that was here is stored through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop. The failure order is acquire.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} acquire acquire, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_weak_unbroken_acquire_raw(expected: T, new: T,
-    previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and acquire: None if it did,
-### the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_weak_unbroken_acquire(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_weak_unbroken_acquire_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and release, and returns whether it did. The value that was here is stored through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop. The failure order is relaxed.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} release monotonic, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_weak_unbroken_release_raw(expected: T, new: T,
-    previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and release: None if it did,
-### the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_weak_unbroken_release(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_weak_unbroken_release_raw(expected, new, previous)
-    value: T = previous.load()
-    if swapped
-        return None()
-    return value
-
-### Writes `new` if the value here is `expected`, unbroken and acquire and release, and returns whether it did. The value that was here is stored through `previous` either way. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop. The failure order is acquire.
-### :typeparam T: The pointee type, which must support the operation as one unbroken step on the target.
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :param previous: Receives the value that was in memory.
-### :returns: True when the exchange happened.
-@external("llvm")
-@template("{t0} = cmpxchg weak ptr {me}, {T} {expected}, {T} {new} acq_rel acquire, align {sizeof T}\n{t1} = extractvalue {{ {T}, i1 }} {t0}, 0\nstore {T} {t1}, ptr {previous}\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1")
-routine PointedCell[T].compare_exchange_weak_unbroken_acq_rel_raw(expected: T, new: T,
-    previous: Me) -> Bool
-needs T: typename, UnbrokenExchangeable[T]
-
-### Writes new if the value here is expected, unbroken and acquire and release: None if it did,
-### the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop, where it is cheaper on LL/SC machines (ARM, AArch64, RISC-V).
-### :param expected: The value the memory is expected to hold.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine PointedCell[T].compare_exchange_weak_unbroken_acq_rel(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    previous: &T <- .hollow()
-
-    swapped: Bool = me.compare_exchange_weak_unbroken_acq_rel_raw(expected, new, previous)
+    swapped: Bool = me.compare_exchange_weak_unbroken_raw_unchecked[S, F](expected, new, previous)
     value: T = previous.load()
     if swapped
         return None()
@@ -913,7 +546,7 @@ needs T: typename, UnbrokenExchangeable[T]
 ### an address aligned to T's size, so a 64-bit one is 8-aligned on 32-bit targets too. Threads share the place
 ### (`@Unbroken[T]`), not copies, which would be other values. The operations and their memory orders are `@T`'s
 ### `*_unbroken` ones without the `_unbroken`: `peek`, `poke`, `swap`, `compare_exchange`, `fetch_add`, ..., each with
-### the same order suffixes.
+### the same MemoryOrder type arguments (`hits.fetch_add[RELAXED](1)`).
 ### :typeparam T: The value type, which the target must change as one unbroken step.
 @layout(align: sizeof[T]())
 record Unbroken[T]
@@ -932,457 +565,184 @@ routine @Unbroken[T].destruct() -> None
 needs T: typename, UnbrokenStorable[T]
     return
 
-### Reads the value unbroken, sequentially consistent.
+### Reads the value unbroken.
+### :typeparam O: The memory order: RELAXED, ACQUIRE or SEQ_CST (a read can't release), SEQ_CST when none is given.
 ### :returns: The value.
-routine @Unbroken[T].peek() -> T
+@inline
+routine @Unbroken[T].peek[O]() -> T
 needs T: typename, UnbrokenStorable[T]
-    return me.value.peek_unbroken()
+needs O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.RELEASE or O == MemoryOrder.ACQ_REL
+        build_error("you gave peek the order {O}, and a read can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    return me.value.peek_unbroken[O]()
 
-### Reads the value unbroken, relaxed (only unbroken).
-### :returns: The value.
-routine @Unbroken[T].peek_relaxed() -> T
-needs T: typename, UnbrokenStorable[T]
-    return me.value.peek_unbroken_relaxed()
-
-### Reads the value unbroken, acquire.
-### :returns: The value.
-routine @Unbroken[T].peek_acquire() -> T
-needs T: typename, UnbrokenStorable[T]
-    return me.value.peek_unbroken_acquire()
-
-### Writes `value` unbroken, sequentially consistent.
+### Writes `value` unbroken.
+### :typeparam O: The memory order: RELAXED, RELEASE or SEQ_CST (a write can't acquire), SEQ_CST when none is given.
 ### :param value: The value to write.
-routine @Unbroken[T].poke(value: T) -> None
+@inline
+routine @Unbroken[T].poke[O](value: T) -> None
 needs T: typename, UnbrokenStorable[T]
-    me.value.poke_unbroken(value)
+needs O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.ACQUIRE or O == MemoryOrder.ACQ_REL
+        build_error("you gave poke the order {O}, and a write can't acquire: give it RELAXED, RELEASE or SEQ_CST")
+    me.value.poke_unbroken[O](value)
     return
 
-### Writes `value` unbroken, relaxed (only unbroken).
-### :param value: The value to write.
-routine @Unbroken[T].poke_relaxed(value: T) -> None
-needs T: typename, UnbrokenStorable[T]
-    me.value.poke_unbroken_relaxed(value)
-    return
-
-### Writes `value` unbroken, release.
-### :param value: The value to write.
-routine @Unbroken[T].poke_release(value: T) -> None
-needs T: typename, UnbrokenStorable[T]
-    me.value.poke_unbroken_release(value)
-    return
-
-### Writes `value` and returns what was there, unbroken and sequentially consistent.
+### Writes `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to write.
 ### :returns: The value that was there before.
-routine @Unbroken[T].swap(value: T) -> T
+@inline
+routine @Unbroken[T].swap[O](value: T) -> T
 needs T: typename, UnbrokenExchangeable[T]
-    return me.value.swap_unbroken(value)
+needs O: MemoryOrder = SEQ_CST
+    return me.value.swap_unbroken[O](value)
 
-### Writes `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to write.
-### :returns: The value that was there before.
-routine @Unbroken[T].swap_relaxed(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.swap_unbroken_relaxed(value)
-
-### Writes `value` and returns what was there, unbroken and acquire.
-### :param value: The value to write.
-### :returns: The value that was there before.
-routine @Unbroken[T].swap_acquire(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.swap_unbroken_acquire(value)
-
-### Writes `value` and returns what was there, unbroken and release.
-### :param value: The value to write.
-### :returns: The value that was there before.
-routine @Unbroken[T].swap_release(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.swap_unbroken_release(value)
-
-### Writes `value` and returns what was there, unbroken and acquire and release.
-### :param value: The value to write.
-### :returns: The value that was there before.
-routine @Unbroken[T].swap_acq_rel(value: T) -> T
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.swap_unbroken_acq_rel(value)
-
-### Writes `new` if the value is `expected`, unbroken and sequentially consistent: `None` if it did, the value found if
-### not. It fails only when the value differs.
+### Writes `new` if the value is `expected`, unbroken: `None` if it did, the value found if not. It fails only when the value differs.
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
 ### :param expected: The value expected.
 ### :param new: The value to write when it matches.
 ### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange(expected: T, new: T) -> Maybe[T]
+@inline
+routine @Unbroken[T].compare_exchange[S, F](expected: T, new: T) -> Maybe[T]
 needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_unbroken(expected, new)
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
+    return me.value.compare_exchange_unbroken[S, F](expected, new)
 
-### Writes `new` if the value is `expected`, unbroken and relaxed (only unbroken): `None` if it did, the value found if
-### not. It fails only when the value differs.
+### Writes `new` if the value is `expected`, unbroken: `None` if it did, the value found if not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+### :typeparam S: The memory order when it writes, SEQ_CST when none is given.
+### :typeparam F: The memory order when it doesn't write (it only reads then): RELAXED, ACQUIRE or SEQ_CST, and no
+### stronger than S. When none is given it comes from S: ACQUIRE for ACQ_REL, RELAXED for RELEASE, S itself otherwise.
 ### :param expected: The value expected.
 ### :param new: The value to write when it matches.
 ### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_relaxed(expected: T, new: T) -> Maybe[T]
+@inline
+routine @Unbroken[T].compare_exchange_weak[S, F](expected: T, new: T) -> Maybe[T]
 needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_unbroken_relaxed(expected, new)
+needs S: MemoryOrder = SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S
+    if F == MemoryOrder.RELEASE or F == MemoryOrder.ACQ_REL
+        build_error("you gave compare_exchange_weak the failure order {F}, and an exchange that doesn't write only reads, so its order can't release: give it RELAXED, ACQUIRE or SEQ_CST")
+    if S == MemoryOrder.RELAXED or S == MemoryOrder.RELEASE
+        if F != MemoryOrder.RELAXED
+            build_error("you gave compare_exchange_weak the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED")
+    if S == MemoryOrder.ACQUIRE or S == MemoryOrder.ACQ_REL
+        if F == MemoryOrder.SEQ_CST
+            build_error("you gave compare_exchange_weak the failure order {F} with the success order {S}, and the failure order can't be stronger than the success order: with {S}, give it RELAXED or ACQUIRE")
+    return me.value.compare_exchange_weak_unbroken[S, F](expected, new)
 
-### Writes `new` if the value is `expected`, unbroken and acquire: `None` if it did, the value found if
-### not. It fails only when the value differs.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_acquire(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_unbroken_acquire(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and release: `None` if it did, the value found if
-### not. It fails only when the value differs.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_release(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_unbroken_release(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and acquire and release: `None` if it did, the value found if
-### not. It fails only when the value differs.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_acq_rel(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_unbroken_acq_rel(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and sequentially consistent: `None` if it did, the value found if
-### not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_weak(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_weak_unbroken(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and relaxed (only unbroken): `None` if it did, the value found if
-### not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_weak_relaxed(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_weak_unbroken_relaxed(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and acquire: `None` if it did, the value found if
-### not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_weak_acquire(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_weak_unbroken_acquire(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and release: `None` if it did, the value found if
-### not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_weak_release(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_weak_unbroken_release(expected, new)
-
-### Writes `new` if the value is `expected`, unbroken and acquire and release: `None` if it did, the value found if
-### not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
-### :param expected: The value expected.
-### :param new: The value to write when it matches.
-### :returns: `None` when `new` was written, the value found when not.
-routine @Unbroken[T].compare_exchange_weak_acq_rel(expected: T, new: T) -> Maybe[T]
-needs T: typename, UnbrokenExchangeable[T]
-    return me.value.compare_exchange_weak_unbroken_acq_rel(expected, new)
-
-### Adds `value` (wrapping) and returns what was there, unbroken and sequentially consistent.
+### Adds `value` (wrapping) and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to add.
 ### :returns: The value that was there before.
-routine @Unbroken[T].fetch_add(value: T) -> T
+@inline
+routine @Unbroken[T].fetch_add[O](value: T) -> T
 needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_add_unbroken(value)
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_add_unbroken[O](value)
 
-### Adds `value` (wrapping) and returns what was there, unbroken and relaxed (only unbroken).
+### Subtracts `value` (wrapping) and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
+### :param value: The value to subtract.
+### :returns: The value that was there before.
+@inline
+routine @Unbroken[T].fetch_sub[O](value: T) -> T
+needs T: typename, UnbrokenAddable[T]
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_sub_unbroken[O](value)
+
+### Ands in `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
+### :param value: The mask.
+### :returns: The value that was there before.
+@inline
+routine @Unbroken[T].fetch_and[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T]
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_and_unbroken[O](value)
+
+### Ors in `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
+### :param value: The mask.
+### :returns: The value that was there before.
+@inline
+routine @Unbroken[T].fetch_or[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T]
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_or_unbroken[O](value)
+
+### Xors in `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
+### :param value: The mask.
+### :returns: The value that was there before.
+@inline
+routine @Unbroken[T].fetch_xor[O](value: T) -> T
+needs T: typename, UnbrokenMaskable[T]
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_xor_unbroken[O](value)
+
+### Adds `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to add.
 ### :returns: The value that was there before.
-routine @Unbroken[T].fetch_add_relaxed(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_add_unbroken_relaxed(value)
+@inline
+routine @Unbroken[T].fetch_fadd[O](value: T) -> T
+needs T: typename, UnbrokenFloatAddable[T]
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_fadd_unbroken[O](value)
 
-### Adds `value` (wrapping) and returns what was there, unbroken and acquire.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_add_acquire(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_add_unbroken_acquire(value)
-
-### Adds `value` (wrapping) and returns what was there, unbroken and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_add_release(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_add_unbroken_release(value)
-
-### Adds `value` (wrapping) and returns what was there, unbroken and acquire and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_add_acq_rel(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_add_unbroken_acq_rel(value)
-
-### Subtracts `value` (wrapping) and returns what was there, unbroken and sequentially consistent.
+### Subtracts `value` and returns what was there, unbroken.
+### :typeparam O: The memory order (any of the five), SEQ_CST when none is given.
 ### :param value: The value to subtract.
 ### :returns: The value that was there before.
-routine @Unbroken[T].fetch_sub(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_sub_unbroken(value)
-
-### Subtracts `value` (wrapping) and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_sub_relaxed(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_sub_unbroken_relaxed(value)
-
-### Subtracts `value` (wrapping) and returns what was there, unbroken and acquire.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_sub_acquire(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_sub_unbroken_acquire(value)
-
-### Subtracts `value` (wrapping) and returns what was there, unbroken and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_sub_release(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_sub_unbroken_release(value)
-
-### Subtracts `value` (wrapping) and returns what was there, unbroken and acquire and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_sub_acq_rel(value: T) -> T
-needs T: typename, UnbrokenAddable[T]
-    return me.value.fetch_sub_unbroken_acq_rel(value)
-
-### Ands in `value` and returns what was there, unbroken and sequentially consistent.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_and(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_and_unbroken(value)
-
-### Ands in `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_and_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_and_unbroken_relaxed(value)
-
-### Ands in `value` and returns what was there, unbroken and acquire.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_and_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_and_unbroken_acquire(value)
-
-### Ands in `value` and returns what was there, unbroken and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_and_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_and_unbroken_release(value)
-
-### Ands in `value` and returns what was there, unbroken and acquire and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_and_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_and_unbroken_acq_rel(value)
-
-### Ors in `value` and returns what was there, unbroken and sequentially consistent.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_or(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_or_unbroken(value)
-
-### Ors in `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_or_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_or_unbroken_relaxed(value)
-
-### Ors in `value` and returns what was there, unbroken and acquire.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_or_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_or_unbroken_acquire(value)
-
-### Ors in `value` and returns what was there, unbroken and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_or_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_or_unbroken_release(value)
-
-### Ors in `value` and returns what was there, unbroken and acquire and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_or_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_or_unbroken_acq_rel(value)
-
-### Xors in `value` and returns what was there, unbroken and sequentially consistent.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_xor(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_xor_unbroken(value)
-
-### Xors in `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_xor_relaxed(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_xor_unbroken_relaxed(value)
-
-### Xors in `value` and returns what was there, unbroken and acquire.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_xor_acquire(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_xor_unbroken_acquire(value)
-
-### Xors in `value` and returns what was there, unbroken and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_xor_release(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_xor_unbroken_release(value)
-
-### Xors in `value` and returns what was there, unbroken and acquire and release.
-### :param value: The mask.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_xor_acq_rel(value: T) -> T
-needs T: typename, UnbrokenMaskable[T]
-    return me.value.fetch_xor_unbroken_acq_rel(value)
-
-### Adds `value` and returns what was there, unbroken and sequentially consistent.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fadd(value: T) -> T
+@inline
+routine @Unbroken[T].fetch_fsub[O](value: T) -> T
 needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fadd_unbroken(value)
-
-### Adds `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fadd_relaxed(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fadd_unbroken_relaxed(value)
-
-### Adds `value` and returns what was there, unbroken and acquire.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fadd_acquire(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fadd_unbroken_acquire(value)
-
-### Adds `value` and returns what was there, unbroken and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fadd_release(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fadd_unbroken_release(value)
-
-### Adds `value` and returns what was there, unbroken and acquire and release.
-### :param value: The value to add.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fadd_acq_rel(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fadd_unbroken_acq_rel(value)
-
-### Subtracts `value` and returns what was there, unbroken and sequentially consistent.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fsub(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fsub_unbroken(value)
-
-### Subtracts `value` and returns what was there, unbroken and relaxed (only unbroken).
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fsub_relaxed(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fsub_unbroken_relaxed(value)
-
-### Subtracts `value` and returns what was there, unbroken and acquire.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fsub_acquire(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fsub_unbroken_acquire(value)
-
-### Subtracts `value` and returns what was there, unbroken and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fsub_release(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fsub_unbroken_release(value)
-
-### Subtracts `value` and returns what was there, unbroken and acquire and release.
-### :param value: The value to subtract.
-### :returns: The value that was there before.
-routine @Unbroken[T].fetch_fsub_acq_rel(value: T) -> T
-needs T: typename, UnbrokenFloatAddable[T]
-    return me.value.fetch_fsub_unbroken_acq_rel(value)
+needs O: MemoryOrder = SEQ_CST
+    return me.value.fetch_fsub_unbroken[O](value)
 
 # -- fences ----------------------------------------------------------------------
 
-### Orders memory accesses around it across threads and cores, sequentially consistent.
-@external("llvm")
-@template("fence seq_cst")
-routine fence() -> None
+### Orders memory accesses around it across threads and cores.
+### :typeparam O: The memory order: ACQUIRE, RELEASE, ACQ_REL or SEQ_CST (a RELAXED fence orders nothing), SEQ_CST when none is given.
+@inline
+routine fence[O]() -> None
+needs O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.RELAXED
+        build_error("you gave fence the order RELAXED, which orders nothing: give it ACQUIRE, RELEASE, ACQ_REL or SEQ_CST")
+    fence_unchecked[O]()
+    return
 
-### Orders memory accesses around it across threads and cores, acquire.
+### fence with an order that isn't checked: LLVM refuses RELAXED, and fence checks it first.
+### :typeparam O: The memory order.
 @external("llvm")
-@template("fence acquire")
-routine fence_acquire() -> None
+@template("fence {by O|monotonic|acquire|release|acq_rel|seq_cst}")
+routine fence_unchecked[O]() -> None
+needs O: MemoryOrder
 
-### Orders memory accesses around it across threads and cores, release.
-@external("llvm")
-@template("fence release")
-routine fence_release() -> None
+### Orders memory accesses around it for the compiler only: against an interrupt handler on the same core, with no
+### barrier instruction.
+### :typeparam O: The memory order: ACQUIRE, RELEASE, ACQ_REL or SEQ_CST (a RELAXED fence orders nothing), SEQ_CST when none is given.
+@inline
+routine compiler_fence[O]() -> None
+needs O: MemoryOrder = SEQ_CST
+    if O == MemoryOrder.RELAXED
+        build_error("you gave compiler_fence the order RELAXED, which orders nothing: give it ACQUIRE, RELEASE, ACQ_REL or SEQ_CST")
+    compiler_fence_unchecked[O]()
+    return
 
-### Orders memory accesses around it across threads and cores, acquire and release.
+### compiler_fence with an order that isn't checked: LLVM refuses RELAXED, and compiler_fence checks it first.
+### :typeparam O: The memory order.
 @external("llvm")
-@template("fence acq_rel")
-routine fence_acq_rel() -> None
-
-### Orders memory accesses around it for the compiler only, sequentially consistent: against an interrupt handler on the same
-### core, with no barrier instruction.
-@external("llvm")
-@template("fence syncscope(\"singlethread\") seq_cst")
-routine compiler_fence() -> None
-
-### Orders memory accesses around it for the compiler only, acquire: against an interrupt handler on the same
-### core, with no barrier instruction.
-@external("llvm")
-@template("fence syncscope(\"singlethread\") acquire")
-routine compiler_fence_acquire() -> None
-
-### Orders memory accesses around it for the compiler only, release: against an interrupt handler on the same
-### core, with no barrier instruction.
-@external("llvm")
-@template("fence syncscope(\"singlethread\") release")
-routine compiler_fence_release() -> None
-
-### Orders memory accesses around it for the compiler only, acquire and release: against an interrupt handler on the same
-### core, with no barrier instruction.
-@external("llvm")
-@template("fence syncscope(\"singlethread\") acq_rel")
-routine compiler_fence_acq_rel() -> None
+@template("fence syncscope(\"singlethread\") {by O|monotonic|acquire|release|acq_rel|seq_cst}")
+routine compiler_fence_unchecked[O]() -> None
+needs O: MemoryOrder

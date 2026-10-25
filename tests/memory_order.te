@@ -1,0 +1,56 @@
+# The memory order is a type argument of each unbroken routine, a member of MemoryOrder, bare or with the choice, and
+# SEQ_CST when none is given. compare_exchange's failure order, when it isn't written, comes from the success order
+# (ACQUIRE for ACQ_REL, RELAXED for RELEASE, the same order otherwise). One thread, so the values are fixed: what is
+# checked is that every order each operation takes builds, and ChoiceTypeArgTests reads the instruction each gives.
+
+import Hosted
+
+record Shared
+    hits: Unbroken[U64]
+
+routine start() -> None
+    n: &U64 <- 0
+    at: @U64 = n.getview()
+    at.poke_unbroken[RELAXED](1)
+    at.poke_unbroken[RELEASE](2)
+    at.poke_unbroken[MemoryOrder.SEQ_CST](3)
+    at.poke_unbroken(4)
+    loads: U64 = at.peek_unbroken[RELAXED]() + at.peek_unbroken[ACQUIRE]() + at.peek_unbroken[SEQ_CST]() + at.peek_unbroken()
+    Console.show("loads {loads}")
+    a: U64 = at.fetch_add_unbroken[RELAXED](1)
+    b: U64 = at.fetch_add_unbroken[ACQUIRE](1)
+    c: U64 = at.fetch_add_unbroken[RELEASE](1)
+    d: U64 = at.fetch_add_unbroken[ACQ_REL](1)
+    e: U64 = at.fetch_add_unbroken[SEQ_CST](1)
+    f: U64 = at.swap_unbroken[ACQ_REL](20)
+    Console.show("rmw {a} {b} {c} {d} {e} {f} {at.peek_unbroken()}")
+    found: &U64 <- 0
+    relaxed: Bool = at.compare_exchange_unbroken_raw[RELAXED](expected: 20, new: 21,
+        previous: found)
+    acquire: Bool = at.compare_exchange_unbroken_raw[ACQUIRE](expected: 21, new: 22,
+        previous: found)
+    release: Bool = at.compare_exchange_unbroken_raw[RELEASE](expected: 22, new: 23,
+        previous: found)
+    acq_rel: Bool = at.compare_exchange_unbroken_raw[ACQ_REL](expected: 23, new: 24,
+        previous: found)
+    seq_cst: Bool = at.compare_exchange_unbroken_raw(expected: 24, new: 25, previous: found)
+    written: Bool = at.compare_exchange_unbroken_raw[SEQ_CST, RELAXED](expected: 25, new: 26,
+        previous: found)
+    missed: Bool = at.compare_exchange_weak_unbroken_raw[ACQ_REL, ACQUIRE](expected: 0, new: 1,
+        previous: found)
+    Console.show("cas {relaxed} {acquire} {release} {acq_rel} {seq_cst} {written} {missed} {found.load()}")
+    lost: Maybe[U64] = at.compare_exchange_unbroken[ACQUIRE, RELAXED](expected: 0, new: 1)
+    Console.show("maybe {lost}")
+
+    s: &Shared <- Shared(hits: Unbroken[U64](value: 0))
+    s.hits.fetch_add[RELAXED](5)
+    s.hits.poke[RELEASE](s.hits.peek[ACQUIRE]() + 1)
+    won: Maybe[U64] = s.hits.compare_exchange[ACQ_REL](expected: 6, new: 7)
+    Console.show("unbroken {s.hits.peek()} {s.hits.swap[RELAXED](0)} {won.is_absent()}")
+
+    fence()
+    fence[ACQUIRE]()
+    fence[RELEASE]()
+    fence[ACQ_REL]()
+    compiler_fence[SEQ_CST]()
+    return
