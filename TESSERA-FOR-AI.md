@@ -20,15 +20,24 @@ dotnet run -- build --board raspi4b f.te -o f.elf   # a program without an OS, l
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
-A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Standard/Os)
+A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Standard/Hosted)
 before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
 top to bottom with declarations seen everywhere, and the end of the file is its `return` (the builder gives the
 STACK places back there, and every other place must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
 `Maybe`, `Check`, `None`, `@[T]`, `BorrowedSlice`, `BorrowedCell`, the protocols, formatting, the memory managers, `HEAP`), and what
-it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os`
-(the hosted layer, the only one that calls libc; a target with OS `none` has none of it). Importing a module brings
+it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Hosted`
+(the hosted side, the only one that calls libc). The standard library has two sides, and the build target keeps one:
+`Standard/Hosted` on a target with an operating system, `Standard/Unhosted` on one whose OS is `none` (the startup
+steps, the interrupt controller, the timer, the serial port, the round robin threads). The other side's declarations
+drop out of the build. A module that does the same job on both sides has the same file name and the same names on
+each (`Thread.te`, `Wait.te` and `CpuEvents.te` are on both now: `wait_on`, `wake_one`, `wake_all`, `CpuEventManager`).
+A file for one kind of target imports its side, and importing only the other one is a build error that names the
+side for the target ("Standard/Hosted needs an operating system, and target ... has none; its names for this target
+are in Standard/Unhosted"). A file for both kinds imports both sides (`import Standard/Hosted` and `import
+Standard/Unhosted`): the target keeps one, so each name means the target's. `Standard/Os` and `Standard/System/Cpu`
+are gone, and importing either is a build error naming the side to import. Importing a module brings
 that module, not the modules under it. A standard library module is its folder (`Standard/System/Memory/` is
 `Standard/System/Memory`), and a `module` line that names another module is a build error. A `secret` name is seen in
 its module and the modules under it. A routine declared in its type's module comes with the type; one another module
@@ -50,14 +59,14 @@ The standard library's modules:
   (`Parsable`), UTF-8, and the byte-text views.
 - `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
   `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Unbroken`.
-- `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`, which the program's `when_power_on` calls), the
-  `CpuEventManager`, and the fault report. On AArch64 without an OS also `InterruptManagerByGic`, the virtual timer
-  (`cpu_timer_*`), the core's interrupt mask, and `psci_power_off`, and on any target without an OS the `Pl011` serial
-  port (below).
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
-- Imported: `Standard/Collections`, `Standard/Os` (console, files, storage, the environment, processes, threads, clocks), `Standard/Fiber`,
-  `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
+- Imported: `Standard/Collections`, `Standard/Hosted` (console, files, storage, the environment, processes, threads,
+  clocks, the `CpuEventManager` over the system's signals, and the fault report), `Standard/Unhosted` (the startup
+  steps without an OS, `prepare_core`, which the program's `when_power_on` calls, the `CpuEventManager` over the
+  vector table, the `Pl011` serial port, and on AArch64 `InterruptManagerByGic`, the virtual timer (`cpu_timer_*`),
+  the core's interrupt mask, `psci_power_off`, `ThreadManagerByRoundRobin` and the word wait over it, below),
+  `Standard/Fiber`, `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
 - `Ingrid/Decimal` (imported, not under `Standard`): the decimal numbers `D32`, `D64`, `D128`, and `Decimal` (below).
   They come from Ingrid, the numeric library RazorForge and Suflae use too (one implementation), which every build
   reads like the standard library: `$TESSERA_INGRID`, else an `Ingrid` folder next to `Standard` (an installed
@@ -75,7 +84,7 @@ target. `tests/SplitModuleTests.cs` shows the pair.
 
 ```tessera
 import Standard/Collections
-import Standard/Os
+import Standard/Hosted
 
 routine start() -> None
     list: &List[S64] <- .construct(HEAP)
@@ -537,7 +546,9 @@ routine start() -> None
   parameter there ("keeps the address of the thread-local 'X' in the global 'G'"), are build errors. A local, a
   routine's result and another `@threadlocal` global may hold it. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
-  global, and a target without an OS has no thread-locals. `@threadlocal` takes no arguments yet. A thread ticket's
+  global, and a target without an OS has no thread-locals: `@threadlocal` there is a build error, the round robin threads
+  of `Standard/Unhosted` included (each thread's own state is a field of its record or a slot the program keeps per
+  thread). `@threadlocal` takes no arguments yet. A thread ticket's
   thread resets every thread-local to its starting value before each piece of work.
 - Every routine uses the C calling convention unless `@callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
@@ -1104,8 +1115,7 @@ routine start() -> None
 - **Standard library guideline:** a crashable holds a few values only (a code, a count, a view of text the caller
   keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
-- **Events: `CpuEventManager`** (Standard/System/Cpu: `CpuEvents_hosted.te` with an OS, `CpuEvents_freestanding.te`
-  without one) holds
+- **Events: `CpuEventManager`** (`CpuEvents.te` of Standard/Hosted with an OS, of Standard/Unhosted without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`.hollow()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
@@ -1405,7 +1415,7 @@ the builder gives it back at the end of the body (from STACK). Tessera presets f
 Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
-- The console is `Console` (`Standard/Os`): `Console.show("x = {x}")` writes one line to standard output,
+- The console is `Console` (`Standard/Hosted`): `Console.show("x = {x}")` writes one line to standard output,
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). With a value in place
   of the template, `Console.show(x)` / `Console.alert(x)` is `Console.show("{x}")`: x's `represent_into` writes it
@@ -1531,7 +1541,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Routines every program has.**
 
 - `routine start() -> None` is the entry point of an executable. With an operating system the builder writes the
-  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard/Os)
+  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard/Hosted)
   stored, 0 when nothing did. It is one unbroken value: the last store wins, any thread may set it, and a thread
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
@@ -1543,7 +1553,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   error.
 - Every routine with a body is its statements, top to bottom. A routine without a body must be `@external`.
 
-**Pieces of work: `Work[T]`** (`Standard/Os/Work.te`). A piece of work is a routine and its arguments, made with
+**Pieces of work: `Work[T]`** (`Standard/Hosted/Work.te`). A piece of work is a routine and its arguments, made with
 `f.to[Work](param: value, ...)` (`x.f.to[Work](...)` for a member routine): the arguments are named by the routine's
 parameters, every parameter once, at most four (build errors: "to[Work] takes the arguments by the names of the
 parameters of 'f': f.to[Work](n: ...)", "'f' has no parameter named 'm': its parameters are n", "to[Work] gives every
@@ -1621,12 +1631,12 @@ several tickets at once.
 - **Cancellable waits**: a ticket's `retrieve()` and a channel's `transmit` / `receive` throw `CancelRequested` as soon
   as the WAITING work itself is cancelled (its ticket's `cancel()`). Then clean up and return. Outside a piece of work
   nothing cancels them.
-- **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[PassableFiber[T]]` (Standard/Fiber)
+- **Lists of tickets**: `List[Thread[T]]` (Standard/Hosted), `List[Fiber[T]]` and `List[PassableFiber[T]]` (Standard/Fiber)
   have `retrieve_all()` / `retrieve_all(manager)` (waits for each, results in list order, stops on a failure as a bare
   `retrieve` does), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
-- **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
+- **Threads** (`Standard/Hosted/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
   `get_thread[T]()` borrows one from `DEFAULT_THREADS` (the hosted manager, OS threads,
   blocks from `HEAP`, stacks the OS's), and `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
   its state, the idle threads, and a memory manager: `ThreadManager.construct(manager)` is OS threads with another memory manager,
@@ -1681,7 +1691,7 @@ another process, a futex word). What T allows depends on the target (capability 
 error). `Bool` has none: use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
-stdlib wait does what fits the code running it. The `AccessManager` (Standard/Os/AccessManager.te) hands out access to
+stdlib wait does what fits the code running it. The `AccessManager` (Standard/Hosted/AccessManager.te) hands out access to
 memory: `held: Authorized[T] <- p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
 ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `BorrowedCell[T]`
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
@@ -1727,9 +1737,9 @@ two readings to measure, add a timeout for a deadline (`Clock.monotonic() +^ tim
 `Clock.now()` is the date and time (a `Moment`), `CpuClock.now()` the process's processor time (a `Duration`).
 Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. A negative timeout waits not at all. A waiter the
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
-own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
+own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Hosted.
 
-**Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
+**Channels** (Standard/Hosted/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `ch: &Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
 the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> Bool` (never waits), the failable
 `receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
@@ -1748,7 +1758,7 @@ routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops
 touching the same memory, one writing, neither an unbroken access nor an exclusive access between them) with exit status 82 and a
 report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
 allocation the check's runtime can't make returns null, so the program's own `OutOfMemoryError` reports it. Fibers tell the check which stack runs
-(`Standard/Os/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
+(`Standard/Hosted/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
 too. `tessera test` builds every test without a config.toml with the check on those targets. A golden test of a race
 (`tests/race_check/` with `race_check.exit` holding `82`, and `[debug] race-check = true`) expects the stop, and passes
 on a target without the check. A test that can't run under the check turns it off in its config.toml
@@ -1830,7 +1840,7 @@ of the mounted file systems, empty on Windows, which names them only to an admin
 Windows the drive letters), and `OsFileManager.partition(at, manager)`. Making a partition or a file system isn't
 there yet.
 
-**The environment.** `OsEnvironment` (Standard/Os) reads what the OS gave the process and changes none of it:
+**The environment.** `OsEnvironment` (Standard/Hosted) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
 `Maybe[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
@@ -1854,9 +1864,10 @@ ends this process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
-`x86_64-none-elf`) gets everything but `Standard/Os` and the hosted files of `Standard/System`: `Standard/System` (formatting into a
-`SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
-build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `CoroutineManager` (`Standard/Fiber`'s
+`x86_64-none-elf`) gets everything but `Standard/Hosted` and the hosted files of `Standard/System`, and `Standard/Unhosted` in
+their place: `Standard/System` (formatting into a
+`SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Hosted` drops out of the build, so importing only it or naming anything in it is one
+build error ("Standard/Hosted needs an operating system ..."); there's no `Out`, files, the hosted `Thread` / `Work` / `Channel` / `Waiter`, `@threadlocal`, fiber `CoroutineManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `HEAP` or `PAGES` (naming `HEAP` is a build error saying the target has none). The program passes the table of a manager of its own if it
 allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
@@ -1907,7 +1918,7 @@ routine when_power_on() -> None
     return
 ```
 
-`prepare_core()` from Standard/System/Cpu runs `GlobalManager.prepare()` (`zero_bss()`, .bss zeroed, `__bss_start`
+`prepare_core()` from Standard/Unhosted (`import Standard/Unhosted`) runs `GlobalManager.prepare()` (`zero_bss()`, .bss zeroed, `__bss_start`
 to `__bss_end`, and `copy_data()`, `__data_load` to `__data_start` .. `__data_end`, skipped when both are the same
 place), `enable_fpu()` when the build may use an FPU, and `CpuEventManager.install()` on AArch64 and RISC-V. Then the
 reporting routine goes in the Crash service's slot, first after `prepare_core()` (the slot is a global): a crash
@@ -1916,7 +1927,7 @@ serial port). Touching a global before `prepare_core()` (or `GlobalManager.prepa
 error, and so is a `when_power_on` that never calls one of them. Work that touches no global (a watchdog) may come
 first. Then `start()` runs, then a loop that halts (`hlt` / `wfi`). On RISC-V the link script defines no
 `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M reset vector, so the board
-names a Cortex-M CPU. The steps are `Standard/System/Cpu/Boot.te`, the link script `src/Board.cs`. A program without
+names a Cortex-M CPU. The steps are `Standard/Unhosted/Boot.te`, the link script `src/Board.cs`. A program without
 `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `@export("tessera_hash_key")` above `routine
 board_key(key: @SipKey) -> None` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
@@ -1938,7 +1949,7 @@ instructions, before `when_power_on`, so an optimized build may use them anywher
 makes and keeps in globals:
 
 ```tessera
-import Standard/Fiber
+import Standard/Unhosted
 
 global GIC: &InterruptManagerByGic <- .hollow()
 global THREADS: &ThreadManagerByRoundRobin <- .hollow()
@@ -1956,7 +1967,7 @@ routine start() -> None
     return
 ```
 
-- `Pl011` (Standard/System/Cpu, `os: "none"`): a Writer over a PL011 serial port, `port: &Pl011 <-
+- `Pl011` (Standard/Unhosted): a Writer over a PL011 serial port, `port: &Pl011 <-
   .construct(base: inttoptr[U64, Addr](0x09000000))`, then `port.write("n = {n}\n")`. It waits for room in the
   transmit queue and sets nothing up.
 - `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
@@ -1966,12 +1977,12 @@ routine start() -> None
   masked and never nest: a level line still raised after its handler comes again. An interrupt on a line nobody holds
   crashes with `HardwareFault`. `mask_interrupts()` (gives the DAIF before), `restore_interrupts(was)`,
   `unmask_interrupts()`, `wait_for_next_interrupt()` (`wfi`).
-- The virtual timer (`CpuTimer_aarch64.te`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
+- The virtual timer (`Standard/Unhosted/CpuTimer.te`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
   `cpu_timer_raise_at(count)`, `cpu_timer_stop()`, `cpu_timer_ticks(span)`, and its line `CPU_TIMER_LINE` (27).
-- `ThreadManagerByRoundRobin` (Standard/Fiber): preemptive threads on one core. The region is cut into slots of
+- `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.te`): preemptive threads on one core. The region is cut into slots of
   `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
   `StackManager`). `launch(entry: Callable[(Addr,), None], arg)` takes a free slot (the slot comes back when `entry`
-  returns), `launch_round_robin(entry, arg, state)` is the same with `Standard/Os`'s `ThreadManager.launch_fn` shape.
+  returns), `launch_round_robin(entry, arg, state)` is the same with the manager's address as `state`.
   `run()` turns the timer's line and the timer on, joins the threads on the caller's stack, and returns once every
   thread launched has returned. Inside a thread: `yield_now()`, `sleep(span)`, `wait_on(at: @U32, expected)` (returns
   at once when the word holds another value, may return without a wake: check in a loop), `wake_one(at)` (the
@@ -1982,11 +1993,15 @@ routine start() -> None
   another thread is ready, else for the first sleeper's time, else off. With nothing ready the idle thread waits with
   `wfi`. The switch (`switch_fiber`) runs with interrupts masked, on the stopping thread's stack (inside the IRQ handler
   for a preemption, which saved the caller-saved and FP registers and ELR / SPSR there), and carries the failure mold
-  and the crash trace depth. A stack that ran into its check word crashes with `StackOverflowError` when its thread
-  next stops. One core, one running manager (`run`), no priorities. `Standard/Os`'s `Thread`, `Work`, `Channel`,
-  `Waiter`, and `AccessManager` aren't there without an OS, so they don't run on it yet: a program builds its waits on
-  `wait_on` / `wake_one` (tests/rr_wait_wake: a mailbox of one value), and `@threadlocal` is one global for every
-  thread.
+  and the crash trace depth. While a thread runs, `RUNNING_STACK` (StackManager_freestanding.te) is its stack, so the
+  frame check at the start of each routine measures from the thread's own stack bottom: a stack that runs out, however
+  deep and with frames of any size, stops the program with `StackOverflowError` before it leaves its slot
+  (tests/rr_stack_overflow, tests/rr_stack_overflow_large_frame). One core, one running manager (`run`), no priorities.
+  The word wait has the names of Standard/Hosted's: the free routines `wait_on(at, expected)`, `wake_one(at)`,
+  `wake_all(at)` (`Standard/Unhosted/Wait.te`) go to the running manager, and outside `run` `wait_on` returns at once
+  (tests/rr_wait_same_names imports both sides and builds its mailbox on them). There is no `wait_on_for` yet, and
+  `Thread`, `Work`, `Channel`, `Waiter` and the `AccessManager` are Standard/Hosted's only: a program builds its waits on
+  the word wait (tests/rr_wait_wake: a mailbox of one value), and has no `@threadlocal` (a build error).
 
 **Assembly.** An `@external("asm")` routine with `@target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/20b-assembly.md`): one instruction per line written like a call, operands in the

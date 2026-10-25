@@ -4,15 +4,16 @@
 # had: ThreadManagerByRoundRobin manages the threads of one core. It runs each ready thread for a slice of time, and
 # when the slice is over the timer's interrupt takes the core from it (preemption) and gives it to the next ready one,
 # in the order they became ready. A thread may give the core up earlier: `yield_now`, `sleep(span)`, or
-# `wait_on(at, expected)` until another thread's `wake_one(at)` / `wake_all(at)`, the same word wait the hosted
-# threads of Standard/Hosted wait with. When no thread is ready the core waits for the next interrupt (`wfi`) on the idle
-# thread.
+# `wait_on(at, expected)` until another thread's `wake_one(at)` / `wake_all(at)` (the free routines of Wait.te go to
+# the running manager's). When no thread is ready the core waits for the next interrupt (`wfi`) on the idle thread.
 #
 # The threads' memory is a region the program names (a global array, say): the manager cuts it into slots of
 # `stack_size` bytes, one per thread, each holding the thread's record at its bottom, a check word above it, and the
 # thread's stack, which a StackManager manages, above that. A slot comes back when its thread's routine returns, for
-# the next `launch`. A stack that runs down into its check word stops the program with `StackOverflowError` when the
-# thread next stops. The first slot is the idle thread's.
+# the next `launch`. While a thread runs, RUNNING_STACK (StackManager_freestanding.te) is its stack, so the frame check
+# at the start of each routine measures from the thread's own stack bottom: a stack that runs out stops the program with
+# `StackOverflowError` before it leaves its slot. The check word catches what wrote below the stack without a frame
+# check, when the thread next stops. The first slot is the idle thread's.
 #
 # The timer is the core's virtual timer (CpuTimer.te) on the line an InterruptManagerByGic holds. `run()`
 # turns it on: the flow that calls it joins the threads, waits until every thread launched has returned, and turns it
@@ -157,7 +158,7 @@ common routine ThreadManagerByRoundRobin.construct(region: Addr, size: ByteSize,
         interrupts, timer_before: .hollow())
 
 ### Starts a thread that runs `entry(arg)`, in a free slot: it is ready, and runs once `run` gives it the core. Its
-### slot comes back when `entry` returns. The same shape as Standard/Hosted's `ThreadManager.launch_fn` without its state.
+### slot comes back when `entry` returns.
 ### :param entry: The thread's routine.
 ### :param arg: What it is given.
 ### :returns: False when no slot is free.
@@ -182,7 +183,8 @@ routine @ThreadManagerByRoundRobin.launch(entry: Callable[(Addr,), None], arg: A
     restore_interrupts(was)
     return true
 
-### Starts a thread for a `ThreadManager`-shaped caller: `(entry, arg, state)` with the manager's address as `state`.
+### Starts a thread for a caller that hands over the manager as an address: `(entry, arg, state)` with the
+### manager's address as `state`.
 ### :param entry: The thread's routine.
 ### :param arg: What it is given.
 ### :param state: The ThreadManagerByRoundRobin.
@@ -257,8 +259,8 @@ routine @ThreadManagerByRoundRobin.sleep(span: Duration) -> None
     return
 
 ### Puts the running thread to sleep while the U32 at `at` still holds `expected`, until `wake_one` or `wake_all` on
-### `at`. It may also return without a wake, so the caller checks its condition again in a loop, as with Standard/Hosted's
-### `wait_on`. A word that holds another value already returns at once.
+### `at`. It may also return without a wake, so the caller checks its condition again in a loop. A word that holds
+### another value already returns at once.
 ### :param at: The word to wait on.
 ### :param expected: The value it must still hold for the thread to wait.
 @target(arch: "aarch64", os: "none")
@@ -476,6 +478,11 @@ secret routine @ThreadManagerByRoundRobin.switch_away() -> None
     me.running.poke(to)
     me.arm_timer()
     trace_switch(to.trace_depth.peek()).poke_into(from.trace_depth)
+    # The frame check measures from the bottom of the stack it runs on: the thread's slot, or the program's own.
+    if to === me.boot
+        RUNNING_STACK.poke(.hollow())
+    else
+        RUNNING_STACK.poke(to.stack)
     resume_at: Addr = to.stack.sp.peek()
     to.stack.sp.poke(.hollow())
     switch_fiber(from: from.stack.sp, to: resume_at)

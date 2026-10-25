@@ -22,6 +22,12 @@ global STACK_TOP: &Byte
 @target(os: "none")
 secret global BOOT_STACK: &StackManager
 
+### The StackManager of the stack the running flow is on when the program switched to a stack of its own (a thread of
+### a ThreadManagerByRoundRobin), null on the program's own stack. What switches stacks points it at the stack it
+### switches to, so the frame check measures from that stack's bottom.
+@target(os: "none")
+global RUNNING_STACK: &@StackManager
+
 ### Whether a stack that ran out has been reported: the report's own routines run inside the margin.
 @target(os: "none")
 secret global STACK_OVERFLOWED: &Bool
@@ -41,16 +47,22 @@ common routine StackManager.current() -> @Me
 
 ### Borrows the running routine's frame from the stack, once the routine's prologue has made it: the builder calls it
 ### at the start of every routine but one that calls no other routine and has at most 1 KiB of slots (the check of the
-### routine that called it left it room), which the routines this one calls are. Without an operating system nothing closes the memory below the stack (the globals
-### are there), so it reads the stack pointer and stops the program with `StackOverflowError` when it is less than the
-### margin above the stack's bottom. A frame whose slots are larger than the margin is checked from where the stack
-### pointer was before the frame. A stack pointer outside the program's stack (a fiber's stack in a global) is a stack
-### the program switched to itself, which this doesn't check.
+### routine that called it left it room), which the routines this one calls are. Without an operating system nothing
+### closes the memory below a stack (the globals are there, or another thread's slot), so it reads the stack pointer
+### and stops the program with `StackOverflowError` when it is less than the margin above the bottom of the running
+### stack: RUNNING_STACK's, else the program's own. A frame whose slots are larger than the margin is checked from where
+### the stack pointer was before the frame.
 ### :param size: The bytes of the frame's slots the builder knows of.
 @inline
 @target(os: "none")
 common routine StackManager.borrow_frame(size: U64) -> None
     sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    running: @StackManager = RUNNING_STACK.peek()
+    if running.is_not_hollow()
+        thread_low: U64 = ptrtoint[Addr, U64](running.bottom.peek())
+        if sp +% size >= thread_low and sp < thread_low +% STACK_MARGIN
+            Me.report_overflow()
+        return
     low: U64 = ptrtoint[Addr, U64](STACK_BOTTOM.to[Addr]())
     if sp +% size >= low and sp < low +% STACK_MARGIN
         Me.report_overflow()

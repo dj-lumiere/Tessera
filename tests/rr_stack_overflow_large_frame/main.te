@@ -1,0 +1,68 @@
+# A thread of a ThreadManagerByRoundRobin whose routine calls itself with a frame larger than the check's margin: each
+# call moves the stack pointer 6 KiB at once. The frame check measures from the thread's own stack bottom and from
+# where the stack pointer was before the frame, so the program stops with StackOverflowError before the frame lands in
+# the slot below.
+
+import Standard/Unhosted
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+### The threads' slots: 64 KiB, four slots of 16 KiB.
+global STACKS: &Array[U64, 8192]
+
+### The serial port of QEMU's virt machine.
+### :returns: The port.
+routine serial() -> Pl011
+    return Pl011.construct(base: inttoptr[U64, Addr](0x09000000))
+
+### Writes the crash's name and place on the serial port and turns the machine off.
+### :param name: The crashable's name.
+### :param message: Its message.
+### :param place: Where it was thrown.
+@untraced
+routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    port: &Pl011 <- serial()
+    port.write("crash: {name}\n")
+    psci_power_off()
+    return
+
+### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
+routine prepare_threads() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    return
+
+### Calls itself without end, with a 6 KiB array in each frame.
+### :param depth: How deep it is.
+### :returns: Never.
+routine dive(depth: U64) -> U64
+    room: &Array[U64, 768] <- [0] * 768
+    room[depth % 768] = depth
+    return dive(depth + 1) + room[0]
+
+### Dives, and prints what it never gets.
+### :param arg: Unused.
+routine diver(arg: Addr) -> None
+    port: &Pl011 <- serial()
+    deepest: U64 = dive(0)
+    port.write("came back from {deepest}\n")
+    return
+
+### Turns the managers on and puts the reporting routine in the Crash service's slot.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    return
+
+### Starts the diver and runs it: the stack overflow ends the program.
+routine start() -> None
+    port: &Pl011 <- serial()
+    prepare_threads()
+    THREADS.launch(entry: diver.to[Callable](), arg: .hollow())
+    THREADS.run()
+    port.write("the diver returned\n")
+    psci_power_off()
+    return
