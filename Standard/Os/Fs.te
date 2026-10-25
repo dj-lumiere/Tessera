@@ -98,7 +98,7 @@ variant FsError
     ReadOnlyError
     BusyError
     StorageFaultError
-    MemoryAllocationError
+    OutOfMemoryError
     IoError
 
 choice FileKind: U8
@@ -354,7 +354,7 @@ secret failable routine create_dir_all(path: @[Byte]) -> None
 ### Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from manager.
 ### :param path: The file or directory to remove.
 ### :param manager: The memory manager for the child paths, each given back before the next.
-### :throws: Throws the first failure, which stops the removal partway. Crashes with `MemoryAllocationError` when
+### :throws: Throws the first failure, which stops the removal partway. Crashes with `OutOfMemoryError` when
 ###     `manager` fails for a child path.
 secret failable routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -> None
     info: Metadata = when check symlink_metadata(path)
@@ -371,7 +371,7 @@ secret failable routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -
 ### removes the directory itself, since Windows can't remove a directory that is still being listed.
 ### :param path: The directory to empty.
 ### :param manager: The memory manager for the child paths.
-### :throws: Throws the first failure. Crashes with `MemoryAllocationError` when `manager` fails for a child path.
+### :throws: Throws the first failure. Crashes with `OutOfMemoryError` when `manager` fails for a child path.
 secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -> None
     # open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     iter: &DirIter <- .hollow()
@@ -401,7 +401,7 @@ secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -
 ### :param path: The file to read.
 ### :param manager: The memory manager for the text.
 ### :returns: The file's bytes.
-### :throws: Throws the reason when the file can't be opened or read, `MemoryAllocationError` when `manager` fails or
+### :throws: Throws the reason when the file can't be opened or read, `OutOfMemoryError` when `manager` fails or
 ###     the file is too large for the address space (4 GiB or more on a 32-bit target).
 secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     f: &FileHandle <- .hollow()
@@ -421,7 +421,7 @@ secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> Bor
 ### :param f: The open file, read from its position to the end.
 ### :param manager: The memory manager for the text.
 ### :returns: The bytes read.
-### :throws: Throws the reason when a read fails, `MemoryAllocationError` when `manager` fails or the file is too large
+### :throws: Throws the reason when a read fails, `OutOfMemoryError` when `manager` fails or the file is too large
 ###     for the address space (it reports a size, or grows to one, that a U64 can't hold).
 secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> BorrowedSlice[Byte]
     buffer: &[Byte] <- .hollow()
@@ -433,11 +433,11 @@ secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Bo
                 is U64 as with_one => becomes with_one.max(64)
                 is None =>
                     drop buffer
-                    throw MemoryAllocationError()
+                    throw OutOfMemoryError()
         is FsError => 64
     when check BorrowedSlice[Byte].construct(count: capacity, manager: manager)
         is BorrowedSlice[Byte] as slice => buffer.replace(value: steal slice)
-        is MemoryAllocationError as error =>
+        is OutOfMemoryError as error =>
             drop buffer
             throw error
     loop with count: U64 = 0
@@ -448,12 +448,12 @@ secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Bo
                 is U64 as capacity3 =>
                     when check buffer.resize(capacity3)
                         is None => continue with count: count
-                        is MemoryAllocationError as error =>
+                        is OutOfMemoryError as error =>
                             drop buffer
                             throw error
                 is None =>
                     drop buffer
-                    throw MemoryAllocationError()
+                    throw OutOfMemoryError()
         got: Check[U64] = check f.read_bytes(buffer: buffer.getslot(count),
             count: capacity2 - count)
         when got
@@ -552,7 +552,7 @@ routine path_separator() -> Byte
 ### :param b: The part to append.
 ### :param manager: The memory manager for the result.
 ### :returns: The joined path.
-### :throws: Crashes with `MemoryAllocationError` when the memory manager fails.
+### :throws: Crashes with `OutOfMemoryError` when the memory manager fails.
 @track_caller
 @expensive("allocates the joined path")
 secret routine join_path(a: @[Byte], b: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]

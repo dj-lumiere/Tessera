@@ -722,7 +722,7 @@ public sealed partial class FunctionGen
         // The call throws nothing (in this instance, or a generic body being checked, which can't know): the arm never
         // runs, and the name it gives is a crashable all the same, so its lines are checked.
         if (failures.Count == 0)
-            failures = [_c.ResolveType(new TypeRef("MemoryAllocationError", [], pos) { Path = Compiler.MemoryModule }, _env)];
+            failures = [_c.ResolveType(new TypeRef("OutOfMemoryError", [], pos) { Path = Compiler.MemoryModule }, _env)];
         return Crashing.Union(failures);
     }
 

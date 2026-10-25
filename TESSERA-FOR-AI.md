@@ -209,8 +209,8 @@ routine start() -> None
   at it through `m.getslot(i)`, or take it out with `steal m.getslot(i)`, which leaves the place hollow. Write an
   element through its place: `m.getslot(i).poke(v)`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and
   `m.getview(i)` are build errors that name these forms. A BorrowedSlice also has
-  `construct(count, manager)` (uninitialized, failable: it throws `MemoryAllocationError`, which `check
-  BorrowedSlice[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
+  `construct(count, manager)` (uninitialized, failable: it throws `OutOfMemoryError` when the manager has no memory to give or the size of `count` values doesn't
+  fit in U64, which `check BorrowedSlice[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
   copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
   empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), `to[@T]()` (the first value's
   address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `BorrowedCell[T]` has `load()`,
@@ -447,7 +447,8 @@ routine start() -> None
 - **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
   ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
   order): `HeapManagerByC` (C's malloc / realloc / free, nothing in front of the blocks) and `HeapManagerByCheckedHeap` (the heap
-  check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
+  check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's
+  (on Windows `HeapManagerByCAligned`, C's `_aligned_malloc` / `_aligned_free`, so every alignment is there).
   `C_HEAP` is `HeapManagerByC`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
   `PageManageable`: `PageManagerByOs`, whose table is `PAGES` (whole pages, `borrow` puts one page in front that keeps
   the size). The tables are ready before `start`, and every routine that borrows memory takes one as `@MemoryManager`:
@@ -989,7 +990,7 @@ routine start() -> None
   (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
   channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
   (Standard/System/Crashables.te), plus
-  `MemoryAllocationError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
+  `OutOfMemoryError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
   `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
   their routines.
 - **A call written bare that fails stops the program on its own line,** the way an overflowing `+` does: the `Crash`
@@ -1219,8 +1220,11 @@ routine start() -> None
   inside it, which the routine ends (`drop`, `return`, or hand on). Every entity declares `construct` and has a `destruct` (its own or the builder's walk), and its life ends
   exactly once on every path, like memory from a manager: the builder's give back of a STACK place, or `drop`.
 - A manager is named for what it manages. When there are several ways to manage it, the way comes after `By`:
-  `HeapManagerByC`, `HeapManagerByCheckedHeap`, `PageManagerByOs` (the old `CHeapManager`, `CheckedHeapManager`,
-  `OsPageManager` are build errors naming the new name).
+  `HeapManagerByC`, `HeapManagerByCAligned`, `HeapManagerByCheckedHeap`, `PageManagerByOs` (the old `CHeapManager`,
+  `AlignedHeapManager`, `CheckedHeapManager`, `OsPageManager` are build errors naming the new name). A manager with no
+  memory to give throws `OutOfMemoryError`, and a memory manager callback that crashes reports the line it was called
+  from with `memory_manager_call_place()` (the old `MemoryAllocationError` and `allocator_call_place` are build errors
+  naming the new name).
 - Every manager is an `entity` (`MemoryManager`, `StackManager`, `HeapManagerByC`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
   HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
@@ -1465,7 +1469,7 @@ on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
 `remove`, and `remove_entry` are failable, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
 gives `Maybe[T]`. `setitem` and `swap` still crash. Each insertion and `reserve` is failable: it throws
-`MemoryAllocationError` when the memory can't grow and leaves the collection unchanged, so a bare call stops there and
+`OutOfMemoryError` when the memory can't grow (a size in bytes past U64 included) and leaves the collection unchanged, so a bare call stops there and
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Maybe`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
 `Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
@@ -1788,7 +1792,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
 `FsError` is a `variant` of the crashables a file system routine throws: `NotFoundError`, `NotEnoughPermissionError`,
 `AlreadyExistsError`, `NotADirectoryError`, `IsADirectoryError`, `DirectoryNotEmptyError`, `CrossDeviceError`,
 `NameTooLongError`, `InvalidPathError`, `NotEnoughSpaceError`, `ReadOnlyError`, `BusyError`, `StorageFaultError` (the
-device couldn't read or write: a bad sector, a failing disk), `MemoryAllocationError`, and `IoError` (`code`, the
+device couldn't read or write: a bad sector, a failing disk), `OutOfMemoryError`, and `IoError` (`code`, the
 OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one of them, take the others with
 `else as e` (two arms can't observe one crashable).
 
@@ -1829,7 +1833,7 @@ arc4random_buf, ProcessPrng), the source of the hash key and `Xoshiro256.from_en
 options, manager)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process(command,
 options, manager)` create one, wait for it to end, reap it, and return a `ProcessOutput`. Both are failable and throw
 one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`, `InvalidArgumentError`,
-`MemoryAllocationError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
+`OutOfMemoryError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`BorrowedSlice[Byte]`). A `ProcessOutput` is an entity:
 `out: &ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set

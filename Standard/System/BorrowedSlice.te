@@ -54,11 +54,13 @@ secret routine check_access_range(at: Addr, size: U64) -> None
 ### :typeparam T: The value type.
 ### :param count: The number of values, more than 0.
 ### :param manager: Where the memory comes from.
-### :returns: The first value's address, or a hollow address when the manager has none to give.
-### :throws: Crashes with `IntegerOverflowError` when the size doesn't fit in U64.
+### :returns: The first value's address, or a hollow address when the manager has none to give (also when the size
+###     doesn't fit in U64, which is more memory than any manager has).
 @expensive("allocates memory")
 secret routine take_block[T](count: U64, manager: @MemoryManager) -> @T
 needs T: typename
+    if count.mul_overflows(sizeof[T]())
+        return .hollow()
     bytes: U64 = sizeof[T]() * count
     # Values of no size still take a block of their own, so the manager has an address to give.
     size: U64 = when
@@ -97,7 +99,8 @@ obeys ViewingIndexable[BorrowedSlice[T], T]
 ### :param count: The number of values.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The memory.
-### :throws: Throws `MemoryAllocationError` when the manager has no memory to give.
+### :throws: Throws `OutOfMemoryError` when the manager has no memory to give, or when the size of `count` values
+###     doesn't fit in U64.
 @expensive("allocates memory")
 failable common routine BorrowedSlice[T].construct(count: U64, manager: @MemoryManager) -> Me
 needs T: typename
@@ -105,7 +108,7 @@ needs T: typename
         return Me(data: .hollow(), count: 0, manager)
     data: @T = take_block[T](count, manager)
     if data.is_hollow()
-        throw MemoryAllocationError()
+        throw OutOfMemoryError()
     return Me(data, count, manager)
 
 ### `values` written `times` over, one run after another, in memory from `manager`: what `[a, b] * n at manager`
@@ -114,13 +117,15 @@ needs T: typename
 ### :param times: How many times they are written.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The memory, `times` runs of `values`.
-### :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a U64. Throws `MemoryAllocationError`
-###     when the manager has no memory to give.
+### :throws: Throws `OutOfMemoryError` when the manager has no memory to give, or when the count or its size doesn't
+###     fit in U64.
 @track_caller
 @expensive("allocates memory")
 failable common routine BorrowedSlice[T].construct(values: @[T], times: U64,
     manager: @MemoryManager) -> Me
 needs T: typename
+    if values.count.mul_overflows(times)
+        throw OutOfMemoryError()
     made: &Me <- .hollow()
 
     count: U64 = values.count * times
@@ -223,7 +228,7 @@ needs T: typename
 
 ### A copy in memory of its own from the same manager, given back on its own. The values are copied bit for bit.
 ### :returns: The copy.
-### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
+### :throws: Crashes with `OutOfMemoryError` when the manager has no memory to give.
 @track_caller
 @expensive("allocates memory")
 routine @BorrowedSlice[T].duplicate() -> Me
@@ -246,8 +251,8 @@ secret routine crash_hollow_resize() -> None
 ### Holds `count` values from here on, keeping the first ones (as many as both counts allow). The memory may move:
 ### views and addresses taken before see it no longer. A count of 0 gives the memory back and keeps the manager.
 ### :param count: The new number of values.
-### :throws: Crashes with `UnacceptedValueError` on a hollow memory (no manager). Throws `MemoryAllocationError` when the
-###     manager has no memory to give, and the memory is unchanged then.
+### :throws: Crashes with `UnacceptedValueError` on a hollow memory (no manager). Throws `OutOfMemoryError` when the
+###     manager has no memory to give or the size doesn't fit in U64, and the memory is unchanged then.
 @track_caller
 @expensive("reallocates memory")
 @reshaping
@@ -269,6 +274,8 @@ needs T: typename
                 return
     else
         check_access_range(at: data, size: sizeof[T]() * me.count.peek())
+        if count.mul_overflows(sizeof[T]())
+            throw OutOfMemoryError()
         bytes: U64 = sizeof[T]() * count
         # Values of no size keep a block of one byte: a block of none would be given back by the move.
         size: U64 = when
@@ -277,7 +284,7 @@ needs T: typename
         moved: @MemoryManager = me.manager.peek()
         grown: Addr = moved.reborrow(at: data, size, align: alignof[T]())
         if grown.is_hollow()
-            throw MemoryAllocationError()
+            throw OutOfMemoryError()
         me.data.poke(grown.to[@T]())
         me.count.poke(count)
         return
@@ -350,14 +357,14 @@ needs T: typename
 ### :param value: The value, taken over.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The box.
-### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
+### :throws: Crashes with `OutOfMemoryError` when the manager has no memory to give.
 @track_caller
 @expensive("allocates memory")
 common routine BorrowedCell[T].construct(value: T, manager: @MemoryManager) -> Me
 needs T: typename
     at: @T = take_block[T](count: 1, manager)
     if at.is_hollow()
-        throw MemoryAllocationError()
+        throw OutOfMemoryError()
     at.poke(steal value)
     return Me(at, manager)
 

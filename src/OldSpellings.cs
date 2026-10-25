@@ -42,6 +42,9 @@ public static class OldSpellings
         "CHeapManager" => Renamed(name, "HeapManagerByC now"),
         "CheckedHeapManager" => Renamed(name, "HeapManagerByCheckedHeap now"),
         "OsPageManager" => Renamed(name, "PageManagerByOs now"),
+        "AlignedHeapManager" => Renamed(name, "HeapManagerByCAligned now"),
+        // A manager with no memory to give throws the failure that says so.
+        "MemoryAllocationError" => Renamed(name, "OutOfMemoryError now"),
         _ => null,
     };
 
@@ -67,6 +70,8 @@ public static class OldSpellings
         "reset_thread_locals" => Message(name, "ThreadLocalManager.reset() puts the thread-locals back"),
         "ThreadLocalStorageManager" =>
             $"'{name}' is not defined: the thread-locals' manager is ThreadLocalManager",
+        "MemoryAllocationError" => Message(name, "a manager with no memory to give throws OutOfMemoryError"),
+        "allocator_call_place" => Message(name, "the place a memory manager callback was called from is memory_manager_call_place()"),
         "zero_bss" or "copy_data" => Message(name, $"GlobalManager.{name}() readies the globals' memory"),
         _ => null,
     };

@@ -12,7 +12,7 @@ namespace Tessera.Tests;
 public class HeapCheckTests
 {
     /// Names only the checked heap has: its callbacks and its quarantine, mangled into the symbols.
-    private static readonly string[] CheckedHeapSymbols = ["18CheckedHeapManager6borrow", "18CheckedHeapManager9give_back", "10QUARANTINE"];
+    private static readonly string[] CheckedHeapSymbols = ["24HeapManagerByCheckedHeap6borrow", "24HeapManagerByCheckedHeap9give_back", "10QUARANTINE"];
 
     [Theory]
     [InlineData(BuildMode.Debug)]
@@ -34,7 +34,7 @@ public class HeapCheckTests
     {
         string ir = CompileSliceProgram(mode, heapCheck: false);
         foreach (string symbol in CheckedHeapSymbols) Assert.DoesNotContain(symbol, ir);
-        Assert.Contains("12CHeapManager9give_back", ir);
+        Assert.Contains("14HeapManagerByC9give_back", ir);
     }
 
     [Fact]
