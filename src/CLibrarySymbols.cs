@@ -232,13 +232,22 @@ public static class CLibrarySymbols
         }
     }
 
-    /// The symbols a text stub (`.tbd`) lists, the libraries it re-exports included.
+    /// The symbols a text stub (`.tbd`) lists, the libraries it re-exports included. The stub holds one document for
+    /// the library and one for each library it re-exports, each naming its library in `install-name`. The compiler's
+    /// runtime among them (libSystem re-exports libcompiler_rt.dylib, which defines `__udivti3`) is left out, as libgcc
+    /// is on Linux.
     private static IEnumerable<string> TextStubSymbols(string text)
     {
-        foreach (Match m in Regex.Matches(text, @"(?:^|\s)(?:symbols|weak-symbols|weak-def-symbols|thread-local-symbols|objc-classes)\s*:\s*\[([^\]]*)\]"))
-            foreach (string part in m.Groups[1].Value.Split(','))
-                if (part.Trim().Trim('\'', '"') is { Length: > 0 } symbol)
-                    yield return symbol;
+        foreach (string document in Regex.Split(text, @"^---", RegexOptions.Multiline))
+        {
+            if (Regex.Match(document, @"(?:^|\s)install-name\s*:\s*['""]?([^'""\s]+)") is { Success: true } name
+                && IsCompilerRuntime(name.Groups[1].Value))
+                continue;
+            foreach (Match m in Regex.Matches(document, @"(?:^|\s)(?:symbols|weak-symbols|weak-def-symbols|thread-local-symbols|objc-classes)\s*:\s*\[([^\]]*)\]"))
+                foreach (string part in m.Groups[1].Value.Split(','))
+                    if (part.Trim().Trim('\'', '"') is { Length: > 0 } symbol)
+                        yield return symbol;
+        }
     }
 
     private static string CString(byte[] b, int at)
