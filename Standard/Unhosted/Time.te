@@ -1,0 +1,57 @@
+# Tessera stdlib: the clocks, without an operating system
+#
+# Clock.monotonic() reads a clock that only goes forward, a Duration since the core powered on: for measuring time and
+# for deadlines. On AArch64 it is the core's counter (CNTVCT_EL0, CpuTimer.te) at its rate. Clock.now() reads the date
+# and time, a Moment, from the board's real-time clock: the board file names it (`[devices] rtc`), and the clock's
+# manager reads it (Rtc.te). Without such a clock Clock.now() is a build error, since nothing else on the board knows
+# the date.
+
+module Standard/Unhosted
+
+### The clock: the date and time (`Clock.now()`, from the board's real-time clock) and a clock that only goes forward
+### (`Clock.monotonic()`) for measuring time and for deadlines. Every value is the same clock, so the routines are
+### called on the type.
+record Clock
+    nothing
+
+### The board's real-time clock, where the link script puts its registers (`__rtc_base`, from the board file).
+@external("c")
+@symbol("__rtc_base")
+@target(rtc: "pl031")
+global RTC_REGISTERS: &Byte
+
+### The manager of the board's real-time clock, made on the first Clock.now().
+@target(rtc: "pl031")
+secret global BOARD_RTC: &RtcManagerByPl031 <- .hollow()
+
+### Reads a clock that only goes forward: the time since the core powered on, from its counter.
+### :returns: The reading.
+@target(arch: "aarch64")
+common routine Clock.monotonic() -> Duration
+    ticks: U64 = cpu_timer_count()
+    rate: U64 = cpu_timer_rate()
+    seconds: U64 = ticks // rate
+    nanoseconds: U64 = ticks % rate * 1000000000 // rate
+    return Duration.from_parts(seconds: seconds.to[S64](), nanoseconds: nanoseconds.to[U32]())
+
+### Reads a clock that only goes forward: a build error on this target, whose counter the standard library doesn't read.
+### :returns: Nothing it can give.
+@target(arch: not "aarch64")
+@unavailable("the standard library reads a counter for Clock.monotonic() only on AArch64 (CNTVCT_EL0) without an operating system")
+common routine Clock.monotonic() -> Duration
+    return Duration.zero()
+
+### Reads the date and time from the board's PL031 real-time clock.
+### :returns: The moment, to the second.
+@target(rtc: "pl031")
+common routine Clock.now() -> Moment
+    if BOARD_RTC.base.peek().is_hollow()
+        BOARD_RTC.poke(RtcManagerByPl031.construct(base: RTC_REGISTERS.to[Addr]()))
+    return BOARD_RTC.now()
+
+### Reads the date and time: a build error on a board that names no real-time clock.
+### :returns: Nothing it can give.
+@target(rtc: "none")
+@unavailable("Clock.now() reads the date and time from the board's real-time clock, and this board names none: add the clock to the board file, [devices] rtc = { kind = \"pl031\", base = 0x09010000 }")
+common routine Clock.now() -> Moment
+    return Moment.from_timestamp(0)

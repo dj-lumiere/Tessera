@@ -388,6 +388,11 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     /// `--cpu`: the CPU to generate code for; null keeps the triple's default.
     public string? Cpu { get; init; }
 
+    /// The kind of the board's real-time clock (`pl031`), from the board file's `[devices] rtc`, or null when the board
+    /// names none. `@target(rtc: "pl031")` keeps a declaration only for such a board, `@target(rtc: "none")` only
+    /// without one.
+    public string? Rtc { get; init; }
+
     /// `--feature`: features to add (`+name`) or remove (`-name`) on top of the CPU's.
     public IReadOnlyList<string> Features { get; init; } = [];
 
@@ -464,7 +469,8 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         "os" => Os == value,
         "abi" => Abi == value,
         "size" => Size.ToString(CultureInfo.InvariantCulture) == value,
-        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size)"),
+        "rtc" => (Rtc ?? "none") == value,
+        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size, rtc)"),
     };
 }
 

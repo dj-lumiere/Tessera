@@ -1,0 +1,67 @@
+# Clock.monotonic() without an operating system: the core's counter at its rate. Readings only go forward, a thread's
+# 20 ms sleep takes at least 20 ms of it, and waitfor outside run waits on it too.
+
+import Standard/Unhosted
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+### The threads' slots: 64 KiB, four slots of 16 KiB.
+global STACKS: &Array[U64, 8192]
+
+### The serial port of QEMU's virt machine.
+### :returns: The port.
+routine serial() -> Pl011
+    return Pl011.construct(base: inttoptr[U64, Addr](0x09000000))
+
+### Writes the crash's name and place on the serial port and turns the machine off.
+### :param name: The crashable's name.
+### :param message: Its message.
+### :param place: Where it was thrown.
+@untraced
+routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    port: &Pl011 <- serial()
+    port.write("crash: {name}\n")
+    psci_power_off()
+    return
+
+### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
+routine prepare_threads() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    return
+
+### Sleeps 20 ms three times and says whether each sleep took at least 20 ms, and less than a second, of the clock.
+### :param arg: Unused.
+routine sleeper(arg: Addr) -> None
+    port: &Pl011 <- serial()
+    each i in 0 til 3
+        before: Duration = Clock.monotonic()
+        THREADS.sleep(Duration.from_milliseconds(20))
+        took: Duration = Clock.monotonic() - before
+        fits: Bool = took >= Duration.from_milliseconds(20) and took < Duration.from_seconds(1)
+        port.write("sleep {i} took 20 ms: {fits}\n")
+    return
+
+### Turns the managers on and puts the reporting routine in the Crash service's slot.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    return
+
+### Reads the clock twice, waits 5 ms with waitfor, runs the sleeper, and says what the clock showed.
+routine start() -> None
+    port: &Pl011 <- serial()
+    first: Duration = Clock.monotonic()
+    second: Duration = Clock.monotonic()
+    port.write("forward: {second >= first}\n")
+    waitfor(Duration.from_milliseconds(5))
+    waited: Bool = Clock.monotonic() - second >= Duration.from_milliseconds(5)
+    port.write("waitfor waited: {waited}\n")
+    prepare_threads()
+    THREADS.launch(entry: sleeper.to[Callable](), arg: .hollow())
+    THREADS.run()
+    psci_power_off()
+    return

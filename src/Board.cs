@@ -27,9 +27,16 @@ namespace Tessera;
 /// and the builder writes the link script from it (LinkScript): the code, the constants, and the globals' first values
 /// go in flash (or the image), the globals at the start of RAM (or right after the image, which is in RAM), and the
 /// stack from the end of RAM down to the end of the globals.
-public sealed record Board(string Path, string Name, BuildTarget Target, Board.Region? Flash, ulong? Image, Board.Region Ram)
+public sealed record Board(string Path, string Name, BuildTarget Target, Board.Region? Flash, ulong? Image, Board.Region Ram,
+    Board.Device? Rtc = null)
 {
     /// A region of memory: its first address and its size in bytes.
+    /// A device of the board the standard library drives: its kind (`pl031`) and the address of its registers.
+    public readonly record struct Device(string Kind, ulong Base);
+
+    /// The kinds of real-time clock the standard library has a manager for (Standard/Unhosted's RtcManagerBy...).
+    public static readonly string[] RtcKinds = ["pl031"];
+
     public readonly record struct Region(ulong Start, ulong Size)
     {
         /// The address after its last byte.
@@ -68,6 +75,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
     {
         ["board"] = ["name", "triple", "cpu", "features"],
         ["memory"] = ["flash", "image", "ram"],
+        ["devices"] = ["rtc"],
     };
 
     /// Reads the board file `spec` names (Locate).
@@ -82,7 +90,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         foreach (var (key, value) in root)
         {
             if (!Keys.TryGetValue(key, out var allowed))
-                throw new ManifestError(path, $"unknown section [{key}] (a board file has [board] and [memory])");
+                throw new ManifestError(path, $"unknown section [{key}] (a board file has [board], [memory] and [devices])");
             if (value is not TomlTable table) throw new ManifestError(path, $"'{key}' must be a section: [{key}]");
             foreach (var field in table.Keys)
                 if (!allowed.Contains(field))
@@ -126,7 +134,18 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         foreach (var (what, region) in new[] { ("ram", ram) }.Concat(flash is { } fx ? [("flash", fx)] : []))
             if (region.Start > limit - region.Size)
                 throw new ManifestError(path, $"[memory] {what} ends past the {target.Size}-bit address space");
-        return new Board(path, name, target, flash, image, ram);
+        Device? rtc = null;
+        if (root.TryGetValue("devices", out var d) && ((TomlTable)d).TryGetValue("rtc", out var rv))
+        {
+            if (rv is not TomlTable rt || rt.Keys.Any(k => k is not ("kind" or "base")) || rt["kind"] is not string kind
+                || !rt.ContainsKey("base"))
+                throw new ManifestError(path, "[devices] rtc is the board's real-time clock: rtc = { kind = \"pl031\", base = 0x09010000 }");
+            if (!RtcKinds.Contains(kind))
+                throw new ManifestError(path, $"[devices] rtc: the standard library has no manager for a '{kind}' clock (kinds: {string.Join(", ", RtcKinds)})");
+            rtc = new Device(kind, Address(rt["base"], "rtc.base", path));
+            target = target with { Rtc = kind };
+        }
+        return new Board(path, name, target, flash, image, ram, rtc);
     }
 
     /// A region written `{ start = ..., size = ... }`.
@@ -193,6 +212,8 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         l.AppendLine("    .bss (NOLOAD) : ALIGN(16) { __bss_start = .; *(.bss .bss.* .sbss .sbss.* COMMON) __bss_end = .; } > RAM");
         l.AppendLine("    __stack_bottom = ALIGN(__bss_end, 16);");
         l.AppendLine($"    __stack_top = 0x{ram.End & ~15UL:X};");
+        // The real-time clock's registers, for Standard/Unhosted's Clock.now().
+        if (Rtc is { } rtc) l.AppendLine($"    __rtc_base = 0x{rtc.Base:X};");
         l.AppendLine("    ASSERT(__stack_bottom < __stack_top, \"the globals fill the board's RAM, and the stack has no room\")");
         l.AppendLine("}");
         return l.ToString();

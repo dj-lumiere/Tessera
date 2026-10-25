@@ -1,0 +1,52 @@
+# Clock.now() without an operating system: QEMU's virt board file names its PL031 real-time clock, which QEMU starts
+# at the host's date and time, so the year read is this one or later. An RtcManagerByPl031 of the program's own reads
+# the same clock.
+
+import Standard/Unhosted
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+### The threads' slots: 64 KiB, four slots of 16 KiB.
+global STACKS: &Array[U64, 8192]
+
+### The serial port of QEMU's virt machine.
+### :returns: The port.
+routine serial() -> Pl011
+    return Pl011.construct(base: inttoptr[U64, Addr](0x09000000))
+
+### Writes the crash's name and place on the serial port and turns the machine off.
+### :param name: The crashable's name.
+### :param message: Its message.
+### :param place: Where it was thrown.
+@untraced
+routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    port: &Pl011 <- serial()
+    port.write("crash: {name}\n")
+    psci_power_off()
+    return
+
+### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
+routine prepare_threads() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    return
+
+### Turns the managers on and puts the reporting routine in the Crash service's slot.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    return
+
+### Reads the date twice, through the Clock and through a manager of the program's own.
+routine start() -> None
+    port: &Pl011 <- serial()
+    now: Moment = Clock.now()
+    port.write("year from 2026: {now.year() >= 2026}\n")
+    rtc: &RtcManagerByPl031 <- .construct(base: inttoptr[U64, Addr](0x09010000))
+    again: Moment = rtc.now()
+    port.write("same clock: {again.timestamp() - now.timestamp() < 5}\n")
+    psci_power_off()
+    return

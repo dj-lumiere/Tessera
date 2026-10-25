@@ -3999,6 +3999,14 @@ public sealed partial class FunctionGen
     private CallPlan? PlanCall(Expr e, DType? expected)
     {
         var plan = PlanCallInner(e, expected);
+        // `@unavailable("why")` keeps a standard library routine whose call is a build error on this target or board:
+        // the routine says why it can't run there, and what the program needs for it.
+        if (plan?.Decl.AnnotationNamed("unavailable") is { } unavailable)
+        {
+            if (!plan.Decl.IsLibrary)
+                throw Err(unavailable.Pos, "@unavailable marks a standard library routine that can't run on a target");
+            throw Err(plan.Pos, $"{plan.Decl.DisplayName} can't run here: {unavailable.First}");
+        }
         if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
             && !_decl.IsLibrary && !Tessera.Derive.IsImplicit(_decl)
             && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
