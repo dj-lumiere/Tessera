@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Numerics;
 
 namespace Tessera;
@@ -2677,11 +2678,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return false;
     }
 
+    /// A number written as a call's type argument, `x.first[4]()`, for a routine's value parameter: the checker takes
+    /// its value, and the routine says whether a value goes there.
+    private static TypeRef ValueTypeArg(Token number) =>
+        new(number.IntValue.ToString(CultureInfo.InvariantCulture), [], number.Pos) { Known = new ConstArg(number.IntValue) };
+
     private List<TypeRef> ParseTypeArgsOpt()
     {
         var list = new List<TypeRef>();
         if (!Accept(TokenKind.LBracket)) return list;
-        do list.Add(ParseType()); while (Accept(TokenKind.Comma));
+        do list.Add(Is(TokenKind.Int) && PeekTok(1).Kind is TokenKind.Comma or TokenKind.RBracket ? ValueTypeArg(Next()) : ParseType());
+        while (Accept(TokenKind.Comma));
         Expect(TokenKind.RBracket, "']'");
         return list;
     }

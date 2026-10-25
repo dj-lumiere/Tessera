@@ -4030,7 +4030,7 @@ public sealed partial class FunctionGen
                 if (_blocks.ContainsKey(c.Name) && set.Count == 0)
                     throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
                 if (set.Count == 0) return null;
-                if (c.WrittenTypeArgs is not null) throw Err(c.Pos, "call type arguments must be types");
+                if (c.WrittenTypeArgs is not null) c = c with { TypeArgs = c.WrittenTypeArgs.Select(a => ValueTypeArg(a, c.Pos)).ToList(), WrittenTypeArgs = null };
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, new Compiler.TypeEnv(o.File)))], c.TypeArgs, c.Args, 0,
@@ -4788,8 +4788,31 @@ public sealed partial class FunctionGen
         if (typeArgs.Count != r.TypeParams.Count)
             throw Err(pos, $"'{r.DisplayName}' takes {r.TypeParams.Count} type argument(s), got {typeArgs.Count}");
         for (int i = 0; i < typeArgs.Count; i++)
-            env.Bind(r.TypeParams[i], Resolve(typeArgs[i]));
+            env.Bind(r.TypeParams[i], ExplicitTypeArg(r, r.TypeParams[i], typeArgs[i]));
     }
+
+    /// One type argument a call writes: a type for a type parameter, and for a value parameter a value (a number, a value
+    /// parameter in scope, a preset) the parameter's integer type holds.
+    private DType ExplicitTypeArg(RoutineDecl r, string param, TypeRef written)
+    {
+        var kind = _c.ValueKind(r.Clauses, param, r.File);
+        bool isValue = kind is not null || r.Clauses.Any(c => c.Params.Any(p => p.Name == param && p.Kind is not { Name: "typename", Args.Count: 0 }));
+        var arg = _c.ResolveTypeOrValue(written, _env);
+        if (isValue && arg is not ConstArg)
+            throw Err(written.Pos, $"{param} of '{r.DisplayName}' is a value, and {written} is a type: pass a number, a value parameter or a preset");
+        if (!isValue && arg is ConstArg)
+            throw Err(written.Pos, $"{param} of '{r.DisplayName}' is a type, and {written} is a number: pass a type there");
+        return arg is ConstArg value && kind is not null ? Compiler.FitValue(value, kind, param, r.DisplayName, written.Pos) : arg;
+    }
+
+    /// A call's type argument written as a number or an expression (`f[4](x)`, `f[N + 1](x)`), as the value it folds to.
+    private TypeRef ValueTypeArg(TypeArg a, Pos pos) => a switch
+    {
+        TypeArgType t => t.Type,
+        TypeArgInt n => new TypeRef(n.Value.ToString(CultureInfo.InvariantCulture), [], pos) { Known = new ConstArg(n.Value) },
+        TypeArgExpr x => new TypeRef(x.ToString(), [], x.Expr.Pos) { Known = new ConstArg(_c.EvalConstValue(x.Expr, _env)) },
+        _ => throw Err(pos, "a call's type arguments are types and values"),
+    };
 
     /// Infers unbound type parameters by matching parameter types against argument types, then the return type
     /// against the expected type.

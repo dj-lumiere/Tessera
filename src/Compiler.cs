@@ -1606,6 +1606,15 @@ public sealed partial class Compiler
         return arg.As(kind);
     }
 
+    /// A type argument that may also be a value: a type, or a ConstArg for a number, a value parameter in scope or a
+    /// preset (`f[4](x)`, `f[K](x)`, `f[COUNT](x)`).
+    public DType ResolveTypeOrValue(TypeRef t, TypeEnv env)
+    {
+        var r = ResolveTypeInner(t, env);
+        if (r is VoidType) throw new CompileError(t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
+        return r;
+    }
+
     /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2[A, B]` up to `Tuple4`.
     public RecordType TupleOf(List<DType> items, Pos pos)
     {
