@@ -377,25 +377,36 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public override string OwnerName => Decl.Name;
 }
 
-/// An integer generic argument, such as the `8` in `Array[S64, 8]` or the `P` of `Field[P]` with `needs P: U256`. Its
-/// identity is its value alone, which keeps every bit of the declared type: two arguments that differ only above bit 63
-/// are two types.
-public sealed class ConstArg(BigInteger value, IntType? kind = null) : DType
+/// A value generic argument: an integer, such as the `8` in `Array[S64, 8]` or the `P` of `Field[P]` with `needs P: U256`,
+/// or a choice member, the `RELAXED` of `Cell[RELAXED]` with `needs O: MemoryOrder`. An integer's identity is its value
+/// alone, which keeps every bit of the declared type: two arguments that differ only above bit 63 are two types. A
+/// member's identity is its choice and its value.
+public sealed class ConstArg(BigInteger value, DType? kind = null) : DType
 {
     public BigInteger Value { get; } = value;
 
-    /// The integer type the parameter it binds is declared with (`U256` of `needs P: U256`), which its name has as a value
-    /// in the body. Null where nothing declares one, such as an Array's count, which is a U64.
-    public IntType? Kind { get; } = kind;
+    /// The type the parameter it binds is declared with (`U256` of `needs P: U256`, `MemoryOrder` of `needs O:
+    /// MemoryOrder`), which its name has as a value in the body. Null where nothing declares one, such as an Array's
+    /// count, which is a U64.
+    public DType? Kind { get; } = kind;
 
     /// A value a generic body is checked with before any instance exists: it stands for every value, so a routine
     /// written for one value (`Box[2].get`) is not its routine.
     public bool StandIn { get; init; }
 
     /// The same value as a parameter declared `kind`.
-    public ConstArg As(IntType kind) => new(Value, kind) { StandIn = StandIn };
-    public override string Name => Value.ToString(CultureInfo.InvariantCulture);
-    public override string Llvm => throw new InvalidOperationException($"{Value} is not a type");
+    public ConstArg As(DType kind) => new(Value, kind) { StandIn = StandIn };
+
+    /// The choice member this value is, for a member argument.
+    public string? MemberName => Kind is ChoiceType ct
+        ? ct.Decl.Members.FirstOrDefault(m => m.Value is IntLit lit && lit.Value == Value).Name
+        : null;
+
+    public override string Name => Kind is ChoiceType ct
+        ? $"{ct.Name}.{MemberName ?? Value.ToString(CultureInfo.InvariantCulture)}"
+        : Value.ToString(CultureInfo.InvariantCulture);
+    public override string Key => Kind is ChoiceType ct ? $"{ct.Key}.{Value.ToString(CultureInfo.InvariantCulture)}" : Name;
+    public override string Llvm => throw new InvalidOperationException($"{Name} is not a type");
     public override string OwnerName => Name;
 }
 

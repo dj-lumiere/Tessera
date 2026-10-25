@@ -104,6 +104,16 @@ public sealed partial class Compiler
                 || receiver is PtrType { Pointee: { } held } && Match(fixedOwner, held, vars, binding))
                 foreach (var (name, t) in binding.All) env.Bind(name, t);
         }
+        // An owner argument written as a choice member (`Cell[RELAXED].load`) is that member, not a parameter.
+        if (r.Owner is { Args.Count: > 0 } memberOwner && ownerDecl is RecordDecl or VariantDecl)
+        {
+            var (ownerParams, ownerClauses) = ownerDecl is RecordDecl ord ? (ord.TypeParams, ord.Clauses) : (((VariantDecl)ownerDecl).TypeParams, ((VariantDecl)ownerDecl).Clauses);
+            for (int i = 0; i < memberOwner.Args.Count && i < ownerParams.Count; i++)
+                if (memberOwner.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null, Member: null } bare } && !kinds.ContainsKey(bare.Name)
+                    && ValueKind(ownerClauses, ownerParams[i], ownerDecl.File) is ChoiceType choice
+                    && BareMember(choice, bare.Name, new TypeEnv(r.File), bare.Pos) is { } member)
+                    env.Bind(bare.Name, member);
+        }
         foreach (var name in OwnerTypeParams(r).Concat(r.TypeParams).Distinct().Where(n => !env.Has(n)))
             BindPrecheckParam(env, name, kinds, r.File, r.Pos);
         // The owner's constraints hold in every routine on it, wherever the routine is declared.
@@ -184,8 +194,12 @@ public sealed partial class Compiler
     {
         if (kinds.TryGetValue(name, out var kind))
         {
+            // A choice parameter stands for every member: its first is the value the body is checked with, and a
+            // stand-in never folds a when or an if on it, so every arm is checked.
             env.Bind(name, kind is { Name: "typename", Args.Count: 0 } ? new ArchetypeType(name, ++_archetypes)
-                : new ConstArg(PrecheckCount, ResolveTypeQuiet(kind, new TypeEnv(file)) as IntType) { StandIn = true });
+                : ResolveTypeQuiet(kind, new TypeEnv(file)) is ChoiceType { Decl.IsFlags: false, Decl.Members: [{ Value: IntLit first }, ..] } choice
+                    ? new ConstArg(first.Value, choice) { StandIn = true }
+                    : new ConstArg(PrecheckCount, ResolveTypeQuiet(kind, new TypeEnv(file)) as IntType) { StandIn = true });
             return;
         }
         env.Bind(name, ResolveTypeQuiet(TypeRef.Simple(name, pos), new TypeEnv(file)) ?? new ArchetypeType(name, ++_archetypes));

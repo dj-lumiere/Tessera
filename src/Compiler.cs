@@ -564,6 +564,7 @@ public sealed partial class Compiler
     public string Generate()
     {
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
+        foreach (var d in GenericDecls(d => !d.IsLibrary)) CheckTypeParams(d);
         // A generic routine of the program is checked against its constraints before anything instantiates it, so
         // its error points into the routine, not at a call (GenericPrecheck.cs).
         if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
@@ -587,6 +588,29 @@ public sealed partial class Compiler
         if (Escapes.Verify() is [var escape, ..]) throw escape;
         if (CheckKeptViews() is [var kept, ..]) throw kept;
         return Output();
+    }
+
+    /// The records, variants and routines with parameters that `include` accepts.
+    private IEnumerable<Decl> GenericDecls(Func<Decl, bool> include) =>
+        _records.Values.SelectMany(g => g).Where(d => d.TypeParams.Count > 0).Cast<Decl>()
+            .Concat(_variants.Values.SelectMany(g => g).Where(d => d.TypeParams.Count > 0))
+            .Concat(_allRoutines.Where(r => r.Clauses.Count > 0 && !Tessera.Derive.IsImplicit(r)))
+            .Where(include);
+
+    /// A declaration's value type parameters, checked where they are written, before any use: a kind a value type
+    /// parameter can't have (a flags type).
+    private void CheckTypeParams(Decl d)
+    {
+        var clauses = d switch
+        {
+            RecordDecl rd => rd.Clauses,
+            VariantDecl vd => vd.Clauses,
+            RoutineDecl r => r.Clauses,
+            _ => [],
+        };
+        foreach (var c in clauses)
+            foreach (var (name, _, _) in c.Params)
+                ValueKind(clauses, name, d.File);
     }
 
     /// Checks every non-generic routine, library included, and returns all errors instead of stopping at the
@@ -648,6 +672,11 @@ public sealed partial class Compiler
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => scope is null || scope(c.File)))
         {
             try { CheckPreset(c); }
+            catch (CompileError e) { errors.Add(e); }
+        }
+        foreach (var d in GenericDecls(d => scope is null || scope(d.File)))
+        {
+            try { CheckTypeParams(d); }
             catch (CompileError e) { errors.Add(e); }
         }
         // Generic bodies and conformances against their constraints, before any instantiation (GenericPrecheck.cs).
@@ -1198,7 +1227,8 @@ public sealed partial class Compiler
         var clauseParams = ClauseTypeParams(r.Clauses);
         // An argument written as a type's own name (`Fiber[None].put_work`) is that type, not a parameter.
         return r.Owner.Args.OfType<TypeArgType>()
-            .SelectMany(t => t.Type.Args.Count == 0
+            .SelectMany(t => t.Type.Member is not null ? []
+                : t.Type.Args.Count == 0
                 ? (t.Type.Name is "None" or "Bool" or "Addr" || IntType.FromName(t.Type.Name) is not null ? [] : [t.Type.Name])
                 : NestedNames(t.Type).Where(clauseParams.Contains))
             .Distinct().ToList();
@@ -1248,13 +1278,15 @@ public sealed partial class Compiler
     {
         var r = ResolveTypeInner(t, env, allowVoid);
         if (r is VoidType && !allowVoid) throw new CompileError(t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
-        if (r is ConstArg) throw new CompileError(t.Pos, $"'{t.Name}' is a number, not a type");
+        if (r is ConstArg ca)
+            throw new CompileError(t.Pos, ca.Kind is ChoiceType ct ? $"'{t}' is a member of {ct.Name}, a value, not a type" : $"'{t.Name}' is a number, not a type");
         return r;
     }
 
     private DType ResolveTypeInner(TypeRef t, TypeEnv env, bool allowVoid = false)
     {
         if (t.Known is { } known) return known;
+        if (t.Member is not null) return ResolveMember(t, env);
         void NoArgs()
         {
             if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
@@ -1345,18 +1377,7 @@ public sealed partial class Compiler
 
         if (FindRecord(t.Name, env.File, t.Pos, t.Path) is { } s)
         {
-            if (t.Args.Count != s.TypeParams.Count)
-                throw new CompileError(t.Pos, $"record '{s.Name}' takes {s.TypeParams.Count} generic argument(s), got {t.Args.Count}");
-            var args = new List<DType>();
-            for (int i = 0; i < t.Args.Count; i++)
-                args.Add(t.Args[i] switch
-                {
-                    TypeArgType ta => ResolveTypeInner(ta.Type, env),
-                    TypeArgInt ti => new ConstArg(ti.Value),
-                    TypeArgExpr te => new ConstArg(EvalConstValue(te.Expr, env)),
-                    _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
-                });
-            FitValueArgs(s.TypeParams, s.Clauses, s.File, args, s.Name, t.Pos);
+            var args = GenericArgs(s.TypeParams, s.Clauses, s.File, t.Args, env, $"record '{s.Name}'", s.Name, t.Pos);
             // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
             // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
@@ -1369,18 +1390,7 @@ public sealed partial class Compiler
 
         if (FindVariant(t.Name, env.File, t.Pos, t.Path) is { } v)
         {
-            if (t.Args.Count != v.TypeParams.Count)
-                throw new CompileError(t.Pos, $"variant '{v.Name}' takes {v.TypeParams.Count} generic argument(s), got {t.Args.Count}");
-            var args = new List<DType>();
-            for (int i = 0; i < t.Args.Count; i++)
-                args.Add(t.Args[i] switch
-                {
-                    TypeArgType ta => ResolveTypeInner(ta.Type, env),
-                    TypeArgInt ti => new ConstArg(ti.Value),
-                    TypeArgExpr te => new ConstArg(EvalConstValue(te.Expr, env)),
-                    _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
-                });
-            FitValueArgs(v.TypeParams, v.Clauses, v.File, args, v.Name, t.Pos);
+            var args = GenericArgs(v.TypeParams, v.Clauses, v.File, t.Args, env, $"variant '{v.Name}'", v.Name, t.Pos);
             // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
@@ -1395,8 +1405,10 @@ public sealed partial class Compiler
             return new ChoiceType(e, it);
         }
 
-        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsStorage: false })
-            return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
+        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsStorage: false } preset)
+            return TryResolveType(preset.Type, new TypeEnv(preset.File)) is ChoiceType { Decl.IsFlags: false }
+                ? EvalConstArg(new PresetRef(null, t.Name, t.Pos) { Path = t.Path }, env)
+                : new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
 
         // The binary floating-point types are B16, B32, B64 and B128.
         if (t.Args.Count == 0 && t.Name is "F16" or "F32" or "F64" or "F128")
@@ -1534,7 +1546,10 @@ public sealed partial class Compiler
         {
             case TypeArgInt i: return AsCount(i.Value, pos);
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
+            case TypeArgType { Type: { Member: not null } member }:
+                return EvalConstInt(new PresetRef(member with { Member = null }, member.Member, pos), env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
+                if (env.Get(tr.Name) is ConstArg { Kind: ChoiceType ct }) throw new CompileError(pos, $"'{tr.Name}' is a member of {ct.Name}, not an integer");
                 if (env.Get(tr.Name) is ConstArg ca) return AsCount(ca.Value, pos);
                 if (FindPreset("", tr.Name, env.File, pos) is not null) return EvalConstInt(new PresetRef(null, tr.Name, pos), env, 0);
                 throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
@@ -1573,41 +1588,180 @@ public sealed partial class Compiler
     private static long AsCount(BigInteger value, Pos pos) =>
         value < long.MinValue || value > long.MaxValue ? throw new CompileError(pos, $"{value} is too large here") : (long)value;
 
-    /// The integer type a `needs` line declares a value parameter with (`U256` of `needs P: U256`), or null for a type
-    /// parameter, a name the lines don't declare, or a kind that isn't an integer type.
-    public IntType? ValueKind(List<Clause> clauses, string name, string file)
+    /// The type a `needs` line declares a value parameter with: an integer type (`U256` of `needs P: U256`) or a choice
+    /// (`MemoryOrder` of `needs O: MemoryOrder`). Null for a type parameter, a name the lines don't declare, or a kind
+    /// that is neither. A flags type is a build error: a value of one has any set of its members on, so it is no one
+    /// member a `when` can pick.
+    public DType? ValueKind(List<Clause> clauses, string name, string file)
     {
         foreach (var c in clauses)
-            foreach (var (n, kind, _) in c.Params)
+            foreach (var (n, kind, at) in c.Params)
             {
                 if (n != name) continue;
                 if (kind is { Name: "typename", Args.Count: 0 }) return null;
-                try { return ResolveType(kind, new TypeEnv(file)) as IntType is { IsNumber: true } it ? it : null; }
+                DType resolved;
+                try { resolved = ResolveType(kind, new TypeEnv(file)); }
                 catch (CompileError) { return null; }
+                return resolved switch
+                {
+                    IntType { IsNumber: true } it => it,
+                    ChoiceType { Decl.IsFlags: false } ct => ct,
+                    ChoiceType flags => throw new CompileError(at, $"{name} is declared a {flags.Name}, which is a flags type: a "
+                        + "value type parameter takes an integer type or a choice, one value a when can pick, and a flags value "
+                        + $"has any set of its members on. Declare {name} with a choice, or pass the flags value as an argument"),
+                    _ => null,
+                };
             }
         return null;
     }
 
-    /// Gives each value argument of a generic type or routine the integer type its parameter is declared with, and makes
-    /// a value the type can't hold a build error: `Field[300]` with `needs P: U8`.
-    public void FitValueArgs(List<string> typeParams, List<Clause> clauses, string file, List<DType> args, string owner, Pos pos)
+    /// Whether a `needs` line declares `name` a type parameter (`T: typename`).
+    public static bool DeclaresTypename(List<Clause> clauses, string name) =>
+        clauses.Any(c => c.Params.Any(p => p.Name == name && p.Kind is { Name: "typename", Args.Count: 0 }));
+
+    /// Whether a `needs` line declares `name` a value parameter, of any kind (`N: U64`, `O: MemoryOrder`).
+    public static bool DeclaresValue(List<Clause> clauses, string name) =>
+        clauses.Any(c => c.Params.Any(p => p.Name == name && p.Kind is not { Name: "typename", Args.Count: 0 }));
+
+    /// The arguments a generic record or variant is written with, each resolved by what its parameter takes.
+    private List<DType> GenericArgs(List<string> typeParams, List<Clause> clauses, string file, List<TypeArg> written,
+        TypeEnv env, string what, string owner, Pos pos)
     {
-        for (int i = 0; i < typeParams.Count && i < args.Count; i++)
-            if (args[i] is ConstArg ca && ValueKind(clauses, typeParams[i], file) is { } kind)
-                args[i] = FitValue(ca, kind, typeParams[i], owner, pos);
+        if (written.Count != typeParams.Count)
+            throw new CompileError(pos, $"{what} takes {typeParams.Count} generic argument(s), got {written.Count}");
+        var args = new List<DType>();
+        for (int i = 0; i < written.Count; i++)
+            args.Add(ArgFor(written[i], typeParams[i], clauses, file, env, owner, pos));
+        return args;
     }
 
-    /// One value argument as a parameter declared `kind`, or a build error when the value doesn't fit.
-    public static ConstArg FitValue(ConstArg arg, IntType kind, string param, string owner, Pos pos)
+    /// One argument written for the parameter `param` of the generic type or routine `owner`, resolved by what the
+    /// parameter takes: a type for a type parameter, and for a value parameter a value its type holds. A choice
+    /// parameter takes a member bare (`RELAXED`), since the parameter names the choice, or with the choice
+    /// (`MemoryOrder.RELAXED`). A preset, a type or a value parameter of the same name hides the bare member.
+    public DType ArgFor(TypeArg written, string param, List<Clause> clauses, string file, TypeEnv env, string owner, Pos pos)
     {
-        if (!arg.StandIn && (arg.Value < kind.MinValue || arg.Value > kind.MaxValue))
-            throw new CompileError(pos, $"{param} of '{owner}' is a {kind.Name}, which holds {kind.MinValue}..{kind.MaxValue}, "
+        var kind = ValueKind(clauses, param, file);
+        bool isValue = kind is not null || DeclaresValue(clauses, param);
+        bool isType = DeclaresTypename(clauses, param);
+        DType arg;
+        if (kind is ChoiceType ct && written is TypeArgType { Type: { Args.Count: 0, Path: null, Member: null, Known: null } bare }
+            && BareMember(ct, bare.Name, env, bare.Pos) is { } member)
+            arg = member;
+        else
+        {
+            try
+            {
+                arg = written switch
+                {
+                    TypeArgType ta => ResolveTypeInner(ta.Type, env),
+                    TypeArgInt ti => new ConstArg(ti.Value),
+                    TypeArgExpr te => EvalConstArg(te.Expr, env),
+                    _ => throw new CompileError(pos, $"invalid generic argument for '{owner}'"),
+                };
+            }
+            catch (CompileError) when (kind is ChoiceType choice
+                                       && written is TypeArgType { Type: { Args.Count: 0, Path: null, Member: null, Known: null } unknown })
+            {
+                throw new CompileError(unknown.Pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), "
+                    + $"and {choice.Name} has no member {unknown.Name}: pass one of those");
+            }
+        }
+        if (arg is VoidType) throw new CompileError(pos, "None as a value is the one value None(); as a type it is the return of nothing");
+        Pos at = written is TypeArgType { Type.Pos: var wp } ? wp : pos;
+        // A parameter being checked (an archetype) or a slot two signatures are compared by stands for any argument.
+        if (isValue && arg is not (ConstArg or ArchetypeType or SlotType))
+            throw new CompileError(at, kind is ChoiceType wanted
+                ? $"{param} of '{owner}' takes a member of {wanted.Name} ({Members(wanted)}), and {written} is a type: pass one of those"
+                : $"{param} of '{owner}' is a value, and {written} is a type: pass a number, a value parameter or a preset");
+        if (isType && arg is ConstArg given)
+            throw new CompileError(at, $"{param} of '{owner}' is a type, and {given.Name} is "
+                + (given.Kind is ChoiceType of ? $"a member of {of.Name}" : "a number") + ": pass a type there");
+        return arg is ConstArg value && kind is not null ? FitValue(value, kind, param, owner, at) : arg;
+    }
+
+    /// `name` as a member of `choice` where a value of it goes, unless a preset, a type or a bound name of the same
+    /// spelling is visible there: then the name is that.
+    private ConstArg? BareMember(ChoiceType choice, string name, TypeEnv env, Pos pos)
+    {
+        if (choice.Decl.Members.FirstOrDefault(m => m.Name == name) is not { Name: not null, Value: IntLit lit }) return null;
+        if (env.Get(name) is not null || TypeDeclQuiet(name, env.File, null) is not null || IntType.FromName(name) is not null) return null;
+        try
+        {
+            if (FindPreset("", name, env.File, pos) is not null) return null;
+        }
+        catch (CompileError) { return null; }
+        return new ConstArg(lit.Value, choice);
+    }
+
+    /// The `i`th argument of the generic type `generic` when it is written as a choice member (`MemoryOrder.RELAXED`, or
+    /// `RELAXED` where the parameter is declared with that choice), or null for any other argument.
+    public ConstArg? WrittenValueArg(TypeRef generic, int i, TypeArgType arg, TypeEnv env)
+    {
+        if (arg.Type.Member is not null) return ResolveMember(arg.Type, env) as ConstArg;
+        if (arg.Type is not { Args.Count: 0, Path: null, Known: null } bare) return null;
+        var (typeParams, clauses, file) = TypeDeclQuiet(generic.Name, env.File, generic.Path) switch
+        {
+            RecordDecl rd => (rd.TypeParams, rd.Clauses, rd.File),
+            VariantDecl vd => (vd.TypeParams, vd.Clauses, vd.File),
+            _ => ([], [], ""),
+        };
+        if (i >= typeParams.Count) return null;
+        return ValueKind(clauses, typeParams[i], file) is ChoiceType choice ? BareMember(choice, bare.Name, env, bare.Pos) : null;
+    }
+
+    /// A choice's members, for a message: `RELAXED, ACQUIRE, RELEASE`.
+    public static string Members(ChoiceType choice) => string.Join(", ", choice.Decl.Members.Select(m => m.Name));
+
+    /// A value type argument written as an expression (`N + 1`, `MemoryOrder.RELAXED`, a preset): an integer, or a
+    /// member of a choice when the expression folds to one.
+    public ConstArg EvalConstArg(Expr e, TypeEnv env)
+    {
+        var v = Fold(e, null, env);
+        return v.Type switch
+        {
+            null or IntType => new ConstArg(v.Value),
+            ChoiceType { Decl.IsFlags: false } ct => new ConstArg(v.Value, ct),
+            _ => throw new CompileError(e.Pos, $"expected a buildtime integer or a choice member, found {v.Type.Name}"),
+        };
+    }
+
+    /// One value argument as a parameter declared `kind`, or a build error when the value doesn't fit: a number out of
+    /// an integer type's range, a number or another choice's member where a choice member goes, or a member where a
+    /// number goes.
+    public static ConstArg FitValue(ConstArg arg, DType kind, string param, string owner, Pos pos)
+    {
+        if (kind is ChoiceType choice)
+        {
+            if (arg.Kind is ChoiceType same && same.Equals(choice)) return arg;
+            string given = arg.Kind is ChoiceType other ? $"{arg.Name} is a member of {other.Name}" : $"{arg.Name} is a number";
+            throw new CompileError(pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), and {given}: "
+                + $"pass one of those, bare or with the choice ({choice.Decl.Members[0].Name} or {choice.Name}.{choice.Decl.Members[0].Name})");
+        }
+        if (arg.Kind is ChoiceType member)
+            throw new CompileError(pos, $"{param} of '{owner}' is a {kind.Name}, and {arg.Name} is a member of {member.Name}: "
+                + "pass a number, a value parameter or a preset");
+        var number = (IntType)kind;
+        if (!arg.StandIn && (arg.Value < number.MinValue || arg.Value > number.MaxValue))
+            throw new CompileError(pos, $"{param} of '{owner}' is a {number.Name}, which holds {number.MinValue}..{number.MaxValue}, "
                 + $"and {arg.Value} is outside that: pass a value in that range, or declare {param} with a wider type");
-        return arg.As(kind);
+        return arg.As(number);
     }
 
-    /// A type argument that may also be a value: a type, or a ConstArg for a number, a value parameter in scope or a
-    /// preset (`f[4](x)`, `f[K](x)`, `f[COUNT](x)`).
+    /// A choice member as a value argument: `MemoryOrder.RELAXED`. For a type that isn't a choice, `T.NAME` is that
+    /// type's preset, folded like any value argument.
+    private DType ResolveMember(TypeRef t, TypeEnv env)
+    {
+        var ownerRef = t with { Member = null };
+        if (TryResolveType(ownerRef, env) is ChoiceType { Decl.IsFlags: false } choice)
+            return choice.Decl.Members.FirstOrDefault(m => m.Name == t.Member) is { Name: not null, Value: IntLit lit }
+                ? new ConstArg(lit.Value, choice)
+                : throw new CompileError(t.Pos, $"{choice.Name} has no member {t.Member}: its members are {Members(choice)}");
+        return EvalConstArg(new PresetRef(ownerRef, t.Member!, t.Pos), env);
+    }
+
+    /// A type argument that may also be a value: a type, or a ConstArg for a number, a value parameter in scope, a
+    /// preset or a choice member (`f[4](x)`, `f[K](x)`, `f[COUNT](x)`, `f[MemoryOrder.RELAXED](x)`).
     public DType ResolveTypeOrValue(TypeRef t, TypeEnv env)
     {
         var r = ResolveTypeInner(t, env);

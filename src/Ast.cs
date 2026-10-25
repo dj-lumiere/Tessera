@@ -24,7 +24,12 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// failable routine value to such a parameter fails the way the value does.
     public bool Failable { get; init; }
 
+    /// `MemoryOrder.RELAXED` as a type argument: the member of the choice the rest of the reference names, a value for a
+    /// value type parameter declared with that choice.
+    public string? Member { get; init; }
+
     public override string ToString() =>
+        Member is not null ? (Path is null ? "" : Path + "/") + Name + "." + Member :
         Amp && Name == "BorrowedCell" && Args is [TypeArgType boxed] ? $"&{boxed}"
         : Amp && Name == "BorrowedSlice" && Args is [TypeArgType elems] ? $"&[{elems}]"
         : Path is null && Name == UnionName ? string.Join(" | ", Args)

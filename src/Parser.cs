@@ -1413,12 +1413,26 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // expression.
         var type = ParseType();
         if (EndsTypeArg()) return new TypeArgType(type);
+        if (ChoiceMemberFollows(type)) return new TypeArgType(ChoiceMember(type));
         _i = start;
         return new TypeArgExpr(ParseExpr());
     }
 
     /// Whether the token after a type argument ends it: the `,` before the next one or the `]` closing the list.
     private bool EndsTypeArg() => Is(TokenKind.Comma) || Is(TokenKind.RBracket);
+
+    /// `MemoryOrder.RELAXED` as a whole type argument: a plain type name, a dot, a member name, then the argument's end.
+    private bool ChoiceMemberFollows(TypeRef type) =>
+        type is { Args.Count: 0, Amp: false, Member: null } && type.Name != TypeRef.UnionName && Is(TokenKind.Dot)
+        && PeekTok(1).Kind == TokenKind.Ident
+        && PeekTok(2).Kind is TokenKind.Comma or TokenKind.RBracket;
+
+    /// Reads the `.MEMBER` after a choice's name.
+    private TypeRef ChoiceMember(TypeRef choice)
+    {
+        Next();
+        return choice with { Member = Next().Text };
+    }
 
     /// Whether the current token can start a type: a name, `@` or `(`.
     private bool StartsType() => Is(TokenKind.Ident) || Is(TokenKind.At) || Is(TokenKind.LParen);
@@ -2687,7 +2701,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var list = new List<TypeRef>();
         if (!Accept(TokenKind.LBracket)) return list;
-        do list.Add(Is(TokenKind.Int) && PeekTok(1).Kind is TokenKind.Comma or TokenKind.RBracket ? ValueTypeArg(Next()) : ParseType());
+        do
+        {
+            if (Is(TokenKind.Int) && PeekTok(1).Kind is TokenKind.Comma or TokenKind.RBracket)
+            {
+                list.Add(ValueTypeArg(Next()));
+                continue;
+            }
+            var type = ParseType();
+            list.Add(ChoiceMemberFollows(type) ? ChoiceMember(type) : type);
+        }
         while (Accept(TokenKind.Comma));
         Expect(TokenKind.RBracket, "']'");
         return list;

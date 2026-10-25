@@ -2885,6 +2885,19 @@ public sealed partial class FunctionGen
                     Terminate($"br label %{label}");
                     break;
                 }
+                // A condition the builder knows (`O == MemoryOrder.ACQUIRE` in an instance for ACQUIRE) takes its arm
+                // or skips it without a test.
+                // A condition the builder knows (`O == MemoryOrder.ACQUIRE` in an instance for ACQUIRE) is no test: a
+                // false one goes on to the next arm, and a true one goes to its arm, so the arms after it are written
+                // where nothing reaches them.
+                if (KnownCondition(arm.Cond!) is { } holds)
+                {
+                    string knownArm = Arm(arm, null);
+                    if (!holds) continue;
+                    Terminate($"br label %{knownArm}");
+                    _cur = NewLBlock("sel");
+                    continue;
+                }
                 var c = Eval(arm.Cond!, BoolType.Instance);
                 string armLabel = Arm(arm, null);
                 var next = NewLBlock("sel");
@@ -2911,7 +2924,7 @@ public sealed partial class FunctionGen
                 try { EmitVariantWhen(w, v, vt, Arm, armNames); }
                 finally { _whenScrutinee = outerScrutinee; }
             }
-            else EmitSwitchWhen(w, v, Arm);
+            else EmitSwitchWhen(w, v, Arm, known: ReadsValueParam(w.Value));
         }
 
         _cur = join;
@@ -2928,8 +2941,10 @@ public sealed partial class FunctionGen
                     + "to use what an arm observed after the when, make the when a value (x: T = when ...)";
     }
 
-    /// `when v` on an integer, a Byte, a Char, or a choice: a switch on the value.
-    private void EmitSwitchWhen(WhenStmt w, Val v, Func<WhenArm, Action?, string> armBlock)
+    /// `when v` on an integer, a Byte, a Char, or a choice: a switch on the value. When `known`, v is a value type
+    /// parameter of this instance (`when O`), so the builder goes straight to the arm for its value, and nothing tests
+    /// the value.
+    private void EmitSwitchWhen(WhenStmt w, Val v, Func<WhenArm, Action?, string> armBlock, bool known = false)
     {
         if (FlagsOf(v.Type) is { } flagsWhen)
             throw Err(w.Value!.Pos, $"a {flagsWhen.Name} value can have several members on at once, so when has no one arm to pick: "
@@ -2940,7 +2955,8 @@ public sealed partial class FunctionGen
             throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
         if (w.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
             throw Err(observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
-        string? defaultLabel = null;
+        known = known && long.TryParse(v.Op, out _);
+        string? defaultLabel = null, takenLabel = null;
         var cases = new List<string>();
         var seen = new HashSet<string>();
         foreach (var arm in w.Arms)
@@ -2963,16 +2979,12 @@ public sealed partial class FunctionGen
                 caseOps.Add(cv.Op);
             }
             string label = armBlock(arm, null);
+            if (known && caseOps.Contains(v.Op)) takenLabel = label;
             foreach (var op in caseOps) cases.Add($"{v.Type.Llvm} {op}, label %{label}");
         }
         if (defaultLabel is null && v.Type is ChoiceType en)
         {
-            // Without else, a when on a choice must name every member.
-            var missing = en.Decl.Members
-                .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
-                .Select(mem => mem.Name).ToList();
-            if (missing.Count > 0)
-                throw Err(w.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
+            RequireEveryMember(w, en, seen);
             var saved = _cur;
             _cur = NewLBlock("nocase");
             defaultLabel = _cur.Label;
@@ -2981,8 +2993,50 @@ public sealed partial class FunctionGen
         }
         if (defaultLabel is null)
             throw Err(w.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
-        Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
+        // The value known, the arm it picks is the one way on: the other arms are written but nothing reaches them.
+        Terminate(known
+            ? $"br label %{takenLabel ?? defaultLabel}"
+            : $"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
+
+    /// Without else, a when on a choice must name every member.
+    private void RequireEveryMember(WhenStmt w, ChoiceType en, HashSet<string> seen)
+    {
+        var missing = en.Decl.Members
+            .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
+            .Select(mem => mem.Name).ToList();
+        if (missing.Count > 0)
+            throw Err(w.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
+    }
+
+    /// The answer to a condition that reads a value type parameter of this instance and nothing the builder doesn't
+    /// know (`O == MemoryOrder.ACQUIRE`, `N > 4 and N < 9`), so the builder writes only the code it takes. Null for any
+    /// other condition, and while a generic body is checked against stand-ins, which stand for every value, so every
+    /// arm is checked then.
+    private bool? KnownCondition(Expr cond) =>
+        ReadsValueParam(cond) && Buildtime(cond) ? _c.FoldCondition(cond, _env) : null;
+
+    /// Whether an expression reads a value type parameter bound to a value of this instance.
+    private bool ReadsValueParam(Expr? e) => e switch
+    {
+        PresetRef { Owner: null, Path: null } r => _env.Get(r.Name) is ConstArg { StandIn: false },
+        BinaryExpr b => ReadsValueParam(b.Left) || ReadsValueParam(b.Right),
+        UnaryExpr u => ReadsValueParam(u.Operand),
+        _ => false,
+    };
+
+    /// Whether every part of a condition is known when the builder writes it: literals, value type parameters and
+    /// choice members, under comparisons, `and`, `or` and `not`.
+    private bool Buildtime(Expr e) => e switch
+    {
+        IntLit or BoolLit or TypedIntLit => true,
+        UnaryExpr { Op: "-", Operand: IntLit } => true,
+        PresetRef { Owner: null, Path: null } r => _env.Get(r.Name) is ConstArg,
+        PresetRef { Owner: { } owner } => TryResolveOwner(owner) is ChoiceType { Decl.IsFlags: false },
+        BinaryExpr { Op: "==" or "!=" or "<" or "<=" or ">" or ">=" or "and" or "or" } b => Buildtime(b.Left) && Buildtime(b.Right),
+        UnaryExpr { Op: "not" } n => Buildtime(n.Operand),
+        _ => false,
+    };
 
     /// A `when` on a variant switches on its tag's leaf type ID. An arm that names the value reads it out of a stack
     /// copy before its body. `else as rest` names what is left: the one leaf no arm observes, the variant written
@@ -3467,11 +3521,15 @@ public sealed partial class FunctionGen
     /// `if c then a else b` as a value: only the side taken is evaluated.
     private Val EvalIf(IfExpr s, DType expected)
     {
-        var c = Eval(s.Cond, BoolType.Instance);
+        // A condition the builder knows is no test: the side it takes is the one way on.
+        bool? known = KnownCondition(s.Cond);
+        var c = known is null ? Eval(s.Cond, BoolType.Instance) : null;
         var thenB = NewLBlock("then");
         var elseB = NewLBlock("else");
         var join = NewLBlock("endif");
-        Terminate($"br i1 {c.Op}, label %{thenB.Label}, label %{elseB.Label}");
+        Terminate(known is { } taken
+            ? $"br label %{(taken ? thenB : elseB).Label}"
+            : $"br i1 {c!.Op}, label %{thenB.Label}, label %{elseB.Label}");
         _cur = thenB;
         var a = Eval(s.Then, expected);
         string aPred = _cur.Label;
@@ -3729,6 +3787,8 @@ public sealed partial class FunctionGen
         string file = _env.File;
         if (r.Owner is null)
         {
+            if (_env.Get(r.Name) is ConstArg { Kind: ChoiceType member } chosen)
+                return new PresetInfo(member, _ => IntConst(chosen.Value, r.Pos, member));
             if (_env.Get(r.Name) is ConstArg ca)
                 return new PresetInfo(ca.Kind ?? _c.Count, exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
@@ -4734,7 +4794,7 @@ public sealed partial class FunctionGen
         if (actual.Count != o.Args.Count) throw Err(pos, $"{owner} does not match '{o}'");
         // An argument written as a type's own name (`Fiber[None].put_work`) is that type, not a parameter to bind.
         for (int i = 0; i < o.Args.Count; i++)
-            if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta && !PrimitiveOrRecordName(ta.Type.Name))
+            if (o.Args[i] is TypeArgType { Type: { Args.Count: 0, Member: null } } ta && !PrimitiveOrRecordName(ta.Type.Name))
                 env.Bind(ta.Type.Name, actual[i]);
         _c.BindNestedOwnerArgs(r, actual, env);
         env.Bind("Me", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
@@ -4792,25 +4852,16 @@ public sealed partial class FunctionGen
     }
 
     /// One type argument a call writes: a type for a type parameter, and for a value parameter a value (a number, a value
-    /// parameter in scope, a preset) the parameter's integer type holds.
-    private DType ExplicitTypeArg(RoutineDecl r, string param, TypeRef written)
-    {
-        var kind = _c.ValueKind(r.Clauses, param, r.File);
-        bool isValue = kind is not null || r.Clauses.Any(c => c.Params.Any(p => p.Name == param && p.Kind is not { Name: "typename", Args.Count: 0 }));
-        var arg = _c.ResolveTypeOrValue(written, _env);
-        if (isValue && arg is not ConstArg)
-            throw Err(written.Pos, $"{param} of '{r.DisplayName}' is a value, and {written} is a type: pass a number, a value parameter or a preset");
-        if (!isValue && arg is ConstArg)
-            throw Err(written.Pos, $"{param} of '{r.DisplayName}' is a type, and {written} is a number: pass a type there");
-        return arg is ConstArg value && kind is not null ? Compiler.FitValue(value, kind, param, r.DisplayName, written.Pos) : arg;
-    }
+    /// parameter in scope, a preset, a choice member) the parameter's type holds.
+    private DType ExplicitTypeArg(RoutineDecl r, string param, TypeRef written) =>
+        _c.ArgFor(new TypeArgType(written), param, r.Clauses, r.File, _env, r.DisplayName, written.Pos);
 
     /// A call's type argument written as a number or an expression (`f[4](x)`, `f[N + 1](x)`), as the value it folds to.
     private TypeRef ValueTypeArg(TypeArg a, Pos pos) => a switch
     {
         TypeArgType t => t.Type,
         TypeArgInt n => new TypeRef(n.Value.ToString(CultureInfo.InvariantCulture), [], pos) { Known = new ConstArg(n.Value) },
-        TypeArgExpr x => new TypeRef(x.ToString(), [], x.Expr.Pos) { Known = new ConstArg(_c.EvalConstValue(x.Expr, _env)) },
+        TypeArgExpr x when _c.EvalConstArg(x.Expr, _env) is var folded => new TypeRef(folded.Name, [], x.Expr.Pos) { Known = folded },
         _ => throw Err(pos, "a call's type arguments are types and values"),
     };
 
@@ -5574,7 +5625,10 @@ public sealed partial class FunctionGen
     {
         var outerNames = _values.Keys.ToHashSet();
         int temps = _statementTemps.Count;
-        var c = Eval(i.Cond, BoolType.Instance);
+        // A condition the builder knows is no test: the side it takes is the one way on, and the other is written
+        // where nothing reaches it.
+        bool? known = KnownCondition(i.Cond);
+        var c = known is null ? Eval(i.Cond, BoolType.Instance) : null;
         FlushTemps(temps);
         var thenB = NewLBlock("then");
         var elseB = i.Else is null ? null : NewLBlock("else");
@@ -5584,7 +5638,9 @@ public sealed partial class FunctionGen
         string? elseRegion = i.Else is null ? null : NewRegion("else");
         MemEdge(thenRegion, pos: i.Pos);
         MemEdge(elseRegion ?? joinRegion, pos: i.Pos);
-        Terminate($"br i1 {c.Op}, label %{thenB.Label}, label %{(elseB ?? join).Label}");
+        Terminate(known is { } taken
+            ? $"br label %{(taken ? thenB : elseB ?? join).Label}"
+            : $"br i1 {c!.Op}, label %{thenB.Label}, label %{(elseB ?? join).Label}");
         int reached = i.Else is null ? 1 : 0;
 
         void Arm(LBlock block, string region, List<Stmt> body)

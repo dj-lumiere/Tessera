@@ -785,6 +785,18 @@ routine start() -> None
   included (`L.trailing_zeros()`, `P.to_wrap[U64]()`). A call names one like a type argument, as a number, an
   expression, a value parameter in scope or a preset (`first[4](a)`, `count[N + 1]()`, `first[K](x)`,
   `b.times[7]()`), and passing a type there, or a number where a type goes, is a build error.
+- **A value type parameter can be a choice.** `needs O: MemoryOrder` takes a member of the choice. The argument is
+  the member, bare or with its choice (`Cell[RELAXED]`, `x.f[MemoryOrder.RELAXED](1)`): the parameter names the
+  choice, so the bare name is enough there, and a preset, a type or a value parameter of the same name hides it. A
+  choice-typed preset works too (`f[USUAL]()`). Members are told apart in type identity and in symbols (`Cell[RELAXED]`
+  and `Cell[ACQUIRE]` are two types, and `f[RELAXED]` and `f[ACQUIRE]` two instances). In the body `O` is a value of
+  the choice: `when O`, `O == MemoryOrder.ACQUIRE` (a member in an expression is written with its choice, as
+  anywhere), `o: MemoryOrder = O`, and `f[O](x)` to pass it on. Each instance knows `O`, so a `when O`, a condition
+  `when` arm or an `if` whose condition reads only value parameters, literals and choice members goes straight to the
+  side it takes: no test is written for it (the other arms are still built, and nothing reaches them). A number, a
+  member of another choice, a name that is no member, or a type where the member goes is a build error that names the
+  choice and its members, and so is a member where a number or a type goes. A flags type can't be a value
+  parameter's kind (a value of one has any set of its members on): that is a build error too.
 - `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
   with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
@@ -946,7 +958,8 @@ routine start() -> None
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
   one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_callable`) beats the
   generic receiver type's (`Thread[T].put_callable`) for that receiver, as one with a value named (`routine
-  Box[2].get`) beats `Box[L].get` for a `Box[2]`; two that each name a different argument (`Pair[2, B].get` and
+  Box[2].get`) beats `Box[L].get` for a `Box[2]`, and one with a choice member named (`routine Cell[RELAXED].load`
+  or `Cell[MemoryOrder.RELAXED].load`) beats `Cell[O].load` for a `Cell[RELAXED]`; two that each name a different argument (`Pair[2, B].get` and
   `Pair[A, 3].get` on a `Pair[2, 3]`) are ambiguous. A receiver type argument may nest the routine's type parameter:
   `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic

@@ -108,7 +108,32 @@ public sealed partial class Compiler
 
     /// Whether a name in a routine owner's `<...>` is a type parameter (it names no type): `T` in `List[T].push`.
     private bool ClauseTypeParamsOrOwnerArg(RoutineDecl r, string name) =>
-        OwnerTypeParams(r).Contains(name) && !(IntType.FromName(name) is not null || DeclaresType(name));
+        OwnerTypeParams(r).Contains(name) && !(IntType.FromName(name) is not null || DeclaresType(name)) && !IsOwnerMember(r, name);
+
+    /// Whether a bare name among a routine owner's arguments is a member of the choice its slot is declared with
+    /// (`RELAXED` in `Cell[RELAXED].load` with `needs O: MemoryOrder` on Cell), so the routine is for that member, not
+    /// for every value. A name the routine's own needs lines declare is a parameter.
+    public bool IsOwnerMember(RoutineDecl r, string name)
+    {
+        if (r.Owner is not { Args.Count: > 0 } owner || r.Clauses.Any(c => c.Params.Any(p => p.Name == name))) return false;
+        var (typeParams, clauses) = OwnerDecl(r) switch
+        {
+            RecordDecl rd => (rd.TypeParams, rd.Clauses),
+            VariantDecl vd => (vd.TypeParams, vd.Clauses),
+            _ => ([], []),
+        };
+        for (int i = 0; i < owner.Args.Count && i < typeParams.Count; i++)
+            if (owner.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null, Member: null } bare } && bare.Name == name)
+            {
+                try
+                {
+                    return ValueKind(clauses, typeParams[i], OwnerDecl(r)!.File) is ChoiceType choice
+                           && BareMember(choice, name, new TypeEnv(r.File), bare.Pos) is not null;
+                }
+                catch (CompileError) { return false; }
+            }
+        return false;
+    }
 
     private string? KeyQuiet(TypeRef t, TypeEnv env)
     {
@@ -324,6 +349,17 @@ public sealed partial class Compiler
                 continue;
             }
             if (o.Args[i] is not TypeArgType { Type: var t }) continue;
+            // `Cell[RELAXED].load` and `Cell[MemoryOrder.RELAXED].load` are for that member only, as `Box[2].get` is for 2.
+            if (actual[i] is ConstArg { Kind: ChoiceType choice } member
+                && (t.Member is not null || t.Args.Count == 0 && !m.Clauses.Any(c => c.Params.Any(p => p.Name == t.Name))))
+            {
+                var env = new TypeEnv(m.File);
+                ConstArg? wanted;
+                try { wanted = t.Member is not null ? ResolveMember(t, env) as ConstArg : BareMember(choice, t.Name, env, t.Pos); }
+                catch (CompileError) { wanted = null; }
+                if (wanted is null || member.StandIn || !wanted.Equals(member)) return false;
+                continue;
+            }
             if (t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)) continue;
             // A type parameter being checked (an archetype) stands for any type: a routine written for one named
             // type (`Fiber[None].retrieve`) is not its routine.

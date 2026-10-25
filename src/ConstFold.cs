@@ -468,6 +468,52 @@ public sealed partial class Compiler
         return new ConstVal(to, a);
     }
 
+    /// The answer to a condition every part of which the builder knows, such as `O == MemoryOrder.ACQUIRE` in an
+    /// instance whose value parameter O is ACQUIRE: comparisons of integers and of choice members (`==` and `!=`),
+    /// `and`, `or`, `not` and Bool constants. Null when any part isn't known at build time, and the condition is then
+    /// tested where it runs.
+    public bool? FoldCondition(Expr e, TypeEnv env)
+    {
+        try { return Truth(e, env); }
+        catch (CompileError) { return null; }
+    }
+
+    private bool Truth(Expr e, TypeEnv env)
+    {
+        switch (e)
+        {
+            case UnaryExpr { Op: "not" } n:
+                return !Truth(n.Operand, env);
+            case BinaryExpr { Op: "and" } a:
+                return Truth(a.Left, env) && Truth(a.Right, env);
+            case BinaryExpr { Op: "or" } o:
+                return Truth(o.Left, env) || Truth(o.Right, env);
+            case BinaryExpr { Op: "==" or "!=" or "<" or "<=" or ">" or ">=" } c:
+            {
+                var left = Fold(c.Left, null, env);
+                var right = Fold(c.Right, left.Type, env);
+                if (left.Type is null && right.Type is not null) left = Typed(left, right.Type, c.Left.Pos);
+                if (right.Type is null && left.Type is not null) right = Typed(right, left.Type, c.Right.Pos);
+                if (left.Type is null || !left.Type.Equals(right.Type)
+                    || left.Type is not (IntType { IsNumber: true } or ChoiceType { Decl.IsFlags: false } or BoolType)
+                    || left.Type is not IntType && c.Op is not ("==" or "!="))
+                    throw new CompileError(c.Pos, "not a buildtime comparison");
+                int order = left.Value.CompareTo(right.Value);
+                return c.Op switch
+                {
+                    "==" => order == 0,
+                    "!=" => order != 0,
+                    "<" => order < 0,
+                    "<=" => order <= 0,
+                    ">" => order > 0,
+                    _ => order >= 0,
+                };
+            }
+            default:
+                return FoldBool(e, env);
+        }
+    }
+
     /// A Bool operand of `and`, `or` or `not` in a preset.
     private bool FoldBool(Expr e, TypeEnv env) => !Typed(Fold(e, BoolType.Instance, env), BoolType.Instance, e.Pos, 0).Value.IsZero;
 

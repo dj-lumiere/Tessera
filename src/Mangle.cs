@@ -212,15 +212,16 @@ public sealed partial class Compiler
 
         private void TemplateArg(DType a)
         {
-            if (a is ConstArg ca) Literal(ca.Value);
+            if (a is ConstArg ca) Literal(ca.Value, ca.Kind as ChoiceType);
             else Type(a);
         }
 
-        /// An integer generic argument: a literal of the named U64 type, with every digit of its value.
-        private void Literal(BigInteger value)
+        /// A value generic argument: a literal of the named U64 type with every digit of its value, or for a choice member
+        /// a literal of the choice, so two choices' members of one value are two arguments.
+        private void Literal(BigInteger value, ChoiceType? choice = null)
         {
             Out("L");
-            Type(c.Count);
+            Type(choice ?? (DType)c.Count);
             Out(value < 0 ? "n" + (-value).ToString(CultureInfo.InvariantCulture) : value.ToString(CultureInfo.InvariantCulture));
             Out("E");
         }
@@ -348,13 +349,17 @@ public sealed partial class Compiler
                 Args = () =>
                 {
                     Out("I");
-                    foreach (var a in t.Args)
+                    for (int at = 0; at < t.Args.Count; at++)
                     {
+                        var a = t.Args[at];
                         switch (a)
                         {
-                            case TypeArgType { Type: { Path: null, Args.Count: 0 } p }
+                            case TypeArgType { Type: { Path: null, Args.Count: 0, Member: null } p }
                                 when fnParams.TryGetValue(p.Name, out int i) && env.Get(p.Name) is ConstArg:
                                 Out("X" + (i == 0 ? "T_" : $"T{i - 1}_") + "E");
+                                break;
+                            case TypeArgType ta when c.WrittenValueArg(t, at, ta, env) is { } value:
+                                Literal(value.Value, value.Kind as ChoiceType);
                                 break;
                             case TypeArgType ta: TypeRef(ta.Type, env, fnParams); break;
                             case TypeArgInt ti: Literal(ti.Value); break;
