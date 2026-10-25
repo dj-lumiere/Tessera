@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 
 namespace Tessera;
@@ -215,8 +216,8 @@ public sealed partial class Compiler
             else Type(a);
         }
 
-        /// An integer generic argument: a literal of the named U64 type.
-        private void Literal(long value)
+        /// An integer generic argument: a literal of the named U64 type, with every digit of its value.
+        private void Literal(BigInteger value)
         {
             Out("L");
             Type(c.Count);

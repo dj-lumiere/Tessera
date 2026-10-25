@@ -3729,7 +3729,7 @@ public sealed partial class FunctionGen
         if (r.Owner is null)
         {
             if (_env.Get(r.Name) is ConstArg ca)
-                return new PresetInfo(_c.Count, exp => IntConst(ca.Value, r.Pos, exp));
+                return new PresetInfo(ca.Kind ?? _c.Count, exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,

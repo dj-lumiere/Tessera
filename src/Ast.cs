@@ -39,7 +39,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 
 public abstract record TypeArg;
 public sealed record TypeArgType(TypeRef Type) : TypeArg { public override string ToString() => Type.ToString(); }
-public sealed record TypeArgInt(long Value) : TypeArg { public override string ToString() => Value.ToString(); }
+public sealed record TypeArgInt(BigInteger Value) : TypeArg { public override string ToString() => Value.ToString(); }
 /// `(A, B)` — the parameter list of a Callable.
 public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 {

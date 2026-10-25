@@ -184,7 +184,8 @@ public sealed partial class Compiler
     {
         if (kinds.TryGetValue(name, out var kind))
         {
-            env.Bind(name, kind is { Name: "typename", Args.Count: 0 } ? new ArchetypeType(name, ++_archetypes) : new ConstArg(PrecheckCount));
+            env.Bind(name, kind is { Name: "typename", Args.Count: 0 } ? new ArchetypeType(name, ++_archetypes)
+                : new ConstArg(PrecheckCount, ResolveTypeQuiet(kind, new TypeEnv(file)) as IntType) { StandIn = true });
             return;
         }
         env.Bind(name, ResolveTypeQuiet(TypeRef.Simple(name, pos), new TypeEnv(file)) ?? new ArchetypeType(name, ++_archetypes));

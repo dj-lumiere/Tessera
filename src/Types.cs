@@ -72,6 +72,11 @@ public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
     }
 
     public bool IsSigned => Kind is IntKind.Signed;
+
+    /// The smallest and the largest value of a number type.
+    public BigInteger MinValue => IsSigned ? -(BigInteger.One << (Bits - 1)) : BigInteger.Zero;
+    public BigInteger MaxValue => IsSigned ? (BigInteger.One << (Bits - 1)) - 1 : (BigInteger.One << Bits) - 1;
+
     public bool IsUnsigned => Kind is IntKind.Unsigned;
 
     /// Numbers: the types with arithmetic. Raw bits and Char have none.
@@ -372,10 +377,23 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public override string OwnerName => Decl.Name;
 }
 
-/// An integer generic argument, such as the `8` in `Array[S64, 8]`.
-public sealed class ConstArg(long value) : DType
+/// An integer generic argument, such as the `8` in `Array[S64, 8]` or the `P` of `Field[P]` with `needs P: U256`. Its
+/// identity is its value alone, which keeps every bit of the declared type: two arguments that differ only above bit 63
+/// are two types.
+public sealed class ConstArg(BigInteger value, IntType? kind = null) : DType
 {
-    public long Value { get; } = value;
+    public BigInteger Value { get; } = value;
+
+    /// The integer type the parameter it binds is declared with (`U256` of `needs P: U256`), which its name has as a value
+    /// in the body. Null where nothing declares one, such as an Array's count, which is a U64.
+    public IntType? Kind { get; } = kind;
+
+    /// A value a generic body is checked with before any instance exists: it stands for every value, so a routine
+    /// written for one value (`Box[2].get`) is not its routine.
+    public bool StandIn { get; init; }
+
+    /// The same value as a parameter declared `kind`.
+    public ConstArg As(IntType kind) => new(Value, kind) { StandIn = StandIn };
     public override string Name => Value.ToString(CultureInfo.InvariantCulture);
     public override string Llvm => throw new InvalidOperationException($"{Value} is not a type");
     public override string OwnerName => Name;

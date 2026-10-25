@@ -1353,9 +1353,10 @@ public sealed partial class Compiler
                 {
                     TypeArgType ta => ResolveTypeInner(ta.Type, env),
                     TypeArgInt ti => new ConstArg(ti.Value),
-                    TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
+                    TypeArgExpr te => new ConstArg(EvalConstValue(te.Expr, env)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
+            FitValueArgs(s.TypeParams, s.Clauses, s.File, args, s.Name, t.Pos);
             // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
             // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
@@ -1376,9 +1377,10 @@ public sealed partial class Compiler
                 {
                     TypeArgType ta => ResolveTypeInner(ta.Type, env),
                     TypeArgInt ti => new ConstArg(ti.Value),
-                    TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
+                    TypeArgExpr te => new ConstArg(EvalConstValue(te.Expr, env)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
+            FitValueArgs(v.TypeParams, v.Clauses, v.File, args, v.Name, t.Pos);
             // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
@@ -1530,10 +1532,10 @@ public sealed partial class Compiler
     {
         switch (arg)
         {
-            case TypeArgInt i: return i.Value;
+            case TypeArgInt i: return AsCount(i.Value, pos);
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
-                if (env.Get(tr.Name) is ConstArg ca) return ca.Value;
+                if (env.Get(tr.Name) is ConstArg ca) return AsCount(ca.Value, pos);
                 if (FindPreset("", tr.Name, env.File, pos) is not null) return EvalConstInt(new PresetRef(null, tr.Name, pos), env, 0);
                 throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
             default:
@@ -1556,13 +1558,52 @@ public sealed partial class Compiler
 
     /// A buildtime integer (an Array length, an alignment, an integer generic argument): any folded integer
     /// constant (ConstFold.cs).
-    private long EvalConstInt(Expr e, TypeEnv env, int depth)
+    private long EvalConstInt(Expr e, TypeEnv env, int depth) => AsCount(EvalConstValue(e, env), e.Pos);
+
+    /// A buildtime integer at its full width: a value type argument written as an expression, `Field[(1 << 255) - 19]`.
+    public BigInteger EvalConstValue(Expr e, TypeEnv env)
     {
         var v = Fold(e, null, env);
         if (v.Type is not (null or IntType))
             throw new CompileError(e.Pos, $"expected a buildtime integer, found {v.Type.Name}");
-        if (v.Value < long.MinValue || v.Value > long.MaxValue) throw new CompileError(e.Pos, $"{v.Value} is too large here");
-        return (long)v.Value;
+        return v.Value;
+    }
+
+    /// A buildtime integer where a count, a size or an alignment goes, which is at most 64 bits.
+    private static long AsCount(BigInteger value, Pos pos) =>
+        value < long.MinValue || value > long.MaxValue ? throw new CompileError(pos, $"{value} is too large here") : (long)value;
+
+    /// The integer type a `needs` line declares a value parameter with (`U256` of `needs P: U256`), or null for a type
+    /// parameter, a name the lines don't declare, or a kind that isn't an integer type.
+    public IntType? ValueKind(List<Clause> clauses, string name, string file)
+    {
+        foreach (var c in clauses)
+            foreach (var (n, kind, _) in c.Params)
+            {
+                if (n != name) continue;
+                if (kind is { Name: "typename", Args.Count: 0 }) return null;
+                try { return ResolveType(kind, new TypeEnv(file)) as IntType is { IsNumber: true } it ? it : null; }
+                catch (CompileError) { return null; }
+            }
+        return null;
+    }
+
+    /// Gives each value argument of a generic type or routine the integer type its parameter is declared with, and makes
+    /// a value the type can't hold a build error: `Field[300]` with `needs P: U8`.
+    public void FitValueArgs(List<string> typeParams, List<Clause> clauses, string file, List<DType> args, string owner, Pos pos)
+    {
+        for (int i = 0; i < typeParams.Count && i < args.Count; i++)
+            if (args[i] is ConstArg ca && ValueKind(clauses, typeParams[i], file) is { } kind)
+                args[i] = FitValue(ca, kind, typeParams[i], owner, pos);
+    }
+
+    /// One value argument as a parameter declared `kind`, or a build error when the value doesn't fit.
+    public static ConstArg FitValue(ConstArg arg, IntType kind, string param, string owner, Pos pos)
+    {
+        if (!arg.StandIn && (arg.Value < kind.MinValue || arg.Value > kind.MaxValue))
+            throw new CompileError(pos, $"{param} of '{owner}' is a {kind.Name}, which holds {kind.MinValue}..{kind.MaxValue}, "
+                + $"and {arg.Value} is outside that: pass a value in that range, or declare {param} with a wider type");
+        return arg.As(kind);
     }
 
     /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2[A, B]` up to `Tuple4`.

@@ -1372,7 +1372,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         int start = _i;
         if (Is(TokenKind.Int))
         {
-            var count = new TypeArgInt(Low64(Next().IntValue));
+            var count = new TypeArgInt(Next().IntValue);
             if (EndsTypeArg()) return count;
             // `8 * COUNT`: a buildtime integer expression
             _i = start;

@@ -776,8 +776,13 @@ routine start() -> None
   order, stopping at the first that holds.
 - Range checks are chained comparisons: `b'0' <= c <= b'9'` is the closed `[lo, hi]`, `0 <= i < len` the half-open
   `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain).
-- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target; value generic parameters are
-  `U64` (`COUNT: U64`). `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
+- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target, and so is a count
+  parameter (`COUNT: U64`).
+- **Value type parameters.** `needs P: U256` declares a parameter that takes a value, of any integer type up to
+  `U256` / `S256`. The argument keeps every bit of that type (`Field[18446744073709551557]`, `Offset[-5]` with
+  `needs D: S64`, and `Field[1]` and `Field[18446744073709551617]` are two types), and a value the type doesn't hold
+  is a build error (`Small[300]` with `needs P: U8`). In the body the name is a value of that type.
+- `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
   with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
   conversion that can fail on one pointer width is failable on both (`S64.to[CSSize]` never throws on 64 bits): the

@@ -149,6 +149,10 @@ public sealed partial class Compiler
         foreach (var n in needed)
             if (!env.Has(n))
                 throw new CompileError(r.Pos, $"type parameter '{n}' of '{r.DisplayName}' could not be inferred; pass it explicitly");
+        // A value parameter is a value of the integer type its needs line declares, in the signature and the body alike.
+        foreach (var n in needed)
+            if (env.Get(n) is ConstArg value && ValueKind(r.Clauses, n, r.File) is { } kind && !kind.Equals(value.Kind))
+                env.Bind(n, FitValue(value, kind, n, r.DisplayName, r.Pos));
 
         var ps = new List<DType>();
         foreach (var p in r.Params)

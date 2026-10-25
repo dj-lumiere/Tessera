@@ -284,7 +284,7 @@ public sealed partial class Compiler
 
     private ConstVal FoldPresetRef(PresetRef r, TypeEnv env)
     {
-        if (r.Owner is null && env.Get(r.Name) is ConstArg ca) return new ConstVal(Count, ca.Value);
+        if (r.Owner is null && env.Get(r.Name) is ConstArg ca) return new ConstVal(ca.Kind ?? Count, ca.Value);
         DType? owner = r.Owner is null ? null : TryResolveType(r.Owner, env);
         if (owner is ChoiceType ct)
         {
