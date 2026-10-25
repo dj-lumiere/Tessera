@@ -304,7 +304,8 @@ public sealed partial class FunctionGen
         if (plan.Receiver is not null) args.Add(Atoms(plan.Receiver, Param(0)));
         int offset = args.Count;
         for (int i = 0; i < plan.Args.Count; i++) args.Add(Atoms(plan.Args[i], Param(i + offset)));
-        if (args.All(a => a.Count == 0)) return;
+        // A call handed no address may still give one back: the address of the callee's thread-local.
+        if (args.All(a => a.Count == 0) && !CarriesAddress(callee.Ret)) return;
         string text = _dropping is not null && plan.Decl.Name == "destruct"
             ? $"drop {Spelled(_dropping)}"
             : Spelled(plan.Receiver is not null

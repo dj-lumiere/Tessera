@@ -132,7 +132,19 @@ public sealed class EscapeCheck
         public HashSet<int> Writes { get; } = [];
         public Dictionary<string, Why> WritesGlobals { get; } = [];
 
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count;
+        /// The thread-local globals whose memory it may return (the global's name and the level the address is
+        /// returned at): each thread's own copy, gone when the thread ends.
+        public Dictionary<(string Global, int Level), Why> ReturnsThreadLocal { get; } = [];
+
+        /// The thread-local globals whose memory it stores into memory a parameter reaches (the global, its level,
+        /// the parameter and the level it is stored at): the caller finds out where that memory is.
+        public Dictionary<(string Global, int Level, int Into, int IntoLevel), Why> ThreadLocalInto { get; } = [];
+
+        /// The part of StoresOut that lands in a global every thread shares (not a @threadlocal one).
+        public Dictionary<(int Param, int Level), Why> StoresOutShared { get; } = [];
+
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count
+            + ReturnsThreadLocal.Count + ThreadLocalInto.Count + StoresOutShared.Count;
     }
 
     private readonly Dictionary<string, RoutineFacts> _facts = [];
@@ -212,6 +224,12 @@ public sealed class EscapeCheck
         merged.Writes.UnionWith(b.Writes);
         foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
         foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
+        foreach (var (k, v) in a.ReturnsThreadLocal) merged.ReturnsThreadLocal[k] = v;
+        foreach (var (k, v) in b.ReturnsThreadLocal) merged.ReturnsThreadLocal.TryAdd(k, v);
+        foreach (var (k, v) in a.ThreadLocalInto) merged.ThreadLocalInto[k] = v;
+        foreach (var (k, v) in b.ThreadLocalInto) merged.ThreadLocalInto.TryAdd(k, v);
+        foreach (var (k, v) in a.StoresOutShared) merged.StoresOutShared[k] = v;
+        foreach (var (k, v) in b.StoresOutShared) merged.StoresOutShared.TryAdd(k, v);
         return merged;
     }
 
@@ -275,9 +293,12 @@ public sealed class EscapeCheck
                 : [call.Callee];
             foreach (var callee in callees)
                 if (Of(callee) is { } e)
+                {
                     foreach (var (param, level) in e.Returns)
                         if (param < call.Args.Count)
                             foreach (var a in Resolve(call.Args[param])) result.Add(a.Shift(level));
+                    foreach (var (global, level) in e.ReturnsThreadLocal.Keys) result.Add(new GlobalAtom(global, level, ThreadLocal: true));
+                }
             _resolving.Remove(index);
             return _results[index] = result;
         }
@@ -355,6 +376,37 @@ public sealed class EscapeCheck
             return _restored;
         }
 
+        /// The first thread-local global whose memory a value reaches (level 0 or less), or null.
+        private static GlobalAtom? ReachesThreadLocal(HashSet<Atom> value, int level = 0) =>
+            value.OfType<GlobalAtom>().Where(g => g.ThreadLocal && g.Level + level <= 0).OrderBy(g => g.Level)
+                .ThenBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
+
+        /// The first global a place lands in that every thread shares and the routine doesn't put back, or null.
+        private GlobalAtom? SharedGlobal(HashSet<Atom> place) =>
+            place.OfType<GlobalAtom>().Where(g => !g.ThreadLocal && !Restored().Contains(g.Name))
+                .OrderBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
+
+        /// Whether the escapes of thread-local memory found in this routine are reported: the standard library keeps
+        /// its own thread-locals right.
+        private bool ReportsThreadLocal => !facts.Inst.Decl.IsLibrary;
+
+        /// What a thread-local global's memory stored into `place` gives the routine: an effect when the place is
+        /// memory a parameter reaches, and an error when it is a global every thread shares.
+        private void StoreThreadLocal(Effects found, HashSet<Atom> place, HashSet<Atom> value, Why why,
+            Func<GlobalAtom, GlobalAtom, CompileError> error, List<CompileError>? errors)
+        {
+            foreach (var g in value.OfType<GlobalAtom>().Where(g => g.ThreadLocal && g.Level <= 0))
+                foreach (var into in place.OfType<ParamAtom>())
+                    found.ThreadLocalInto.TryAdd((g.Name, g.Level, into.Index, into.Level), why);
+            if (errors is not null && ReportsThreadLocal && ReachesThreadLocal(value) is { } local && SharedGlobal(place) is { } shared)
+                errors.Add(error(local, shared));
+        }
+
+        /// The end of every error about a thread-local's memory leaving its thread.
+        private static string ThreadLocalFix(string global) =>
+            $"each thread has its own '{global}', which is gone once that thread ends. Hand on the value itself "
+            + $"({global}.peek()), or keep the address only in this thread (a name, or another @threadlocal global)";
+
         /// The first frame atom a value reaches (level 0 or less), or null.
         private static FrameAtom? Reaches(HashSet<Atom> value, int level = 0) =>
             value.OfType<FrameAtom>().Where(f => f.Level + level <= 0).OrderBy(f => f.Level).FirstOrDefault();
@@ -367,6 +419,8 @@ public sealed class EscapeCheck
             {
                 var value = Resolve(r.Value);
                 foreach (var p in value.OfType<ParamAtom>()) found.Returns.Add((p.Index, p.Level));
+                foreach (var g in value.OfType<GlobalAtom>().Where(g => g.ThreadLocal && g.Level <= 0))
+                    found.ReturnsThreadLocal.TryAdd((g.Name, g.Level), new Why(r.Pos, Routine, "return"));
                 if (errors is not null && Reaches(value) is { } sees)
                     errors.Add(new CompileError(r.Pos, $"this returns a value that reaches {sees.What}, which is gone once "
                         + $"'{Routine}' returns: return the values themselves, or let the caller pass the memory in (a span "
@@ -390,6 +444,10 @@ public sealed class EscapeCheck
                                 break;
                         }
                 Store(found, place, value, new Why(s.Pos, Routine, s.Text));
+                StoreThreadLocal(found, place, value, new Why(s.Pos, Routine, s.Text),
+                    (local, shared) => new CompileError(s.Pos, $"this keeps the address of the thread-local '{local.Name}' in "
+                        + $"the global '{shared.Name}', which every thread reaches and which outlives the thread: "
+                        + ThreadLocalFix(local.Name) + Note), errors);
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
                         + $"'{Routine}': that memory is gone once the routine returns. Keep the values there, or keep the "
@@ -411,10 +469,27 @@ public sealed class EscapeCheck
         /// and memory handed to it without `steal`, is shared.
         private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
         {
+            // The work's thread has thread-locals of its own: the address of this thread's goes nowhere it is valid.
+            for (int i = 0; i < args.Count; i++)
+                if (ReachesThreadLocal(args[i]) is { } local)
+                {
+                    string handed = call.Handed is { } h && i < h.Count && h[i].Text != local.Name ? $" in '{h[i].Text}'" : "";
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands the work the address of this thread's "
+                        + $"'{local.Name}'{handed}, and the work runs on another thread: " + ThreadLocalFix(local.Name) + Note));
+                    break;
+                }
             foreach (var routine in through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct())
             {
                 if (Of(routine) is not { } e) continue;
                 string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
+                foreach (var ((local, _), why) in e.ReturnsThreadLocal.OrderBy(r => r.Key.Global, StringComparer.Ordinal))
+                {
+                    var at = why.Store;
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it returns the "
+                        + $"address of that thread's '{local}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line "
+                        + $"{at.Pos.Line}), which the thread that waits for the work reads: " + ThreadLocalFix(local) + Note));
+                    break;
+                }
                 const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]), borrowed in a name "
                     + "first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's retrieve; "
                     + "or make it an Unbroken[T] and change it with its routines";
@@ -476,12 +551,33 @@ public sealed class EscapeCheck
                 if (errors is not null && Reaches(args[param], level) is { } sees)
                     errors.Add(Kept(call, callee, param, sees, why));
             }
+            foreach (var ((param, level), why) in e.StoresOutShared)
+            {
+                if (param >= args.Count) continue;
+                foreach (var p in args[param].OfType<ParamAtom>())
+                    found.StoresOutShared.TryAdd((p.Index, Clamp(p.Level + level)), new Why(call.Pos, Routine, call.Text, why));
+                if (errors is not null && ReportsThreadLocal && ReachesThreadLocal(args[param], level) is { } local)
+                    errors.Add(KeptThreadLocal(call, callee, param, local, why));
+            }
+            foreach (var ((global, level, into, intoLevel), why) in e.ThreadLocalInto)
+            {
+                if (into >= args.Count) continue;
+                var place = Lands(places[into], intoLevel);
+                var value = new HashSet<Atom> { new GlobalAtom(global, level, ThreadLocal: true) };
+                var reason = new Why(call.Pos, Routine, call.Text, why);
+                StoreThreadLocal(found, place, value, reason,
+                    (local, shared) => new CompileError(call.Pos, $"{call.Text} has '{Callee(callee)}' keep the address "
+                        + $"of the thread-local '{local.Name}' in the global '{shared.Name}' ({Line(why)}), which every "
+                        + "thread reaches and which outlives the thread: " + ThreadLocalFix(local.Name) + Note), errors);
+            }
             foreach (var ((from, fromLevel, into, intoLevel), why) in e.StoresInto)
             {
                 if (from >= args.Count || into >= args.Count) continue;
                 var place = Lands(places[into], intoLevel);
                 var value = args[from].Select(a => a.Shift(fromLevel)).ToHashSet();
                 Store(found, place, value, new Why(call.Pos, Routine, call.Text, why));
+                StoreThreadLocal(found, place, value, new Why(call.Pos, Routine, call.Text, why),
+                    (local, _) => KeptThreadLocal(call, callee, from, local, why), errors);
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(Kept(call, callee, from, sees, why));
             }
@@ -528,11 +624,33 @@ public sealed class EscapeCheck
                     {
                         case GlobalAtom g when !Restored().Contains(g.Name):
                             found.StoresOut.TryAdd((p.Index, p.Level), why);
+                            if (!g.ThreadLocal) found.StoresOutShared.TryAdd((p.Index, p.Level), why);
                             break;
                         case ParamAtom into when into.Index != p.Index:
                             found.StoresInto.TryAdd((p.Index, p.Level, into.Index, into.Level), why);
                             break;
                     }
+        }
+
+        /// The name a callee's symbol is shown by.
+        private string Callee(string symbol) => all.GetValueOrDefault(symbol)?.Inst.Decl.DisplayName ?? symbol;
+
+        /// Where an effect's store is, for an error: the line and what it does, in the routine that does it.
+        private static string Line(Why why)
+        {
+            var store = why.Store;
+            return $"'{store.Routine}', line {store.Pos.Line}: {store.Text}";
+        }
+
+        /// The error of a call that hands the address of a thread-local to a routine that keeps it in a global.
+        private CompileError KeptThreadLocal(CallFact call, string calleeSymbol, int param, GlobalAtom local, Why why)
+        {
+            var callee = all.GetValueOrDefault(calleeSymbol)?.Inst.Decl;
+            string calleeName = callee?.DisplayName ?? calleeSymbol;
+            string paramName = callee is not null && param < callee.Params.Count ? callee.Params[param].Name : $"argument {param + 1}";
+            return new CompileError(call.Pos, $"{call.Text} hands '{calleeName}' the address of the thread-local "
+                + $"'{local.Name}', and '{calleeName}' keeps what its '{paramName}' reaches in a global every thread "
+                + $"reaches ({Line(why)}), which outlives the thread: " + ThreadLocalFix(local.Name) + Note);
         }
 
         /// The error of a call that hands a value reaching this routine's memory to a routine that keeps it.

@@ -526,7 +526,11 @@ routine start() -> None
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
 - `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the
-  running thread's copy, so don't hand it to another thread expecting that thread's copy. A preset can't be
+  running thread's copy. Its address stays on its thread: handing it to work on another thread (`t.put_work(work)` "hands
+  the work the address of this thread's 'X'"), work returning it ("runs 'f' on another thread, and it returns the
+  address of that thread's 'X'"), and keeping it in a plain global, directly or through a routine that keeps its
+  parameter there ("keeps the address of the thread-local 'X' in the global 'G'"), are build errors. A local, a
+  routine's result and another `@threadlocal` global may hold it. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
   global, and a target without an OS has no thread-locals. `@threadlocal` takes no arguments yet. A thread ticket's
   thread resets every thread-local to its starting value before each piece of work.
