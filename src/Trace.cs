@@ -90,8 +90,13 @@ public sealed partial class Compiler
                 return $"{p.Llvm} {{ ptr {args[i]} }}";
             if (info.Pass != AbiPass.Coerce || info.Parts is not [{ Offset: 0 } part])
                 throw new InvalidOperationException($"{name} takes a one-pointer record as one part");
-            return part.Llvm == "ptr"
-                ? $"ptr{part.Attrs} {args[i]}"
+            if (part.Llvm == "ptr")
+                return $"ptr{part.Attrs} {args[i]}";
+            // A part the ABI writes as an array of one integer (`[1 x i32]` on 32-bit ARM) takes the address as that
+            // array's one element: ptrtoint can't make an array.
+            var one = System.Text.RegularExpressions.Regex.Match(part.Llvm, @"^\[1 x (i\d+)\]$");
+            return one.Success
+                ? $"{part.Llvm}{part.Attrs} [{one.Groups[1].Value} ptrtoint (ptr {args[i]} to {one.Groups[1].Value})]"
                 : $"{part.Llvm}{part.Attrs} ptrtoint (ptr {args[i]} to {part.Llvm})";
         });
         string call = $"call {inst.CcPrefix(Target)}{AbiRet(inst, withAttrs: false)} @{Quote(inst.Symbol)}({string.Join(", ", ps)})";
