@@ -51,7 +51,9 @@ The standard library's modules:
 - `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
   `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Unbroken`.
 - `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`, which the program's `when_power_on` calls), the
-  `CpuEventManager`, and the fault report.
+  `CpuEventManager`, and the fault report. On AArch64 without an OS also `InterruptManagerByGic`, the virtual timer
+  (`cpu_timer_*`), the core's interrupt mask, and `psci_power_off`, and on any target without an OS the `Pl011` serial
+  port (below).
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
 - Imported: `Standard/Collections`, `Standard/Os` (console, files, storage, the environment, processes, threads, clocks), `Standard/Fiber`,
@@ -1920,6 +1922,63 @@ or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without
 `tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them with `--board` for each
 target without an OS, so lld fails on anything left undefined, and the golden run skips them).
 
+**Interrupts, the timer, and threads without an OS (AArch64).** `qemu-virt-aarch64` boots a program at EL1 (QEMU
+`-M virt,gic-version=2 -cpu cortex-a53 -nographic -kernel f.elf`, its serial port on standard output, and
+`psci_power_off()` ends QEMU). An AArch64 build with the FP and SIMD registers turns them on in the entry's first
+instructions, before `when_power_on`, so an optimized build may use them anywhere. The pieces, managers the program
+makes and keeps in globals:
+
+```tessera
+import Standard/Fiber
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+global STACKS: &Array[U64, 8192]   # 64 KiB for the threads' slots
+
+routine start() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    THREADS.launch(entry: worker.to[Callable](), arg: .hollow())   # false when no slot is free
+    THREADS.run()   # returns once every thread launched has returned
+    psci_power_off()
+    return
+```
+
+- `Pl011` (Standard/System/Cpu, `os: "none"`): a Writer over a PL011 serial port, `port: &Pl011 <-
+  .construct(base: inttoptr[U64, Addr](0x09000000))`, then `port.write("n = {n}\n")`. It waits for room in the
+  transmit queue and sets nothing up.
+- `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
+  (`stop()` puts the one before back), `when_line_raised(line, holder)` holds a `Callable[(U32,), None]` per line
+  (below `GIC_LINES`, 128) and hands back the one before, `turn_on(line)` / `turn_off(line)`. It acknowledges the line
+  (GICC_IAR, GICC_EOIR) before calling its handler, so a handler may switch threads. Handlers run with interrupts
+  masked and never nest: a level line still raised after its handler comes again. An interrupt on a line nobody holds
+  crashes with `HardwareFault`. `mask_interrupts()` (gives the DAIF before), `restore_interrupts(was)`,
+  `unmask_interrupts()`, `wait_for_next_interrupt()` (`wfi`).
+- The virtual timer (`CpuTimer_aarch64.te`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
+  `cpu_timer_raise_at(count)`, `cpu_timer_stop()`, `cpu_timer_ticks(span)`, and its line `CPU_TIMER_LINE` (27).
+- `ThreadManagerByRoundRobin` (Standard/Fiber): preemptive threads on one core. The region is cut into slots of
+  `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
+  `StackManager`). `launch(entry: Callable[(Addr,), None], arg)` takes a free slot (the slot comes back when `entry`
+  returns), `launch_round_robin(entry, arg, state)` is the same with `Standard/Os`'s `ThreadManager.launch_fn` shape.
+  `run()` turns the timer's line and the timer on, joins the threads on the caller's stack, and returns once every
+  thread launched has returned. Inside a thread: `yield_now()`, `sleep(span)`, `wait_on(at: @U32, expected)` (returns
+  at once when the word holds another value, may return without a wake: check in a loop), `wake_one(at)` (the
+  longest waiter), `wake_all(at)`, `current_number()`, plus `preemptions()` and `idle_wakes()` (timer interrupts that
+  came while the core waited on the idle thread). States: READY, RUNNING, WAITING, SLEEPING, and FREE for a slot.
+  Every slice (`slice`, at least one tick) the timer's interrupt moves the running thread to the end of the ready
+  queue when another is ready, and wakes the sleepers whose time came. The timer is set for the end of the slice when
+  another thread is ready, else for the first sleeper's time, else off. With nothing ready the idle thread waits with
+  `wfi`. The switch (`switch_fiber`) runs with interrupts masked, on the stopping thread's stack (inside the IRQ handler
+  for a preemption, which saved the caller-saved and FP registers and ELR / SPSR there), and carries the failure mold
+  and the crash trace depth. A stack that ran into its check word crashes with `StackOverflowError` when its thread
+  next stops. One core, one running manager (`run`), no priorities. `Standard/Os`'s `Thread`, `Work`, `Channel`,
+  `Waiter`, and `AccessManager` aren't there without an OS, so they don't run on it yet: a program builds its waits on
+  `wait_on` / `wake_one` (tests/rr_wait_wake: a mailbox of one value), and `@threadlocal` is one global for every
+  thread.
+
 **Assembly.** An `@external("asm")` routine with `@target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/20b-assembly.md`): one instruction per line written like a call, operands in the
 assembler's order, one type argument per register operand (`add[U64, U64](R0, R3)`), registers by Tessera's names
@@ -2092,6 +2151,9 @@ syntax sugar to shorten code; readability comes from decomposition and naming.
 ## Tests
 
 `tests/<name>.te` with `<name>.expected` (stdout), `<name>.exit` (exit code), or `<name>.error` (expected
-compile-error text). Programs in `examples/` carry `.expected` files too. The large tests are ordinary checked-in
+compile-error text). A test whose config.toml names a `board` runs in the emulator its `<name>.qemu` file names
+(one line, the emulator and its arguments, the program's path added last), its serial port's text compared with
+`<name>.expected`. Where the emulator isn't installed the test is skipped with a note (tests/rr_*: the
+ThreadManagerByRoundRobin on `qemu-virt-aarch64`, run by CI's freestanding job). Programs in `examples/` carry `.expected` files too. The large tests are ordinary checked-in
 files. Their expected values were checked against an independent reference (Python models, mpmath), so edit them
 like any other test.
