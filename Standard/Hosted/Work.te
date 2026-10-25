@@ -113,9 +113,8 @@ needs TWriter: typename, Writer[TWriter]
 ### :returns: The slot.
 common routine WorkSlot.construct(manager: @MemoryManager) -> Me
     return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), discard: no_work.to[Callable](),
-        work: .hollow(), manager,
-        cancel: 0, guard: 0, waiter: .hollow(), blocked: .hollow(), issued: 0,
-        deadline: Duration.MAX)
+        work: .hollow(), manager, cancel: 0, guard: 0, waiter: .hollow(), blocked: .hollow(),
+        issued: 0, deadline: Duration.MAX)
 
 ### Ends what the last work's block still holds and gives the block back.
 routine @WorkSlot.destruct() -> None
@@ -144,16 +143,14 @@ routine cancel_requested() -> Bool
 routine @WorkSlot.check_ticket(issued: U64) -> None
     if me.issued.peek() == issued
         return
-    throw TicketGivenBackError(
-        description: "This ticket was given back: get another one for more work.")
+    throw TicketGivenBackError(description: "This ticket was given back: get another one for more work.")
 
 ### Crashes when work runs: a ticket runs one piece of work at a time.
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
 routine @WorkSlot.check_free() -> None
     if me.state.peek_unbroken() == TICKET_RUNNING
-        throw TicketBusyError(
-            description: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so retrieve() first.")
+        throw TicketBusyError(description: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so retrieve() first.")
     return
 
 ### Starts the work in `work`, run by `runner`, in place of the last one: a result of the last one that nobody
@@ -307,8 +304,7 @@ routine @WorkSlot.complete() -> None
 routine @WorkSlot.result_place[T]() -> @T
 needs T: typename
     if not (me.state.peek_unbroken() == TICKET_DONE)
-        throw NoWorkError(
-            description: "This ticket has no work to retrieve: put_work() comes first.")
+        throw NoWorkError(description: "This ticket has no work to retrieve: put_work() comes first.")
     return me.work.peek().to[@T]()
 
 ### Leaves the result's place hollow once `retrieve` took the result out, so the block's destruct doesn't end it again.
@@ -340,30 +336,13 @@ routine @WorkSlot.request_cancel() -> None
 @track_caller
 routine @WorkSlot.give_back() -> None
     if me.state.peek_unbroken() == TICKET_RUNNING
-        throw TicketBusyError(
-            description: "This ticket's work hasn't finished: retrieve() before drop, so nothing it still uses goes away.")
+        throw TicketBusyError(description: "This ticket's work hasn't finished: retrieve() before drop, so nothing it still uses goes away.")
     me.free_work()
     me.issued.poke(me.issued.peek() + 1)
     me.state.poke_unbroken(TICKET_IDLE)
     return
 
 # -- the blocks of work, by number of arguments -----------------------------------------------------------------
-
-### Whether the value at `at` is hollow, all of its bytes zero: a place a block's destruct leaves alone.
-### :typeparam T: The value's type.
-### :param at: The value.
-### :returns: True when every byte is zero.
-secret routine is_hollow_value[T](at: @T) -> Bool
-needs T: typename
-    # Through Addr: a T with its own to[...] (a @[Byte]) would convert itself instead of its place.
-    place: Addr = at
-    bytes: @Byte = place.to[@Byte]()
-
-    each i in 0 til sizeof[T]()
-        if bytes.stride(i).peek() != 0x00
-            return false
-    then
-        return true
 
 ### The work a ticket runs: a routine of 0 argument(s), its result first.
 entity Work0[T]
@@ -438,6 +417,22 @@ needs A: typename, B: typename, C: typename, D: typename
     second: B
     third: C
     fourth: D
+
+### Whether the value at `at` is hollow, all of its bytes zero: a place a block's destruct leaves alone.
+### :typeparam T: The value's type.
+### :param at: The value.
+### :returns: True when every byte is zero.
+secret routine is_hollow_value[T](at: @T) -> Bool
+needs T: typename
+    # Through Addr: a T with its own to[...] (a @[Byte]) would convert itself instead of its place.
+    place: Addr = at
+    bytes: @Byte = place.to[@Byte]()
+
+    each i in 0 til sizeof[T]()
+        if bytes.stride(i).peek() != 0x00
+            return false
+    then
+        return true
 
 ### Makes a `Work0` from its fields.
 ### :param result: Its `result`.
@@ -1127,6 +1122,21 @@ needs T: typename
     ### The block's alignment.
     align: U64
 
+### Work put on, or asked of, a ticket that was given back.
+crashable TicketGivenBackError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
+### Work put on a ticket, or a ticket given back, while its last work runs.
+crashable TicketBusyError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
+### A result asked of a ticket that runs no work.
+crashable NoWorkError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
 ### The work made in `block`: what `f.to[Work](...)` stands for. The builder makes the block in the routine's frame
 ### and calls this.
 ### :typeparam T: The work's result type.
@@ -1154,11 +1164,6 @@ needs T: typename
     copy.to[@Byte]().copy(src: me.block, count: me.size)
     return copy
 
-### Work put on, or asked of, a ticket that was given back.
-crashable TicketGivenBackError
-    ### What happened, in a sentence.
-    description: @[Byte]
-
 ### Writes the description.
 ### :typeparam TWriter: The type of the Writer.
 ### :param out: The Writer the message goes to.
@@ -1167,11 +1172,6 @@ needs TWriter: typename, Writer[TWriter]
     out.write("{me.description}")
     return
 
-### Work put on a ticket, or a ticket given back, while its last work runs.
-crashable TicketBusyError
-    ### What happened, in a sentence.
-    description: @[Byte]
-
 ### Writes the description.
 ### :typeparam TWriter: The type of the Writer.
 ### :param out: The Writer the message goes to.
@@ -1179,11 +1179,6 @@ routine TicketBusyError.message_into[TWriter](out: @TWriter) -> None
 needs TWriter: typename, Writer[TWriter]
     out.write("{me.description}")
     return
-
-### A result asked of a ticket that runs no work.
-crashable NoWorkError
-    ### What happened, in a sentence.
-    description: @[Byte]
 
 ### Writes the description.
 ### :typeparam TWriter: The type of the Writer.

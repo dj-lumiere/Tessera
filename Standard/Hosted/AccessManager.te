@@ -117,7 +117,6 @@ preset DEADLOCK_RECHECK: Duration = 2ms
 
 ### How many flows the deadlock search follows from the flow about to wait.
 preset DEADLOCK_DEPTH: U64 = 32
-
 ### How many nodes the table takes from the C heap at a time.
 preset NODE_CHUNK: U64 = 64
 
@@ -278,6 +277,22 @@ needs T: typename
     ### The value the access covers, `.hollow()` once it is given back.
     at: @T
 
+### Exclusive access to the run of values `at` views, which the AccessManager handed out: this flow alone reads and
+### writes them until the access is given back with `drop`. Read and write them through `getview()`.
+### :typeparam T: The values' type.
+record AuthorizedSlice[T]
+needs T: typename
+    ### The values the access covers, `.hollow()` once it is given back.
+    at: @[T]
+
+### Shared read access to the run of values `at` views, which the AccessManager handed out: other flows may read them
+### at the same time, none writes them, until the access is given back with `drop`. Read them through `getview()`.
+### :typeparam T: The values' type.
+record ReadAuthorizedSlice[T]
+needs T: typename
+    ### The values the access covers, `.hollow()` once it is given back.
+    at: @[T]
+
 ### Takes exclusive access to the value `me` points at: this flow alone reads and writes it until the access is given
 ### back. Waits while another flow holds an access that overlaps it. The access covers the value's bytes,
 ### `[me, me + size of T)`.
@@ -334,22 +349,6 @@ needs T: typename
     take_range(ask: AccessAsk(request: AccessRequest(at, size: sizeof[T](), mode: ACCESS_READ),
         place: caller_location(), deadline: Duration.MAX, hooked: false))
     return ReadAuthorized[T](at)
-
-### Exclusive access to the run of values `at` views, which the AccessManager handed out: this flow alone reads and
-### writes them until the access is given back with `drop`. Read and write them through `getview()`.
-### :typeparam T: The values' type.
-record AuthorizedSlice[T]
-needs T: typename
-    ### The values the access covers, `.hollow()` once it is given back.
-    at: @[T]
-
-### Shared read access to the run of values `at` views, which the AccessManager handed out: other flows may read them
-### at the same time, none writes them, until the access is given back with `drop`. Read them through `getview()`.
-### :typeparam T: The values' type.
-record ReadAuthorizedSlice[T]
-needs T: typename
-    ### The values the access covers, `.hollow()` once it is given back.
-    at: @[T]
 
 ### Takes exclusive access to every value of the run `me` views: this flow alone reads and writes them until the
 ### access is given back. Waits while another flow holds an access that overlaps them. The access covers the values'
@@ -1030,8 +1029,7 @@ secret routine give_back_range(at: Addr) -> None
     node: @AccessNode = find_held(node: TABLE_ROOT.peek(), start, flow)
     if node.is_hollow()
         unlock_table()
-        throw AccessNotHeldError(
-            description: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
+        throw AccessNotHeldError(description: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
     TABLE_ROOT.poke(remove_node(root: TABLE_ROOT.peek(), node))
     HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() - 1)
     waiters: U32 = node.waiters.peek()
@@ -1176,8 +1174,7 @@ common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
     flow: @AccessFlow = current_flow()
     count: U64 = flow.pending_count.peek()
     if count >= HELD_SLOTS
-        throw UnacceptedValueError(
-            description: "A block opens more accesses at once than the AccessManager keeps.")
+        throw UnacceptedValueError(description: "A block opens more accesses at once than the AccessManager keeps.")
     flow.pending.getslot(count).poke(HeldAccess(access, kind, mode, place: .hollow()))
     flow.pending_count.poke(count + 1)
     return
@@ -1198,8 +1195,8 @@ secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
             low_address: U64 = ptrtoint[Addr, U64](low.access.peek())
             high_address: U64 = ptrtoint[Addr, U64](high.access.peek())
             if low_address == high_address
-                crash_at(error: AliasedTokensError(
-                    description: "Two names this block opens are the same entity. Opening it twice would give two tokens on one entity, so a change through one could move what the other reads. Name it once."),
+                crash_at(
+                    error: AliasedTokensError(description: "Two names this block opens are the same entity. Opening it twice would give two tokens on one entity, so a change through one could move what the other reads. Name it once."),
                     place: known_place(place))
             if low_address < high_address
                 break
