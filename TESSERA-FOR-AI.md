@@ -553,8 +553,8 @@ routine start() -> None
 - Every routine uses the C calling convention unless `@callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
   so one declaration serves every target. A `Callable` carries it: `Callable[@callconv("stdcall"), (Addr,), U32]`.
-- `@target(key: value)` keeps a declaration only on matching targets (keys `arch`, `os`, `abi`, `size`; several keys
-  must all hold). `not` negates a value, and a list in parentheses matches any of its values:
+- `@target(key: value)` keeps a declaration only on matching targets (keys `arch`, `os`, `abi`, `size`, and `rtc`, the
+  board's real-time clock: `"pl031"`, or `"none"` for a board that names none; several keys must all hold). `not` negates a value, and a list in parentheses matches any of its values:
   `@target(os: ("linux", "macos"))`, `@target(arch: not ("x86_64", "aarch64"))`. Say the set you mean: POSIX code is
   `os: ("linux", "macos")`, not `os: not "windows"`, which a target without an OS (`none`) matches too.
 - Every routine is LLVM `nounwind` (Tessera has no unwinding); there's no annotation for it. `@no_builtins` stops LLVM
@@ -1886,6 +1886,9 @@ features = ["strict-align"]         # optional, as --feature
 [memory]
 image = 0x80000                     # a board without flash: where the loader puts the image, inside ram
 ram = { start = 0x0, size = "948mib" }
+
+[devices]                           # optional: the devices the standard library drives
+rtc = { kind = "pl031", base = 0x09010000 }   # the real-time clock, for Clock.now() (qemu-virt-aarch64 names it)
 ```
 
 A board with flash writes `flash = { start = 0x08000000, size = "1mib" }` in place of `image` (one of the two). Sizes
@@ -1979,6 +1982,16 @@ routine start() -> None
   `unmask_interrupts()`, `wait_for_next_interrupt()` (`wfi`).
 - The virtual timer (`Standard/Unhosted/CpuTimer.te`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
   `cpu_timer_raise_at(count)`, `cpu_timer_stop()`, `cpu_timer_ticks(span)`, and its line `CPU_TIMER_LINE` (27).
+- The clocks (`Standard/Unhosted/Time.te`, the names and types of Standard/Hosted's `Clock`): `Clock.monotonic()` is
+  the core's counter at its rate (CNTVCT_EL0 / CNTFRQ_EL0), the time since power on, on AArch64 (a build error on the
+  other targets without an OS). `Clock.now()` reads the board's real-time clock, which the board file names
+  (`[devices] rtc`, its registers at `__rtc_base` in the link script), through `RtcManagerByPl031`
+  (`Standard/Unhosted/Rtc.te`: `.construct(base)`, `now()` to the second, `set(to: moment)`). On a board that names
+  none, calling `Clock.now()` is a build error that says to add the clock to the board file: it never gives 0 or the
+  time since power on. `waitfor(duration)` sleeps the running round robin thread, and outside `run` waits on
+  `Clock.monotonic()`. Such a build error comes from `@unavailable("why")` on a standard library routine kept for
+  that target: a call of it is the build error, with the reason (tests/clock_now_no_rtc, tests/rr_clock_monotonic,
+  tests/rr_clock_now).
 - `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.te`): preemptive threads on one core. The region is cut into slots of
   `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
   `StackManager`). `launch(entry: Callable[(Addr,), None], arg)` takes a free slot (the slot comes back when `entry`
