@@ -1,0 +1,122 @@
+# Tessera stdlib: the correctly rounded reciprocal square root 1 / sqrt(x) of B128
+#
+# Everything runs on 64- and 128-bit integers: the cubic reciprocal-square-root seed of Sqrt.te (one Newton step
+# already in it), scaled by 1 / sqrt(2) for an odd exponent, and one more Newton step at 128 bits. When the result
+# lands within a few units of a rounding boundary, the candidate's square times the argument is compared exactly
+# with 1. Round to nearest only: +0 gives +inf, -0 gives -inf, +inf gives +0, a negative x gives NaN, NaN comes back
+# quiet.
+#
+# Ported from CORE-MATH, src/binary128/rsqrt/rsqrtq.c. The rounding-mode probe and the exception flags are dropped.
+# Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+#
+# The C helpers rsqrt9 / mhuu / mhUU are Sqrt.te's cm_sqrt_rsqrt9 / cm_sqrt_mul_hi, mhui is cm_rsqrt_mul_hi_signed.
+
+module System/Numerics/B128
+
+### 1 / sqrt(`me`), correctly rounded (to nearest, ties to even). +0 gives +inf, -0 gives -inf, +inf gives +0, a
+### value below zero (-inf included) gives NaN, and a NaN comes back quiet.
+### :returns: The reciprocal square root of `me`.
+routine B128.rsqrt_unchecked() -> Me
+    bits: U128 = me.bits()
+    top: S64 = (bits >> 112).to[S64]()  # sign and biased exponent
+
+    tiny: Bool = top == 0  # +0 or a positive subnormal
+    values: (U128, S64) = when
+        tiny =>
+            if bits == 0
+                return inf
+            # Moves the leading bit up to the implicit bit's place and gives the exponent field the parity of the
+            # exponent, which drops below 1 to match.
+            lz: U128 = bits.leading_zeros()
+            ns: S64 = lz.to[S64]() - 15
+            shifted: U128 = bits << ns.to[U128]()
+            parity: U128 = (ns & 1).to[U128]() << 112
+            becomes (shifted ^ parity, 1 - ns)
+        top >= 0x7FFF => return cm_rsqrt_special(me)
+        else => (bits, top)
+    norm_bits, exponent = values
+    e: S64 = exponent + 121
+    odd: S64 = e & 1
+    # the biased exponent of the result, in the high word's top bits
+    e2: U64 = (0x5FFD - (e >> 1) + 60).to[U64]() << 48
+    frac: U128 = norm_bits << 16  # the fraction alone, at the top
+    if frac == 0 and odd == 0
+        # x is a power of four: the result is an exact power of two
+        return Me.from_bits((e2 +% 0x0002000000000000).to[U128]() << 64)
+
+    seed: U64 = cm_sqrt_rsqrt9((frac >> 64).to_wrap[U64]())
+    odd_exp: Bool = odd != 0
+    all_ones: U64 = U64.MAX
+    scale: U64 = when
+        odd_exp => CM_SQRT_RSQRT2
+        else => all_ones
+    r: U64 = ((seed.to[U128]() *% scale.to[U128]()) >> 64).to_wrap[U64]()
+    one: U128 = 1
+    xs: U128 = (frac >> (4 - odd).to[U128]()) | (one << (124 + odd).to[U128]())
+    # the Newton correction r h / 2 with h = r^2 x - 1
+    r_sq: U128 = r.to[U128]() *% r.to[U128]()
+    h: S64 = cm_sqrt_mul_hi(a: r_sq, b: xs).to_wrap[S64]()
+    ds: S64 = cm_rsqrt_mul_hi_signed(y: r, x: h)
+    correction: U128 = ds.to[S128]().to_wrap[U128]() << 3
+    v0: U128 = (r.to[U128]() << 64) -% correction
+    slack: S16 = (v0 << 2).to_wrap[S16]()  # the bits under the rounding point
+    v: U128 = when
+        -4 <= slack <= 96 => cm_rsqrt_settle(v: v0, xs)
+        else => v0
+    round_bit: U128 = (v >> 14) & 1
+    sig: U128 = (v >> 15) +% round_bit
+    return Me.from_bits(sig +% (e2.to[U128]() << 64))
+
+### 1 / sqrt(x) of a negative, infinite, or NaN `x` (sign and exponent at least 0x7FFF): -0 gives -inf, +inf gives
+### +0, any other negative x gives NaN, and a NaN is quieted.
+### :param x: The argument, with its top 16 bits at least 0x7FFF.
+### :returns: The special-case result.
+secret routine cm_rsqrt_special(x: B128) -> B128
+    bits: U128 = x.bits()
+    neg_zero: Bool = bits << 1 == 0
+    infinite: Bool = bits == B128_INF
+    neg_most: Bool = bits <= 0xFFFF0000000000000000000000000000
+    neg_least: Bool = bits > 0x80000000000000000000000000000000
+    negative: Bool = neg_most and neg_least
+    quieted: B128 = B128.from_bits(bits | B128_QUIET_BIT)
+    when
+        neg_zero => return -inf
+        infinite => return B128.from_bits(0)
+        negative => return nan
+        else => return quieted
+
+### The high 64 bits of the product of the unsigned `y` and the signed `x`, as a signed value.
+### :param y: The unsigned factor.
+### :param x: The signed factor.
+### :returns: The high half of the 128-bit signed product.
+secret routine cm_rsqrt_mul_hi_signed(y: U64, x: S64) -> S64
+    high: U64 = cm_sqrt_mul_hi(a: x.to_wrap[U64](), b: y)
+    negative: Bool = x < 0
+    fix: U64 = when
+        negative => y
+        else => 0
+    return (high -% fix).to_wrap[S64]()
+
+### A candidate within a few units of a rounding boundary, settled exactly: m = the candidate rounded at bit 14, and
+### the sign of m^2 x - 2^k (the 384-bit product, truncated with a sticky bit) moves the candidate by one unit toward
+### the true value, so that bit 14 rounds it to nearest.
+### :param v: The candidate, with 14 bits under the result's last bit and one more.
+### :param xs: The scaled argument.
+### :returns: The settled candidate.
+secret routine cm_rsqrt_settle(v: U128, xs: U128) -> U128
+    vr: U128 = v +% 0x2000
+    m: U128 = vr >> 14
+    p: U256 = m.mul_wide(xs)
+    t1: U128 = (p >> 128).to_wrap[U128]()
+    t0: U128 = p.to_wrap[U128]()
+    k: U256 = t0.mul_wide(m)
+    k0: U128 = k.to_wrap[U128]()
+    k_high: U128 = (k >> 128).to_wrap[U128]() +% t1 *% m
+    k1: U128 = k_high | (k0 != 0).to[U128]()
+    cleared: U128 = vr & ~0x3FFF
+    negative: Bool = k1 >> 127 == 1
+    when
+        negative => return cleared +% 1
+        k1 != 0 => return cleared -% 1
+        else => return cleared

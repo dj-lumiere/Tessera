@@ -1,0 +1,119 @@
+# Tessera stdlib: the correctly rounded reciprocal square root 1 / sqrt(x) of B64
+#
+# r = (1 / x) sqrt(x) (sqrt(x) / x for a subnormal x, with a scale of 4 near the top of the range) is within a few
+# ulps, and one Newton step r - r/2 (r^2 x - 1) with r x as a double-double brings it within half an ulp but for a
+# small correction. When that correction sits too close to a rounding boundary, the result is settled with exact
+# integer arithmetic: the residual r^2 x - 1 of the candidate, scaled to 128 bits, is stepped one ulp at a time
+# until it changes sign, and the sign of the residual at the midpoint gives the rounding. Round to nearest only:
+# +0 gives +inf, -0 gives -inf, +inf gives +0, a negative x gives NaN, NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary64/rsqrt/rsqrt.c.
+# Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module System/Numerics/B64
+
+### 1 / sqrt(`me`), correctly rounded (to nearest, ties to even). +0 gives +inf, -0 gives -inf, +inf gives +0, a
+### value below zero (-inf included) gives NaN, and a NaN comes back quiet.
+### :returns: The reciprocal square root of `me`.
+routine B64.rsqrt_unchecked() -> Me
+    u: U64 = me.bits()
+    e: U64 = u >> 52  # the sign and the exponent
+
+    r: Me = when
+        e == 0 =>
+            # a subnormal x, or +0
+            if u == 0
+                return inf
+            becomes me.sqrt_unchecked() /! me
+        e < 0x7FD => (1.0 /! me) *! me.sqrt_unchecked()
+        e < 0x7FF => (4.0 /! me) *! (0.25 *! me.sqrt_unchecked())
+        else => return cm_b64_rsqrt_special(me)
+    # one Newton step r' = r - r/2 (r^2 x - 1), with r x as rx + drx to about 106 bits
+    rx: Me = r *! me
+    drx: Me = r.mul_add_unchecked(a: me, b: -rx)
+    h: Me = r.mul_add_unchecked(a: rx, b: -1.0) +! r *! drx
+    dr: Me = (r *! 0.5) *! h
+    rf: Me = r -! dr
+    idr: U64 = dr.bits()
+    ir: U64 = r.bits()
+    de: S64 = (ir >> 52).to[S64]() - ((idr >> 52) & 0x7FF).to[S64]()
+    d: U64 = (idr +% 18) & 0x0007FFFFFFFFFFFF
+    if d <= 23 or de > 100
+        return cm_b64_rsqrt_refine(rf, a: me)
+    return rf
+
+### 1 / sqrt(x) of a negative, infinite, or NaN `x` (sign and exponent at least 0x7FF): -0 gives -inf, +inf gives
+### +0, a NaN comes back quiet, and any other negative x gives NaN.
+### :param x: The argument, with its top 12 bits at least 0x7FF.
+### :returns: The special-case result.
+secret routine cm_b64_rsqrt_special(x: B64) -> B64
+    u: U64 = x.bits()
+    ax: U64 = u << 1
+    when
+        ax == 0 => return -inf
+        ax > 0xFFE0000000000000 => return x +! x
+        u >> 63 == 1 => return nan
+        else => return 0.0
+
+### The hard case: rf is within an ulp of 1 / sqrt(a), and the exact residual decides. The candidate's mantissa rm
+### and a's mantissa am (scaled by 2^5, or 2^4 for an odd exponent) give rm^2 am - 2^k as a 128-bit residual; the
+### candidate steps one ulp at a time until the residual changes sign, and the residual at the midpoint between the
+### last two candidates, rm^2 am plus rm am plus am/4, rounds to nearest. An a that is a power of two keeps rf.
+### :param rf: The candidate.
+### :param a: The argument, positive and finite.
+### :returns: 1 / sqrt(`a`), correctly rounded.
+secret routine cm_b64_rsqrt_refine(rf: B64, a: B64) -> B64
+    ir0: U64 = rf.bits()
+    ia0: U64 = a.bits()
+
+    # a subnormal a is normalized: only the parity of its exponent is read below
+    subnormal: Bool = ia0 < 0x0010000000000000
+    ia: U64 = when
+        subnormal =>
+            nz: U64 = ia0.leading_zeros()
+            mantissa: U64 = (ia0 << (nz - 11)) & 0x000FFFFFFFFFFFFF
+            becomes mantissa | ((nz - 12) << 52)
+        else => ia0
+    if ia << 11 == 0x8000000000000000
+        return rf
+    e: U64 = (ia >> 52) & 1
+    rm: U64 = ((ir0 << 11) | 0x8000000000000000) >> 11
+    am: U64 = ((ia & 0x000FFFFFFFFFFFFF) | 0x0010000000000000) << (5 - e)
+    rt: U128 = rm.to[U128]() *% am.to[U128]()
+    rth: U64 = (rt >> 64).to_wrap[U64]()
+    rtl: U64 = rt.to_wrap[U64]()
+    rrt_low: U128 = rtl.to[U128]() *% rm.to[U128]()
+    t0: U64 = rrt_low.to_wrap[U64]()
+    t1: U64 = (rrt_low >> 64).to_wrap[U64]() +% rth *% rm
+    rrt: U128 = (t1.to[U128]() << 64) | t0.to[U128]()
+    s: U64 = (rrt >> 127).to_wrap[U64]()
+    # the step: -1 while the residual is negative (the candidate grows), +1 while it is positive
+    dd: U64 = 1 -% s *% 2
+    flip: Bool = s == 1
+    mask: U128 = when
+        flip => U128.MAX
+        else => 0
+    rts: U128 = ((rt << 1) ^ mask) +% s.to[U128]()
+    am2: U64 = am << 1
+
+    loop with ir: U64 = ir0, res: U128 = rrt, am20: U64 = 0 -% am
+        ir1: U64 = ir -% dd
+        am21: U64 = am20 +% am2
+        tt: U128 = rts -% am21.to[U128]()
+        res1: U128 = res -% tt
+        if (res ^ res1) >> 127 == 0
+            continue with ir: ir1, res: res1, am20: am21
+        # the residual changed sign: keep the candidate on its negative side
+        negative: Bool = res1 >> 127 == 1
+        ir2: U64 = when
+            negative => ir1
+            else => ir1 +% dd
+        res2: U128 = when
+            negative => res1
+            else => res
+        rm2: U64 = ((ir2 << 11) | 0x8000000000000000) >> 11
+        rt2: U128 = rm2.to[U128]() *% am.to[U128]()
+        mid: U128 = res2 +% (am >> 2).to[U128]() +% rt2
+        inc: U64 = (mid >> 127).to_wrap[U64]()
+        return B64.from_bits(ir2 +% inc)

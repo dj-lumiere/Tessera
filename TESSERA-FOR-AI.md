@@ -708,9 +708,10 @@ routine start() -> None
 **Operations**
 
 - **Float operations crash on a result that isn't finite.** On `B16`, `BF16`, `B32`, `B64`, `B128` the default `+ - * /`
-  (`add` .. `truediv`), `mul_add`, `floordiv` / `mod` / `mod_trunc`, `recip`, `sqrt`, the exponentials and
+  (`add` .. `truediv`), `mul_add`, `floordiv` / `mod` / `mod_trunc`, `recip`, `sqrt`, `rsqrt` (1 / sqrt(x) rounded
+  once, a CORE-MATH port on every float type, never the CPU's approximation), the exponentials and
   logarithms, `log(base)`, `powf`, `powi`, `tan_pi`, `asin`, `acos`, `sinh`, `cosh`, `acosh`, `atanh`, `gamma`,
-  `ln_gamma`, `hypot`, `to_degrees` (plus `B16.tan`, BF16's `recip_sqrt` / `compound` / `exp2_m1` / `exp10_m1` /
+  `ln_gamma`, `hypot`, `to_degrees` (plus `B16.tan`, BF16's `compound` / `exp2_m1` / `exp10_m1` /
   `log2_1p` / `log10_1p` / `asin_pi` / `acos_pi`, B128's `rem` / `fdim` / `scalbn` / `logb` / `next_up` / `next_down`)
   are `@track_caller` and crash with `NumericOverflowError` on an infinity, `NumericDomainError` on NaN, and
   `DivisionByZeroError` for a nonzero value over zero. Inf and NaN are almost always bugs, so the raw IEEE 754 value is
@@ -826,11 +827,11 @@ routine start() -> None
   `add`, `mul`, `truediv`, `floordiv`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
 - **Decimals** (`import Ingrid/Decimal`): `D32`, `D64`, `D128` are IEEE 754 decimal32/64/128 (BID, 7/16/34
   digits, a value keeps its exponent: `2.50` stays `2.50`, `1.0 == 1.00`). Every operation rounds once, a tie to the
-  even one. `+ - * /` and `sqrt` crash on an infinite result (`NumericOverflowError`), a NaN (`NumericDomainError`),
-  and a nonzero value over zero (`DivisionByZeroError`), and `add_unchecked` .. `truediv_unchecked`, `sqrt_unchecked`
-  give the raw IEEE value. `Decimal` is 34 digits and never an infinity or a NaN: `+ - *` are exact and failable
+  even one. `+ - * /`, `sqrt` and `rsqrt` crash on an infinite result (`NumericOverflowError`), a NaN (`NumericDomainError`),
+  and a nonzero value over zero (`DivisionByZeroError`), and `add_unchecked` .. `truediv_unchecked`, `sqrt_unchecked`,
+  `rsqrt_unchecked` give the raw IEEE value. `Decimal` is 34 digits and never an infinity or a NaN: `+ - *` are exact and failable
   (`NumericOverflowError` when the result needs more than 34 digits), `/` rounds to 34 digits, and every rounding a
-  `Decimal` does (`/`, `sqrt`, `powf`, `powi`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
+  `Decimal` does (`/`, `sqrt`, `rsqrt`, `powf`, `powi`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
   the n (at the digit kept) with `n - 0.5 <= x < n + 0.5`, that is `floor(x + 0.5)` (`2.5` to `3`, `-2.5` to `-2`,
   `-7.125` to 2 places `-7.12`, and `round()` of `-0.5` is `0`). A `Decimal` has one form per value: every result is
   normalized (no trailing zeros in the coefficient, a zero is always `0`, never `-0`), so `1.0` and `1.00` hash the
@@ -859,8 +860,9 @@ routine start() -> None
   Diagnosable (`D64(1.5)`, `Decimal(2.5)`), FixedRepresentable (`Fixed[D64](value: d, digits: 2)`), Parsable, and
   Hashable: a D type hashes its value, not the digits it keeps (`1.0` and `1.00`, `+0` and `-0` hash the same, every
   NaN hashes the same). `from_bits` / `bits()` move a D type to and from its BID encoding. `Decimal` has `sqrt()`,
-  `powf(exponent:)` and `powi(n)`, correctly rounded, a tie half up (they crash with `NumericDomainError` for a
-  negative base under a non-integer exponent or a negative `sqrt`, `NumericOverflowError` out of range). `D128` has
+  `rsqrt()`, `powf(exponent:)` and `powi(n)`, correctly rounded, a tie half up (they crash with `NumericDomainError`
+  for a negative base under a non-integer exponent, a negative `sqrt` or an `rsqrt` of zero or below,
+  `NumericOverflowError` out of range). `D128` has
   `sqrt()`. Not there yet: the other transcendentals and conversions to and from the binary floats.
 
 **Routines and generics**
