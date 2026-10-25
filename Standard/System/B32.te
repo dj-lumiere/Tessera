@@ -625,6 +625,87 @@ routine B32.is_subnormal() -> Bool
     mantissa: U32 = bits & 0x007FFFFF
     return exponent == 0 and mantissa != 0
 
+# -- exponents and neighbours ------------------------------------------------------
+
+### `me` × 2^`n` (C scalbn): exact unless it overflows (to ±inf) or lands among the subnormals, where it rounds once,
+### to nearest even. A shift past the exponent range goes in at most three exact steps, and the last step into the
+### subnormals is the only one that rounds.
+### :param n: The power of two to scale by.
+### :returns: The scaled value: zeros and infinities unchanged, a NaN as it is.
+routine B32.scalbn_unchecked(n: S64) -> Me
+    big: Me = Me.from_bits(0x7F000000)
+    # 2^-126 × 2^24: a step down that leaves 24 bits above the subnormals, so only the last one rounds
+    small: Me = Me.from_bits(0x0C800000)
+    step: S64 = -126 + 24
+    when
+        n > 127 =>
+            once: Me = me *! big
+            left: S64 = n - 127
+            if left <= 127
+                return once *! b32_power_of_two(left)
+            twice: Me = once *! big
+            return twice *! b32_power_of_two((left - 127).min(127))
+        n < -126 =>
+            once: Me = me *! small
+            left: S64 = n - step
+            if left >= -126
+                return once *! b32_power_of_two(left)
+            twice: Me = once *! small
+            return twice *! b32_power_of_two((left - step).max(-126))
+        else => return me *! b32_power_of_two(n)
+
+### 2^`k` for `k` from -126 to 127, exactly.
+### :param k: The power.
+### :returns: 2^`k`.
+@inline
+secret routine b32_power_of_two(k: S64) -> B32
+    field: U32 = (k + 127).to_wrap[U32]()
+    return B32.from_bits(field << 23)
+
+### The exponent of a finite nonzero `me`, floor(log2 |me|) (C ilogb), subnormals included.
+### :returns: The exponent. 0 for a zero, an infinity, or a NaN (C gives those their own markers, which the callers
+###     test for before they ask).
+routine B32.ilogb() -> S64
+    bits: U32 = me.bits()
+    field: U32 = (bits >> 23) & 0xFF
+    fraction: U32 = bits & (U32.shift_left(1, 23) - 1)
+    when
+        field == 0xFF or (field == 0 and fraction == 0) => return 0
+        field != 0 => return field.to[S64]() - 127
+        else =>
+            top: S64 = 31 - fraction.leading_zeros().to[S64]()
+            return top - 23 + -126
+
+### The next value after `me` toward `toward` (C nextafter): `toward` when they are equal, a NaN when either is one,
+### and from a zero the smallest subnormal with `toward`'s sign.
+### :param toward: The direction.
+### :returns: The neighbour.
+routine B32.next_after(toward: Me) -> Me
+    when
+        me.is_nan() or toward.is_nan() => return me +! toward
+        me == toward => return toward
+        else => nothing
+    bits: U32 = me.bits()
+    magnitude: U32 = bits & 0x7FFFFFFF
+    if magnitude == 0
+        return Me.from_bits((toward.bits() & 0x80000000) | 1)
+    away: Bool = (me < toward) == (bits & 0x80000000 == 0)
+    next: U32 = when
+        away => bits + 1
+        else => bits - 1
+    return Me.from_bits(next)
+
+### The remainder `me - n × other` with n the integer nearest `me / other`, ties to even (IEEE 754 remainder, C
+### remainder): exact, |result| <= |other| / 2, a zero result with the sign of `me`. It is the B64 remainder of the
+### same two values, which B32 holds exactly.
+### :param other: The divisor.
+### :returns: The remainder. `me` when `other` is infinite or `me` is a zero, NaN when `other` is 0 or `me` is
+###     infinite or either is a NaN.
+routine B32.rem_unchecked(other: Me) -> Me
+    wide: B64 = me.to[B64]().rem_unchecked(other.to[B64]())
+    r: Me = wide.to_unchecked[Me]()
+    return r
+
 # -- bits ----------------------------------------------------------------------
 
 ### The raw IEEE 754 bits.
