@@ -210,7 +210,10 @@ public sealed partial class Compiler
         string asm = Target.Arch switch
         {
             "x86_64" => "xor %ebp, %ebp\\0Alea __stack_top(%rip), %rsp\\0Acall tessera_boot\\0Aud2",
-            "aarch64" => "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl tessera_boot\\0Abrk #0",
+            // A build with the FP and SIMD registers turns them on first (CPACR_EL1.FPEN): an optimized build uses
+            // them anywhere, the program's when_power_on before prepare_core included.
+            "aarch64" => (cpu.Has("fp-armv8", start.Pos) ? "mov x0, #0x300000\\0Amsr cpacr_el1, x0\\0Aisb\\0A" : "")
+                + "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl tessera_boot\\0Abrk #0",
             _ => "la sp, __stack_top\\0Amv s0, zero\\0Acall tessera_boot\\0Aunimp",
         };
         // Its own section, which the board's link script puts first: a loader that jumps to the start of the image
