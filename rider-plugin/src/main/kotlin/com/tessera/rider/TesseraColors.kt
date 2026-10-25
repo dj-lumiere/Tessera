@@ -133,7 +133,7 @@ class TesseraColorSettingsPage : ColorSettingsPage {
     override fun getAdditionalHighlightingTagToDescriptorMap(): Map<String, TextAttributesKey> = tags
 
     override fun getDemoText(): String = """
-        <kw>import</kw> <module>Standard</module>::<module>Os</module>
+        <kw>import</kw> <module>Hosted</module>
 
         <kw>preset</kw> <const>LIMIT</const>: <record>S64</record> = <num>100</num>
 

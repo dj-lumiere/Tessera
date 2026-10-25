@@ -55,7 +55,7 @@ public sealed partial class FunctionGen
     /// The value a template hole or `Console.show(x)` writes, while it is written: the memory-cell warning is for it.
     private Expr? _shownCell;
 
-    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/Unhosted's
+    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Unhosted's
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
     private bool? _memoryReady;
@@ -926,7 +926,7 @@ public sealed partial class FunctionGen
             if (_memoryReady == false)
                 throw Err(_decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
-                    + "(Standard/Unhosted), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
+                    + "(Unhosted), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
@@ -1905,7 +1905,7 @@ public sealed partial class FunctionGen
         typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Me" && _env.Has(t.Name));
 
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
-    /// vouch for them, and the type's file needn't import Standard/System/Text for its represent.
+    /// vouch for them, and the type's file needn't import System/Text for its represent.
     private bool Derived => _decl.AnnotationNamed("derived") is not null;
 
     /// Emits the address of a place chain and returns it with the type stored there.
@@ -3733,7 +3733,7 @@ public sealed partial class FunctionGen
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
-                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Unhosted) "
+                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Unhosted) "
                     + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
             return c is null ? null : PresetValue(c, null);

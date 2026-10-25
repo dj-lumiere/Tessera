@@ -10,7 +10,7 @@ public abstract class DType : IEquatable<DType>
     public abstract string Name { get; }
 
     /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
-    /// it's private), since two modules may each declare a `Point`: `Standard/System/Option[S64]`.
+    /// it's private), since two modules may each declare a `Point`: `System/Option[S64]`.
     public virtual string Key => Name;
 
     /// The LLVM IR spelling.
@@ -459,7 +459,7 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         _ => null,
     };
 
-    /// Whether the target has an operating system, which the hosted layer (Standard/Hosted) needs.
+    /// Whether the target has an operating system, which the hosted layer (Hosted) needs.
     public bool HasOs => Os != "none";
 
     /// Evaluates one `@target(key: value)` predicate.

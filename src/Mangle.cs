@@ -5,12 +5,12 @@ namespace Tessera;
 
 /// Symbol names follow the Itanium C++ ABI mangling (Modules → A Tessera ABI): a module is a namespace, a routine on
 /// a type is nested in the type, and every type is a named type by its path, built-in ones included
-/// (`Standard::Core::S64`, `Standard::Core::PointedCell<T>`). `Standard::Format::write_str` becomes
-/// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
+/// (`System::S64`, `System::PointedCell<T>`). `System::Text::write_str` becomes
+/// `_ZN6System4Text9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
 /// (`9make_roomB24stdlib_collection_List_tess`), an integer generic argument is a literal of the named `U64` type
-/// (`LN8Standard4Core3U64E8E`), and `Callable` is a C function pointer.
+/// (`LN6System3U64E8E`), and `Callable` is a C function pointer.
 public sealed partial class Compiler
 {
     /// The symbol of a routine instance. `ps` and `ret` are its resolved parameter and return types.

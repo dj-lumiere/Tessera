@@ -562,7 +562,7 @@ static class Cli
             throw compiler.MainRoutine is { } main
                 ? new CompileError(main.Pos,
                     "no entry point: an executable's entry point is 'routine start() -> None', and main is an ordinary routine name; " +
-                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard/Hosted)")
+                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Hosted)")
                 : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                     "no entry point: an executable needs 'routine start() -> None' (use 'tessera check' to type-check a file without one)");
         return ir;

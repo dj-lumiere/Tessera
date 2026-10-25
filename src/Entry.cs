@@ -4,9 +4,9 @@ namespace Tessera;
 
 /// The program's entry. A program's entry point is `routine start() -> None`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
-/// (Standard/Hosted) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
+/// (Hosted) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
 /// the core there, its prologue sets the stack pointer from `__stack_top` (on Cortex-M the vector table's first word
-/// does that), and its body is the program's `when_power_on()`, which turns the managers on itself (Standard/Unhosted's
+/// does that), and its body is the program's `when_power_on()`, which turns the managers on itself (Unhosted's
 /// prepare_core: .bss zeroed, .data copied from flash, the FPU on), puts its reporting routine in the Crash service's
 /// slot, and readies the board. The builder adds no step of its own there, so a program with `start` and without
 /// `when_power_on` is a build error. Then `start()` runs, then a loop that halts the core. Without `start` such a
@@ -69,7 +69,7 @@ public sealed partial class Compiler
         if (r.TypeParams.Count != 0 || r.Params.Count != 0 || !returnsVoid)
             throw new CompileError(r.Pos,
                 r.Name == StartName
-                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard/Hosted sets the exit status)"
+                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Hosted sets the exit status)"
                     : $"{what}, declared '{shape}'");
         if (r.Blocks is null || IsAsm(r) || r.AnnotationNamed("export") is not null || r.AnnotationNamed("inline") is not null)
             throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no @external, @export, or @inline)");
@@ -93,7 +93,7 @@ public sealed partial class Compiler
             throw new CompileError(start.Pos,
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has no operating system, so the reset lands in the program's own "
                 + "'routine when_power_on() -> None', and this program has none: write one that calls prepare_core() "
-                + "(Standard/Unhosted) first, which puts the globals in place, then puts a reporting routine in the Crash "
+                + "(Unhosted) first, which puts the globals in place, then puts a reporting routine in the Crash "
                 + "service's slot (Crash.report_with(report.to[Callable]())), then readies the board. start runs after it");
     }
 
@@ -129,8 +129,8 @@ public sealed partial class Compiler
     /// The attributes of a function the builder writes itself.
     private string EntryAttrs(Pos pos) => $"nounwind{UnwindTable} {CpuModel.For(Target, pos).FnAttrs}";
 
-    /// The platform's C `main`: the arguments handed to Standard/Hosted (`OsEnvironment.argument`), `start`, then the exit
-    /// status from Standard/Hosted's exit_code (what set_exit_code stored last, 0 when nothing did). A crash ends the
+    /// The platform's C `main`: the arguments handed to Hosted (`OsEnvironment.argument`), `start`, then the exit
+    /// status from Hosted's exit_code (what set_exit_code stored last, 0 when nothing did). A crash ends the
     /// process before that with its own status.
     private void PlanHostedMain(RoutineDecl start, Instance startInst)
     {
@@ -169,7 +169,7 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board, startInst, halt };
-        // The CpuEventManager's table calls tessera_cpu_event, Standard/Unhosted's routine for the target.
+        // The CpuEventManager's table calls tessera_cpu_event, Unhosted's routine for the target.
         string? cpuEvent = Target.Arch switch
         {
             "aarch64" => "aarch64_cpu_event",
@@ -189,7 +189,7 @@ public sealed partial class Compiler
         _entry.AppendLine("  unreachable");
         _entry.AppendLine("}");
         _entry.AppendLine();
-        // Standard/System/Memory declares the same symbol for StackManager.current(): whichever comes first declares it once.
+        // System/Memory declares the same symbol for StackManager.current(): whichever comes first declares it once.
         if (_globalVars.TryAdd("__stack_top", "@__stack_top")) _entry.AppendLine("@__stack_top = external global i8");
         if (armM)
         {

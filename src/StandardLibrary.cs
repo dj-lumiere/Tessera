@@ -59,11 +59,17 @@ public static class StandardLibrary
     internal static string ShownAs(string directory, string path) =>
         Path.Combine("Standard", Path.GetRelativePath(directory, path));
 
-    /// The module a stdlib file is in: its folder, under `Standard` (`Standard/System/Memory/Heap.te` is in
-    /// `Standard/System/Memory`). A module line that names another module is a build error.
+    /// The module a stdlib file is in: its folder below `Standard` (`Standard/System/Memory/Heap.te` is in
+    /// `System/Memory`). A module line that names another module is a build error.
     /// <param name="shownAs">The file's name from the stdlib directory (ShownAs).</param>
-    public static string ModuleOf(string shownAs) =>
-        string.Join('/', (Path.GetDirectoryName(shownAs) ?? "Standard").Split('/', '\\'));
+    public static string ModuleOf(string shownAs)
+    {
+        var parts = (Path.GetDirectoryName(shownAs) ?? "").Split('/', '\\', StringSplitOptions.RemoveEmptyEntries);
+        if (parts is not [Compiler.StandardRoot, _, ..])
+            throw new CompileError(new Pos(shownAs, 1, 1),
+                "a standard library file goes in a module's folder under Standard, not in Standard itself");
+        return string.Join('/', parts[1..]);
+    }
 
     /// One library file's declarations: the ones parsed before when the file is unchanged since, else parsed now. A
     /// stdlib file is in the module its folder names (ModuleOf), an Ingrid file in the one `module` gives.

@@ -824,7 +824,7 @@ public static class Formatter
 
     /// Writes `PointedCell[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
     /// (`record PointedCell[T]`), where a routine is declared on or called through it (`PointedCell[X].name`), and when qualified
-    /// (`Standard/System/PointedCell[X]`).
+    /// (`System/PointedCell[X]`).
     // ── Grouping parentheses ─────────────────────────────────────────────────
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a

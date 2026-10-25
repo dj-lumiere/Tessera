@@ -34,7 +34,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
     /// A device of the board the standard library drives: its kind (`pl031`) and the address of its registers.
     public readonly record struct Device(string Kind, ulong Base);
 
-    /// The kinds of real-time clock the standard library has a manager for (Standard/Unhosted's RtcManagerBy...).
+    /// The kinds of real-time clock the standard library has a manager for (Unhosted's RtcManagerBy...).
     public static readonly string[] RtcKinds = ["pl031"];
 
     public readonly record struct Region(ulong Start, ulong Size)
@@ -219,7 +219,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         l.AppendLine("    .bss (NOLOAD) : ALIGN(16) { __bss_start = .; *(.bss .bss.* .sbss .sbss.* COMMON) __bss_end = .; } > RAM");
         l.AppendLine("    __stack_bottom = ALIGN(__bss_end, 16);");
         l.AppendLine($"    __stack_top = 0x{ram.End & ~15UL:X};");
-        // The real-time clock's registers, for Standard/Unhosted's Clock.now().
+        // The real-time clock's registers, for Unhosted's Clock.now().
         if (Rtc is { } rtc) l.AppendLine($"    __rtc_base = 0x{rtc.Base:X};");
         l.AppendLine("    ASSERT(__stack_bottom < __stack_top, \"the globals fill the board's RAM, and the stack has no room\")");
         l.AppendLine("}");

@@ -268,7 +268,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     kind = TokenKind.Pipe;
                     break;
                 case '/':
-                    // `//` is Euclidean division. A lone `/` is a module path (Standard/Hosted) or division.
+                    // `//` is Euclidean division. A lone `/` is a module path (Hosted) or division.
                     if (Peek() == '/') { Advance(); kind = TokenKind.Op; text = "//"; }
                     else if (Peek() == '!' && Peek(1) != '=') { Advance(); kind = TokenKind.Op; text = "/!"; }
                     else kind = TokenKind.Slash;

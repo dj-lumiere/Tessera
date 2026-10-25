@@ -64,7 +64,7 @@ way: each level is made of whole pieces of the level below.
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a place borrowed with `<-` (`count: &S64 <- 0`), a call, a `return`.                              |
 | **routine**   | A body of statements: `if` / `else`, `each` / `until` / `loop` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
-| **module**    | A namespace for routines, types, and constants (`Standard/Hosted`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
+| **module**    | A namespace for routines, types, and constants (`Hosted`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
 | **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |
 
@@ -157,8 +157,9 @@ sources = ["src"]
 ## What works today
 
 - **Modules:** namespaces with `import`, qualified paths, `define`, and `secret` (visible inside its module and the
-  modules under it). `Standard/System` and every module under it are always seen. A standard library module is its
-  folder. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
+  modules under it). `System` and every module under it are always seen. A standard library module is its
+  folder under `Standard/`, written without a prefix (`import Collections`), and another library's starts with its
+  name (`import Ingrid/Decimal`). Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line, and the stdlib is built in with it.
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
   system, `when_power_on()` runs first and readies the core with `prepare_core()`.
@@ -168,9 +169,9 @@ sources = ["src"]
 - **Threads and fibers:** a piece of work is `f.to[Work](param: value)`, a plain value. A ticket a `ThreadManager`,
   `CoroutineManager` or `ThreadPoolManager` lends (`Thread`, `Fiber`, `PassableFiber`) takes it with `put_work`, its
   `retrieve()` waits and gives the result, and `drop` gives the ticket back.
-- **Standard library:** written in Tessera and layered so that only `Standard/Hosted` and the hosted files of
-  `Standard/System` (the heap and page managers) need libc. A target without an operating system builds without them
-  and uses `Standard/Unhosted` (the startup steps, the CPU events, the interrupt controller, the timer, the serial port,
+- **Standard library:** written in Tessera and layered so that only `Hosted` and the hosted files of
+  `System` (the heap and page managers) need libc. A target without an operating system builds without them
+  and uses `Unhosted` (the startup steps, the CPU events, the interrupt controller, the timer, the serial port,
   and the round robin threads).
 - **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Tessera.tmbundle/`](Tessera.tmbundle/)).

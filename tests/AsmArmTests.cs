@@ -16,7 +16,7 @@ public class AsmArmTests
     /// The entry a program without an operating system writes.
     private const string PowerOn = """
         routine when_power_on() -> None
-            prepare_core()
+            Unhosted/prepare_core()
             return
 
         """;
@@ -114,7 +114,7 @@ public class AsmArmTests
                     return
 
             routine when_power_on() -> None
-                prepare_core()
+                Unhosted/prepare_core()
                 return
 
             routine start() -> None

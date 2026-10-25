@@ -7,7 +7,7 @@ namespace Tessera;
 /// A type as written in source: `S64`, `@Byte` (a `PointedCell[Byte]`), `Array[T, 8]`, `Callable[(Addr, U64), Addr]`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
-    /// The module a qualified name was written with: `Standard/Collections` in `Standard/Collections/List[T]`.
+    /// The module a qualified name was written with: `Collections` in `Collections/List[T]`.
     public string? Path { get; init; }
 
     /// A type the builder filled in rather than one written: `x.to()` takes the type its value goes to.
@@ -93,7 +93,7 @@ public abstract record Decl(string File, List<Annotation> Annotations, Pos Pos)
     public bool IsLibrary { get; init; }
     /// `private`: visible only in the declaring module.
     public bool IsPrivate { get; init; }
-    /// The module the declaring file names (`Standard/System/Text`), or "" for a file without a `module` line.
+    /// The module the declaring file names (`System/Text`), or "" for a file without a `module` line.
     public string Module { get; init; } = "";
 }
 
@@ -241,13 +241,13 @@ public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts
 
 public sealed record Module(List<Decl> Decls);
 
-/// `module Standard/System/Text`: the module every declaration in the file belongs to. At most one, first in the file.
+/// `module System/Text`: the module every declaration in the file belongs to. At most one, first in the file.
 public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `import Standard/Hosted`: a module the file uses. Imports follow the module line, before any other declaration.
+/// `import Hosted`: a module the file uses. Imports follow the module line, before any other declaration.
 public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `define Fmt = Standard/System/Text` or `define Numbers = Standard/Collections/List[S64]`: a second name for a module
+/// `define Fmt = System/Text` or `define Numbers = Collections/List[S64]`: a second name for a module
 /// or a type. It belongs to its module like any declaration, so importers see it.
 public sealed record AliasDecl(string File, List<Annotation> Annotations, TypeRef Target, string Name, Pos Pos)
     : Decl(File, Annotations, Pos);
@@ -425,7 +425,7 @@ public sealed record UnitLit(BigInteger Count, string Unit, string Text, Pos Pos
     /// The type the unit makes, `Duration` or `ByteSize`.
     public string TypeName => Lexer.Units[Unit].Type;
 
-    /// The module of the type the unit makes: Standard/System/Temporal for `Duration`, Standard/System/Memory for
+    /// The module of the type the unit makes: System/Temporal for `Duration`, System/Memory for
     /// `ByteSize`.
     public string TypeModule => TypeName == "Duration" ? Compiler.TemporalModule : Compiler.MemoryModule;
 
@@ -449,14 +449,14 @@ public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(
     /// routine that isn't generic.
     public List<TypeRef> TypeArgs { get; init; } = [];
 
-    /// The module of a qualified routine: `Standard/Hosted` in `Standard/Hosted/wake_one.to[Callable]()`.
+    /// The module of a qualified routine: `Hosted` in `Hosted/wake_one.to[Callable]()`.
     public string? Path { get; init; }
 }
 
 /// `name(args)` or `name[T](args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified call: `Standard/System/Text` in `Standard/System/Text/write_str(...)`.
+    /// The module of a qualified call: `System/Text` in `System/Text/write_str(...)`.
     public string? Path { get; init; }
 
     /// Each argument's name where the call names it (`Point(x: 1, y: 2)`, null for an argument written without
@@ -492,7 +492,7 @@ public sealed record ImplicitMemberExpr(string Name, Pos Pos) : Expr(Pos);
 /// `NAME` or `Type.NAME` — a preset, or a choice member.
 public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified preset without an owner type: `Standard/System` in `Standard/System/PI`.
+    /// The module of a qualified preset without an owner type: `System` in `System/PI`.
     public string? Path { get; init; }
 }
 

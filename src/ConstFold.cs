@@ -162,7 +162,7 @@ public sealed partial class Compiler
         return ((v % span) + span) % span;
     }
 
-    /// Standard/System/Temporal's `Duration`: whole seconds (S64) and the nanoseconds past them (U32).
+    /// System/Temporal's `Duration`: whole seconds (S64) and the nanoseconds past them (U32).
     public static bool IsDuration(DType t) => t is RecordType { Decl: { Name: "Duration", Module: TemporalModule } };
 
     /// The `Duration` constant of `ns` nanoseconds: the seconds rounded down and the nanoseconds past them.

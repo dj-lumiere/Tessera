@@ -20,54 +20,60 @@ dotnet run -- build --board raspi4b f.te -o f.elf   # a program without an OS, l
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
-A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Standard/Hosted)
+A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Hosted)
 before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
 top to bottom with declarations seen everywhere, and the end of the file is its `return` (the builder gives the
 STACK places back there, and every other place must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
-modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
+modules: a file sees its own module, `System` and every module under it (always seen: the built-in types,
 `Maybe`, `Check`, `None`, `@[T]`, `BorrowedSlice`, `BorrowedCell`, the protocols, formatting, the memory managers, `HEAP`), and what
-it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Hosted`
+it imports, so a `List` needs `import Collections`, and `Console` / `ProcessManager` need `import Hosted`
 (the hosted side, the only one that calls libc). The standard library has two sides, and the build target keeps one:
-`Standard/Hosted` on a target with an operating system, `Standard/Unhosted` on one whose OS is `none` (the startup
+`Hosted` on a target with an operating system, `Unhosted` on one whose OS is `none` (the startup
 steps, the interrupt controller, the timer, the serial port, the round robin threads). The other side's declarations
 drop out of the build. A module that does the same job on both sides has the same file name and the same names on
 each (`Thread.te`, `Wait.te` and `CpuEvents.te` are on both now: `wait_on`, `wake_one`, `wake_all`, `CpuEventManager`).
 A file for one kind of target imports its side, and importing only the other one is a build error that names the
-side for the target ("Standard/Hosted needs an operating system, and target ... has none; its names for this target
-are in Standard/Unhosted"). A file for both kinds imports both sides (`import Standard/Hosted` and `import
-Standard/Unhosted`): the target keeps one, so each name means the target's. `Standard/Os` and `Standard/System/Cpu`
+side for the target ("Hosted needs an operating system, and target ... has none; its names for this target
+are in Unhosted"). A file for both kinds imports both sides (`import Hosted` and `import
+Unhosted`): the target keeps one, so each name means the target's. `Standard/Os` and `System/Cpu`
 are gone, and importing either is a build error naming the side to import. Importing a module brings
-that module, not the modules under it. A standard library module is its folder (`Standard/System/Memory/` is
-`Standard/System/Memory`), and a `module` line that names another module is a build error. A `secret` name is seen in
+that module, not the modules under it. A standard library module is its folder below `Standard/`, and its path has
+no prefix: `Standard/System/Memory/` is `System/Memory`, `Standard/Collections/` is `Collections`, so a file writes
+`import Collections`, `import Text/Patterns`. Another library puts its name in front (`import Ingrid/Decimal`). A path
+that starts with `Standard/` is a build error that names the path without it ("Standard/Collections is written
+Collections: ..."). A stdlib file's `module` line that names another module is a build error. A program's module
+can't have the path of a library module, and can't be under `System`, `Hosted`, or `Unhosted`: both are build
+errors at the program's module line or file ("your module Random has the same path as the standard library's
+module Random, so the two would be one module: give yours another path"). A `secret` name is seen in
 its module and the modules under it. A routine declared in its type's module comes with the type; one another module
-adds to it needs that module imported (the modules under `Standard/System` are always seen, so `S64.represent_into`
-from `Standard/System/Text` comes with `S64`). A qualified path (`Standard/System/Text/write_str`) reaches any public
+adds to it needs that module imported (the modules under `System` are always seen, so `S64.represent_into`
+from `System/Text` comes with `S64`). A qualified path (`System/Text/write_str`) reaches any public
 name without an import. Two modules may declare the same name: the file's own module wins over its imports, and two
-imports offering it need the path (a free routine's overloads from `Standard/System` and its modules count as one
-set). `define Fmt = Standard/System/Text` shortens a path (`Fmt/write_str`) without importing; `define Map =
-Standard/Collections/Dict` names a type.
+imports offering it need the path (a free routine's overloads from `System` and its modules count as one
+set). `define Fmt = System/Text` shortens a path (`Fmt/write_str`) without importing; `define Map =
+Collections/Dict` names a type.
 
 The standard library's modules:
 
-- `Standard/System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Array`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
+- `System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Array`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
   `Maybe`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
   crash trace, and hashing.
-- `Standard/System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
+- `System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
   (`B16`, `BF16`, `B32`, `B64`, `B128`), plus `SoftFloat` (the compiler runtime without an FPU).
-- `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
+- `System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
   (`Parsable`), UTF-8, and the byte-text views.
-- `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
+- `System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
   `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Unbroken`.
-- `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
-  `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
-- Imported: `Standard/Collections`, `Standard/Hosted` (console, files, storage, the environment, processes, threads,
-  clocks, the `CpuEventManager` over the system's signals, and the fault report), `Standard/Unhosted` (the startup
+- `System/Temporal` (`Duration`, `Moment`), `System/Serialization` (JSON strings),
+  `System/CSubSystem` (C strings, the C memory routines without an OS).
+- Imported: `Collections`, `Hosted` (console, files, storage, the environment, processes, threads,
+  clocks, the `CpuEventManager` over the system's signals, and the fault report), `Unhosted` (the startup
   steps without an OS, `prepare_core`, which the program's `when_power_on` calls, the `CpuEventManager` over the
   vector table, the `Pl011` serial port, and on AArch64 `InterruptManagerByGic`, the virtual timer (`cpu_timer_*`),
   the core's interrupt mask, `psci_power_off`, `ThreadManagerByRoundRobin` and the word wait over it, below),
-  `Standard/Fiber`, `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
-- `Ingrid/Decimal` (imported, not under `Standard`): the decimal numbers `D32`, `D64`, `D128`, and `Decimal` (below).
+  `Fiber`, `Random`, `Text/Patterns` (text patterns, below).
+- `Ingrid/Decimal` (imported, Ingrid's library, not the standard library): the decimal numbers `D32`, `D64`, `D128`, and `Decimal` (below).
   They come from Ingrid, the numeric library RazorForge and Suflae use too (one implementation), which every build
   reads like the standard library: `$TESSERA_INGRID`, else an `Ingrid` folder next to `Standard` (an installed
   Tessera), else `Ingrid/tessera` of a checkout above the standard library. The files are Ingrid's
@@ -83,8 +89,8 @@ target. `tests/SplitModuleTests.cs` shows the pair.
 ## Skeleton
 
 ```tessera
-import Standard/Collections
-import Standard/Hosted
+import Collections
+import Hosted
 
 routine start() -> None
     list: &List[S64] <- .construct(HEAP)
@@ -455,7 +461,7 @@ routine start() -> None
 
   `BorrowedCell[T].replace` works the same. `BorrowedSlice[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
-- **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
+- **Every memory region has a manager** (all in System/Memory: the protocols, the hosted managers, and the
   ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
   order): `HeapManagerByC` (C's malloc / realloc / free, nothing in front of the blocks) and `HeapManagerByCheckedHeap` (the heap
   check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's
@@ -483,7 +489,7 @@ routine start() -> None
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
   program's `when_power_on` calls it).
-- **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.borrow(...)`),
+- **A memory manager is a type that obeys `MemoryManageable`** (System/Memory): three routines taking `me` by its address (`routine @M.borrow(...)`),
   `borrow(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `reborrow(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `give_back(at: Addr) -> None`. Memory from a manager is borrowed: the program gives it back, and the manager
@@ -497,7 +503,7 @@ routine start() -> None
   apart (an arena) an `entity`. The table is called through `borrow`, `reborrow`, `give_back`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
-  `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/System/Memory`, which also
+  `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `System/Memory`, which also
   writes out the hosted tables (`DefaultMemory.te`) for its hosted managers (`Heap.te`, `Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** Using a table after its manager's place
@@ -507,7 +513,7 @@ routine start() -> None
   escape check's error. Memory borrowed through the table in the same routine (a `BorrowedSlice`, a `BorrowedCell`, a `List`) is given
   back before the manager and the table end (the group check above). Memory handed to another routine and given back
   there after the manager ended isn't followed.
-- **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
+- **The default heap comes with a target that has an OS.** `System/Memory` then has `HEAP`, `C_HEAP`, and
   `PAGES`, `@MemoryManager` tables ready before `start`. A collection and a `BorrowedSlice` always name their manager
   (`List[S64].construct(HEAP)`, `BorrowedSlice[U8].construct(count: n, manager: HEAP)`), and so does every other routine
   that borrows memory (`Console.ask_line(HEAP)`, `OsFileManager.read_all(at, manager: HEAP)`, `dir.file(name, manager:
@@ -782,10 +788,10 @@ routine start() -> None
   compare one across runs. Combine part hashes with `hash_combine(a, b)`. `siphash24(data, count, key)` /
   `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
   unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
-- **Random numbers** are `Xoshiro256` (`import Standard/Random`): `.from_seed(seed)` replays a stream,
+- **Random numbers** are `Xoshiro256` (`import Random`): `.from_seed(seed)` replays a stream,
   `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`, which is `OsEntropy` with an OS), then `next()`, `next_u32()`,
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
-  `text.json_quote_into(out)` in `Standard/System/Serialization`.
+  `text.json_quote_into(out)` in `System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - A whole number written in base 10 also goes into a binary float place, typed by where it goes: `x: &B64 <- 0`,
   `y: B32 = 3`, `half(7)` for a `B64` parameter, `w: B128 = 12` (exact when the type holds it, else the nearest value).
@@ -1042,7 +1048,7 @@ routine start() -> None
   program without an operating system) and one per fiber, reserved in the frame of the fiber's first routine when it
   first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.te). A program that switches
   fibers by hand (a board's own loop, without CoroutineManager) switches with `switch_fiber(from, to)`
-  (Standard/Fiber), which puts each side's mold back when it resumes, and the fiber's first routine reserves its own
+  (Fiber), which puts each side's mold back when it resumes, and the fiber's first routine reserves its own
   first: `RUNNING_MOLD.poke(reserve_failure_mold())`. A mold has room for the
   largest crashable the program throws, and nothing is borrowed when something fails. `throw` writes the crashable
   into the running flow's mold just before the routine returns (after its places are given back), and the failable
@@ -1079,7 +1085,7 @@ routine start() -> None
   so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` a `.hollow()` value,
   `r.is_ok()` tests the code, and the routine turns its failures into codes with `when check`. Make 0 the success
   code, the choice's first member (the build doesn't check it). Inside, code uses failable routines, not `Result`.
-- **The `Crash` service** (Standard/System, one per program) reports a crash and a failure nothing received, then
+- **The `Crash` service** (System, one per program) reports a crash and a failure nothing received, then
   stops. `Crash.report_with(routine.to[Callable]())` puts a reporting routine in its slot and returns the one before
   (`.hollow()` for the default), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
   @SourceLocation) -> None`, mark it `@untraced` so its own frame isn't on the trace it reads with `trace_depth()` /
@@ -1117,7 +1123,7 @@ routine start() -> None
 - **Standard library guideline:** a crashable holds a few values only (a code, a count, a view of text the caller
   keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
-- **Events: `CpuEventManager`** (`CpuEvents.te` of Standard/Hosted with an OS, of Standard/Unhosted without one) holds
+- **Events: `CpuEventManager`** (`CpuEvents.te` of Hosted with an OS, of Unhosted without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`.hollow()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
@@ -1150,8 +1156,8 @@ routine start() -> None
 - `secret` before a declaration or a record field hides it from other modules (`secret routine helper(...)`,
   `secret count: U64`). In every file of the declaring module, and of the modules under it, it's used as usual, so two
   secret declarations of one name in two files of a module clash like any two declarations. The standard library
-  follows the same rule: a secret name of `Standard/System/Numerics` is seen in `Standard/System/Numerics/B64`, and
-  hidden from `Standard/System/Text`.
+  follows the same rule: a secret name of `System/Numerics` is seen in `System/Numerics/B64`, and
+  hidden from `System/Text`.
 
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Secret names don't count outside their module.
@@ -1385,7 +1391,7 @@ failable routine parse_count(text: @[Byte]) -> U32
         is U32 as count => count
 ```
 
-**Text patterns** (`import Standard/Text/Patterns`, the engine RazorForge and Suflae reach through Ingrid). A pattern
+**Text patterns** (`import Text/Patterns`, the engine RazorForge and Suflae reach through Ingrid). A pattern
 is built from pieces, which are entities holding their part of the pattern in memory: a piece that starts a pattern
 takes the manager, one built from pieces takes the manager of the piece it is built from, and `TextPattern.of` takes
 the pieces over (a span literal written in place):
@@ -1414,10 +1420,10 @@ the builder gives it back at the end of the body (from STACK). Tessera presets f
 
 ## Output
 
-Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
+Format through `System/Text` (`Format.te`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
-- The console is `Console` (`Standard/Hosted`): `Console.show("x = {x}")` writes one line to standard output,
+- The console is `Console` (`Hosted`): `Console.show("x = {x}")` writes one line to standard output,
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). With a value in place
   of the template, `Console.show(x)` / `Console.alert(x)` is `Console.show("{x}")`: x's `represent_into` writes it
@@ -1543,7 +1549,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Routines every program has.**
 
 - `routine start() -> None` is the entry point of an executable. With an operating system the builder writes the
-  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard/Hosted)
+  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Hosted)
   stored, 0 when nothing did. It is one unbroken value: the last store wins, any thread may set it, and a thread
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
@@ -1633,7 +1639,7 @@ several tickets at once.
 - **Cancellable waits**: a ticket's `retrieve()` and a channel's `transmit` / `receive` throw `CancelRequested` as soon
   as the WAITING work itself is cancelled (its ticket's `cancel()`). Then clean up and return. Outside a piece of work
   nothing cancels them.
-- **Lists of tickets**: `List[Thread[T]]` (Standard/Hosted), `List[Fiber[T]]` and `List[PassableFiber[T]]` (Standard/Fiber)
+- **Lists of tickets**: `List[Thread[T]]` (Hosted), `List[Fiber[T]]` and `List[PassableFiber[T]]` (Fiber)
   have `retrieve_all()` / `retrieve_all(manager)` (waits for each, results in list order, stops on a failure as a bare
   `retrieve` does), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
@@ -1739,7 +1745,7 @@ two readings to measure, add a timeout for a deadline (`Clock.monotonic() +^ tim
 `Clock.now()` is the date and time (a `Moment`), `CpuClock.now()` the process's processor time (a `Duration`).
 Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. A negative timeout waits not at all. A waiter the
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
-own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Hosted.
+own), with `park()` / `park_until(deadline)` / `wake()`. All in Hosted.
 
 **Channels** (Standard/Hosted/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `ch: &Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
@@ -1842,7 +1848,7 @@ of the mounted file systems, empty on Windows, which names them only to an admin
 Windows the drive letters), and `OsFileManager.partition(at, manager)`. Making a partition or a file system isn't
 there yet.
 
-**The environment.** `OsEnvironment` (Standard/Hosted) reads what the OS gave the process and changes none of it:
+**The environment.** `OsEnvironment` (Hosted) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
 `Maybe[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
@@ -1866,10 +1872,10 @@ ends this process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
-`x86_64-none-elf`) gets everything but `Standard/Hosted` and the hosted files of `Standard/System`, and `Standard/Unhosted` in
-their place: `Standard/System` (formatting into a
-`SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Hosted` drops out of the build, so importing only it or naming anything in it is one
-build error ("Standard/Hosted needs an operating system ..."); there's no `Out`, files, the hosted `Thread` / `Work` / `Channel` / `Waiter`, `@threadlocal`, fiber `CoroutineManager` (`Standard/Fiber`'s
+`x86_64-none-elf`) gets everything but `Hosted` and the hosted files of `System`, and `Unhosted` in
+their place: `System` (formatting into a
+`SliceWriter` or `List[Byte]`, the memory protocols) and `Collections` check there. `Hosted` drops out of the build, so importing only it or naming anything in it is one
+build error ("Hosted needs an operating system ..."); there's no `Out`, files, the hosted `Thread` / `Work` / `Channel` / `Waiter`, `@threadlocal`, fiber `CoroutineManager` (`Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `HEAP` or `PAGES` (naming `HEAP` is a build error saying the target has none). The program passes the table of a manager of its own if it
 allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
@@ -1923,7 +1929,7 @@ routine when_power_on() -> None
     return
 ```
 
-`prepare_core()` from Standard/Unhosted (`import Standard/Unhosted`) runs `GlobalManager.prepare()` (`zero_bss()`, .bss zeroed, `__bss_start`
+`prepare_core()` from Unhosted (`import Unhosted`) runs `GlobalManager.prepare()` (`zero_bss()`, .bss zeroed, `__bss_start`
 to `__bss_end`, and `copy_data()`, `__data_load` to `__data_start` .. `__data_end`, skipped when both are the same
 place), `enable_fpu()` when the build may use an FPU, and `CpuEventManager.install()` on AArch64 and RISC-V. Then the
 reporting routine goes in the Crash service's slot, first after `prepare_core()` (the slot is a global): a crash
@@ -1954,7 +1960,7 @@ instructions, before `when_power_on`, so an optimized build may use them anywher
 makes and keeps in globals:
 
 ```tessera
-import Standard/Unhosted
+import Unhosted
 
 global GIC: &InterruptManagerByGic <- .hollow()
 global THREADS: &ThreadManagerByRoundRobin <- .hollow()
@@ -1972,7 +1978,7 @@ routine start() -> None
     return
 ```
 
-- `Pl011` (Standard/Unhosted): a Writer over a PL011 serial port, `port: &Pl011 <-
+- `Pl011` (Unhosted): a Writer over a PL011 serial port, `port: &Pl011 <-
   .construct(base: inttoptr[U64, Addr](0x09000000))`, then `port.write("n = {n}\n")`. It waits for room in the
   transmit queue and sets nothing up.
 - `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
@@ -1984,7 +1990,7 @@ routine start() -> None
   `unmask_interrupts()`, `wait_for_next_interrupt()` (`wfi`).
 - The virtual timer (`Standard/Unhosted/CpuTimer.te`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
   `cpu_timer_raise_at(count)`, `cpu_timer_stop()`, `cpu_timer_ticks(span)`, and its line `CPU_TIMER_LINE` (27).
-- The clocks (`Standard/Unhosted/Time.te`, the names and types of Standard/Hosted's `Clock`): `Clock.monotonic()` is
+- The clocks (`Standard/Unhosted/Time.te`, the names and types of Hosted's `Clock`): `Clock.monotonic()` is
   the core's counter at its rate (CNTVCT_EL0 / CNTFRQ_EL0), the time since power on, on AArch64 (a build error on the
   other targets without an OS). `Clock.now()` reads the board's real-time clock, which the board file names
   (`[devices] rtc`, its registers at `__rtc_base` in the link script), through `RtcManagerByPl031`
@@ -2012,10 +2018,10 @@ routine start() -> None
   frame check at the start of each routine measures from the thread's own stack bottom: a stack that runs out, however
   deep and with frames of any size, stops the program with `StackOverflowError` before it leaves its slot
   (tests/rr_stack_overflow, tests/rr_stack_overflow_large_frame). One core, one running manager (`run`), no priorities.
-  The word wait has the names of Standard/Hosted's: the free routines `wait_on(at, expected)`, `wake_one(at)`,
+  The word wait has the names of Hosted's: the free routines `wait_on(at, expected)`, `wake_one(at)`,
   `wake_all(at)` (`Standard/Unhosted/Wait.te`) go to the running manager, and outside `run` `wait_on` returns at once
   (tests/rr_wait_same_names imports both sides and builds its mailbox on them). There is no `wait_on_for` yet, and
-  `Thread`, `Work`, `Channel`, `Waiter` and the `AccessManager` are Standard/Hosted's only: a program builds its waits on
+  `Thread`, `Work`, `Channel`, `Waiter` and the `AccessManager` are Hosted's only: a program builds its waits on
   the word wait (tests/rr_wait_wake: a mailbox of one value). Each thread has its own `@threadlocal` globals: its slot
   holds its record, its thread-local block (the link script's block size), a check word and its stack, the switch
   points TPIDR_EL0 at the next thread's block, and a thread starts with every thread-local at its starting value (the
@@ -2077,7 +2083,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   is `construct`. One exception: a routine that implements a conversion's C runtime call (LLVM lowers
 `B32.to[B16]()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
 that `to[T]`, which would call itself there. It keeps the shape under its own name, `x.soft_to[B16]()`
-(Standard/System/Numerics/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
+(System/Numerics/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
 **The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a place that
 `finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has

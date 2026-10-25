@@ -1,6 +1,6 @@
 namespace Tessera;
 
-/// The accesses a routine takes from the AccessManager (Standard/Hosted): `p.get_exclusive_access()` gives an
+/// The accesses a routine takes from the AccessManager (Hosted): `p.get_exclusive_access()` gives an
 /// `Authorized[T]` and `p.get_shared_read_access()` a `ReadAuthorized[T]`, read and written through `getview()`, and
 /// `drop` ends the access. An access comes from
 /// a manager, so the memory check follows it as it follows memory: it is given back on every path, once, its view isn't

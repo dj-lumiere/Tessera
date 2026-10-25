@@ -12,10 +12,19 @@ public class StandardModuleTests
         new Parser(new Lexer(shownAs, text).Lex(), shownAs, true, placeModule: StandardLibrary.ModuleOf(shownAs),
             placeIsFixed: true).ParseModule().Decls;
 
+    private static string StdlibDir()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te")))
+                return Path.Combine(dir.FullName, "Standard");
+        throw new InvalidOperationException("no Standard/ above the test assembly");
+    }
+
     [Theory]
-    [InlineData("Standard/System/Memory/Heap.te", "Standard/System/Memory")]
-    [InlineData("Standard/System/Prelude.te", "Standard/System")]
-    [InlineData("Standard/Collections/List.te", "Standard/Collections")]
+    [InlineData("Standard/System/Memory/Heap.te", "System/Memory")]
+    [InlineData("Standard/System/Prelude.te", "System")]
+    [InlineData("Standard/Collections/List.te", "Collections")]
+    [InlineData("Standard/Text/Patterns/Regex.te", "Text/Patterns")]
     public void The_folder_is_the_module(string shownAs, string module)
     {
         Assert.Equal(module, StandardLibrary.ModuleOf(shownAs));
@@ -24,22 +33,38 @@ public class StandardModuleTests
     [Fact]
     public void A_module_line_that_repeats_the_folder_builds()
     {
-        var decls = Parse("Standard/System/Text/Format.te", "module Standard/System/Text\n\npreset WIDTH: U64 = 8\n");
-        Assert.All(decls, d => Assert.Equal("Standard/System/Text", d.Module));
+        var decls = Parse("Standard/System/Text/Format.te", "module System/Text\n\npreset WIDTH: U64 = 8\n");
+        Assert.All(decls, d => Assert.Equal("System/Text", d.Module));
     }
 
     [Fact]
     public void A_file_without_a_module_line_is_in_its_folders_module()
     {
         var decls = Parse("Standard/System/Text/Format.te", "preset WIDTH: U64 = 8\n");
-        Assert.All(decls, d => Assert.Equal("Standard/System/Text", d.Module));
+        Assert.All(decls, d => Assert.Equal("System/Text", d.Module));
     }
 
     [Fact]
     public void A_module_line_that_names_another_module_is_a_build_error()
     {
         var e = Assert.Throws<CompileError>(() =>
-            Parse("Standard/System/Text/Format.te", "module Standard/Format\n\npreset WIDTH: U64 = 8\n"));
-        Assert.Contains("this file is in the folder of module Standard/System/Text", e.Message);
+            Parse("Standard/System/Text/Format.te", "module Format\n\npreset WIDTH: U64 = 8\n"));
+        Assert.Contains("this file is in the folder of module System/Text", e.Message);
+    }
+
+    [Fact]
+    public void Every_folder_under_Standard_is_a_module_root_the_parser_knows()
+    {
+        string stdlib = StdlibDir();
+        var folders = Directory.GetDirectories(stdlib).Select(Path.GetFileName).Order(StringComparer.Ordinal);
+        Assert.Equal(Compiler.StandardModuleRoots.Order(StringComparer.Ordinal), folders);
+    }
+
+    [Fact]
+    public void A_path_with_the_old_Standard_prefix_is_a_build_error_naming_the_new_path()
+    {
+        var e = Assert.Throws<CompileError>(() =>
+            Parse("Standard/System/Text/Format.te", "import Standard/Hosted\n\npreset WIDTH: U64 = 8\n"));
+        Assert.Contains("Standard/Hosted is written Hosted", e.Message);
     }
 }

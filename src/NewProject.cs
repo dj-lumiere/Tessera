@@ -26,7 +26,7 @@ static class NewProject
 
                 """),
             ("main.te", """
-                import Standard/Hosted
+                import Hosted
 
                 ### Writes a greeting.
                 routine start() -> None

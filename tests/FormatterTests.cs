@@ -34,7 +34,7 @@ public class FormatterTests
     {
         // Top-level lines run in the order written, so no declaration moves past them, and a line after an `if` body
         // among them follows it directly, as in a routine.
-        const string source = "import Standard/Hosted\n\nn: &S64 <- 1\n\nroutine twice(x: S64) -> S64\n    return x * 2\n\n"
+        const string source = "import Hosted\n\nn: &S64 <- 1\n\nroutine twice(x: S64) -> S64\n    return x * 2\n\n"
                               + "if n.load() > 0\n    n.store(twice(x: n.load()))\nelse\n    n.store(0)\nset_exit_code(code: 0)\n";
         Assert.Equal(source, Formatter.Format(source));
     }

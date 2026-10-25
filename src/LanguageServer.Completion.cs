@@ -46,7 +46,7 @@ public static partial class LanguageServer
         // Overloads share a name: a routine is one entry per signature.
         var seen = new HashSet<(string, int, string?)>();
         // The order the editor lists them in: what the cursor's routine binds, then this file's declarations, this
-        // module's, the imported modules', Standard/System's, and the keywords last.
+        // module's, the imported modules', System's, and the keywords last.
         int Rank(Decl d) =>
             d.File == analysis?.Shown ? 2
             : d.Module == analysis?.Compiler.ModuleOf(analysis.Shown) ? 3

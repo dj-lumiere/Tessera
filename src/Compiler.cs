@@ -58,6 +58,12 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<AliasDecl>> _aliases = [];
     private readonly List<RoutineDecl> _userRoutines = [];
     private readonly HashSet<string> _modules = [];
+
+    /// The modules the libraries' files are in (the standard library's and Ingrid's).
+    private readonly HashSet<string> _libraryModules = [];
+
+    /// The module lines of the program's own files, and the modules their places name.
+    private readonly List<ModuleDecl> _userModules = [];
     private readonly List<ImportDecl> _imports = [];
     private readonly List<RoutineDecl> _allRoutines = [];
 
@@ -120,7 +126,9 @@ public sealed partial class Compiler
             switch (d)
             {
                 case ModuleDecl m:
-                    // `Standard/System` also declares `Standard`.
+                    // `System/Memory` also declares `System`.
+                    if (m.IsLibrary) _libraryModules.Add(m.Path);
+                    else _userModules.Add(m);
                     for (int i = m.Path.IndexOf("/", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("/", i + 1, StringComparison.Ordinal))
                         _modules.Add(m.Path[..i]);
                     _modules.Add(m.Path);
@@ -144,6 +152,7 @@ public sealed partial class Compiler
                     break;
             }
         }
+        foreach (var m in _userModules) CheckModuleCollision(m);
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
@@ -349,8 +358,8 @@ public sealed partial class Compiler
 
     private bool IsModuleAlias(AliasDecl a) => a.Target.Args.Count == 0 && _modules.Contains(FullPath(a.Target));
 
-    /// A module path with a leading defined module name replaced: `Fmt/write_str` is `Standard/System/Text/write_str`
-    /// after `define Fmt = Standard/System/Text`.
+    /// A module path with a leading defined module name replaced: `Fmt/write_str` is `System/Text/write_str`
+    /// after `define Fmt = System/Text`.
     private string? ExpandPath(string? path, string file)
     {
         if (path is null) return null;
@@ -459,8 +468,8 @@ public sealed partial class Compiler
 
     private bool Selected(Decl d)
     {
-        // Each side of the standard library exists only on its kind of target: Standard/Hosted with an operating
-        // system, Standard/Unhosted without. The other side's library declarations drop out as a whole. Its module
+        // Each side of the standard library exists only on its kind of target: Hosted with an operating
+        // system, Unhosted without. The other side's library declarations drop out as a whole. Its module
         // stays, so importing it or naming something in it can say why.
         if (d.IsLibrary && d is not ModuleDecl && IsOtherSide(d.Module)) return false;
         if (!TraceSelected(d)) return false;
@@ -818,7 +827,7 @@ public sealed partial class Compiler
 
     /// Whether the program runs ThreadPoolManager passable fibers, which may wake on another thread than the one they waited on.
     private bool MovesWaitingFibers => _instances.Values.Any(i =>
-        i.Decl.IsLibrary && i.Decl.Name == "pool_thread" && i.Decl.Module == "Standard/Fiber");
+        i.Decl.IsLibrary && i.Decl.Name == "pool_thread" && i.Decl.Module == "Fiber");
 
     /// The functions with trace_push, trace_at and trace_pop called out of line. LLVM may work out a thread-local's
     /// address once per function, so the inlined ones would go on writing the trace of the thread a passable fiber started on
@@ -874,12 +883,18 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
-    /// The first name of every standard library module's path.
+    /// The standard library's folder. Its modules' paths start below it (`Standard/Collections/` holds `Collections`),
+    /// and a path that starts with it is a build error that names the path without it.
     public const string StandardRoot = "Standard";
+
+    /// The first name of every standard library module's path: the folders right under `Standard/`. A file's parser
+    /// takes each of them as the start of a module path.
+    public static readonly IReadOnlyList<string> StandardModuleRoots =
+        ["Collections", "Fiber", "Hosted", "Random", "System", "Text", "Unhosted"];
 
     /// The language's base module: the built-in types, the protocols, the Crash service, and the conversions. It and every module
     /// under it are seen from every file without an import.
-    public const string SystemModule = "Standard/System";
+    public const string SystemModule = "System";
 
     /// Whether `t` is the None record, the one value of `None` (a generic argument bound to `None`, a `List[None]`'s
     /// element). A call that returns nothing gives it where it is expected.
@@ -894,10 +909,10 @@ public sealed partial class Compiler
     /// Duration and Moment.
     public const string TemporalModule = SystemModule + "/Temporal";
 
-    /// Whether a module is `Standard/System` or one under it, which every file sees without an import.
+    /// Whether a module is `System` or one under it, which every file sees without an import.
     public static bool IsSystemModule(string module) => IsUnder(module, SystemModule);
 
-    /// Whether `module` is `parent` or a module under it (`Standard/System/Memory` is under `Standard/System`).
+    /// Whether `module` is `parent` or a module under it (`System/Memory` is under `System`).
     public static bool IsUnder(string module, string parent) =>
         module == parent || (parent.Length > 0 && module.StartsWith(parent + "/", StringComparison.Ordinal));
 
@@ -909,17 +924,33 @@ public sealed partial class Compiler
     public string FileTagPath(Decl d) => FileTagPaths.GetValueOrDefault(d.File, d.File);
     /// The side of the standard library for a target with an operating system: files, processes, the console, the
     /// operating system's threads, and the CpuEventManager over its signals.
-    public const string HostedModule = "Standard/Hosted";
+    public const string HostedModule = "Hosted";
 
     /// The side of the standard library for a target without one: the startup steps, the CpuEventManager over the
     /// vector table, the interrupt controller, the timer, the serial port, and the program's own threads.
-    public const string UnhostedModule = "Standard/Unhosted";
+    public const string UnhostedModule = "Unhosted";
 
-    /// The side the target keeps: Standard/Hosted with an operating system, Standard/Unhosted without.
+    /// The side the target keeps: Hosted with an operating system, Unhosted without.
     public string SideModule => Target.HasOs ? HostedModule : UnhostedModule;
 
     /// Whether `module` is the side the target doesn't keep, or a module under it.
     private bool IsOtherSide(string module) => IsUnder(module, Target.HasOs ? UnhostedModule : HostedModule);
+
+    /// A module of the program can't have the path of a library module: the two would be one module, the program's
+    /// names mixed into the library's. Below System, Hosted, and Unhosted every path is the standard library's, since
+    /// every file sees System's modules and the target keeps one side.
+    private void CheckModuleCollision(ModuleDecl m)
+    {
+        if (_libraryModules.Contains(m.Path))
+            throw new CompileError(m.Pos, $"your module {m.Path} has the same path as the "
+                + (IsUnder(m.Path, StandardLibrary.IngridRoot) ? "Ingrid library's" : "standard library's")
+                + $" module {m.Path}, so the two would be one module: give yours another path (its module line, or "
+                + "the file's or folder's name)");
+        if (new[] { SystemModule, HostedModule, UnhostedModule }.FirstOrDefault(root => IsUnder(m.Path, root)) is { } under)
+            throw new CompileError(m.Pos, $"your module {m.Path} is under the standard library's module {under}, whose "
+                + "paths are all the standard library's: give yours another path (its module line, or the file's or "
+                + "folder's name)");
+    }
 
     /// Why the other side's module isn't there, and where the names are on this target.
     private string OtherSide(string module) => Target.HasOs
@@ -940,7 +971,7 @@ public sealed partial class Compiler
     public static string ShowModule(string module) => module == "" ? "the root module" : module;
 
     /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path/name`. A plain name reaches
-    /// the file's own module, Standard/System and the modules under it (always seen), and the modules the file imports
+    /// the file's own module, System and the modules under it (always seen), and the modules the file imports
     /// (an import brings the module, not the modules under it). `secret` limits a declaration to its module and the
     /// modules under it, qualified or not.
     public bool Visible(Decl d, string file, string? path)
@@ -960,7 +991,7 @@ public sealed partial class Compiler
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
     /// Of the declarations a file sees under one name, the ones that win: its module's (a `private` one shares its
-    /// name with declarations in other modules), else all of them, from Standard/System and the imports alike.
+    /// name with declarations in other modules), else all of them, from System and the imports alike.
     private List<T> Nearest<T>(List<T> visible, string file) where T : Decl
     {
         if (visible.Count <= 1) return visible;
@@ -1016,7 +1047,7 @@ public sealed partial class Compiler
 
     private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
 
-    /// The declaration behind a type. A built-in type (`S64`, `PointedCell[T]`) has one too, a record in Standard/System that
+    /// The declaration behind a type. A built-in type (`S64`, `PointedCell[T]`) has one too, a record in System that
     /// carries its conformances; null if there's none.
     private Decl? DeclOf(DType t) => t switch
     {
@@ -1240,7 +1271,7 @@ public sealed partial class Compiler
         if (t.Path is null && t.Name == TypeRef.UnionName) return ResolveUnion(t, env);
         if (t.Path is not null) t = t with { Path = ExpandPath(t.Path, env.File) };
 
-        // The built-in types live in Standard/System.
+        // The built-in types live in System.
         if (t.Path is not (null or SystemModule))
             return ResolveDeclaredType(t, env);
 

@@ -231,7 +231,7 @@ public sealed partial class Compiler
 
     /// The free routines a plain or qualified name means from `file`: its overload set. The set is one module's (the
     /// file's own module first, else the one import that has the name; two imports offering it make it ambiguous, as
-    /// with any name). Standard/System and the modules under it count as one module here.
+    /// with any name). System and the modules under it count as one module here.
     /// Empty if nothing has the name.
     public List<RoutineDecl> FreeCandidates(string name, string file, Pos pos, string? path = null)
     {
@@ -255,7 +255,7 @@ public sealed partial class Compiler
         var scope = visible.Where(c => c.Module == module).ToList();
         if (scope.Count == 0)
         {
-            // Standard/System and the modules under it are one set: every file sees all of them.
+            // System and the modules under it are one set: every file sees all of them.
             var modules = visible.Select(c => IsSystemModule(c.Module) ? SystemModule : c.Module).Distinct().ToList();
             if (modules.Count > 1)
                 throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
