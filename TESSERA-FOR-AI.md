@@ -797,6 +797,16 @@ routine start() -> None
   member of another choice, a name that is no member, or a type where the member goes is a build error that names the
   choice and its members, and so is a member where a number or a type goes. A flags type can't be a value
   parameter's kind (a value of one has any set of its members on): that is a build error too.
+- **Type arguments can have defaults.** A `needs` line gives one after the kind, where a binding writes its value:
+  `needs O: MemoryOrder = SEQ_CST`, `needs T: typename = U64`, `needs N: U64 = 4`, `needs A: typename, B: typename =
+  A` (a default may name a parameter before it). The form is the binding's `name: Type = value`, so the line reads the
+  way a binding does and the kind stays written. A use that leaves out trailing arguments takes the defaults: `Cell`
+  is `Cell[SEQ_CST]`, `f(1)` is `f[SEQ_CST](1)`, and the two spellings are one type and one instance. The parameters
+  with a default come after every one without (a build error otherwise, since a use leaves out only trailing
+  arguments). A routine on a type can't give the type's parameter a default (the type's own needs line does), and
+  protocols and conformances take none. Inference wins over a default: a parameter the call doesn't write takes what
+  the arguments or the place the result goes give it (`kind_of(narrow)` with `narrow: S8` is `kind_of[S8]`, `made:
+  Cell[ACQUIRE] = cell()` is `cell[ACQUIRE]`), and only a parameter nothing gives takes its default.
 - `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
   with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A

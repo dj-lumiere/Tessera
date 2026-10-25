@@ -89,6 +89,9 @@ public sealed record Clause(string Kind, List<Token> Tokens)
     public List<TypeRef> Concepts { get; init; } = [];
     /// obeys: the conditions after `when`, under which the conformance holds.
     public List<TypeRef> When { get; init; } = [];
+    /// needs: the default a parameter declares after its kind (`T: typename = U64`, `O: MemoryOrder = SEQ_CST`), by
+    /// the parameter's name. A use that leaves out the trailing arguments takes these.
+    public Dictionary<string, TypeArg> Defaults { get; init; } = [];
 }
 
 public abstract record Decl(string File, List<Annotation> Annotations, Pos Pos)

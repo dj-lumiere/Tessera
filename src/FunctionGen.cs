@@ -2172,7 +2172,7 @@ public sealed partial class FunctionGen
             case RoutineRef rr:
                 // An overloaded routine's value is the overload the Callable it goes to names.
                 return rr.Callable is null && _c.FreeCandidates(rr.Name, _env.File, rr.Pos, rr.Path)
-                    .Count(o => rr.TypeArgs.Count == 0 || o.TypeParams.Count == rr.TypeArgs.Count) > 1
+                    .Count(o => rr.TypeArgs.Count == 0 || TakesTypeArgs(o, rr.TypeArgs.Count)) > 1
                     ? null
                     : RoutineValue(rr, null).Type;
             case NsCallExpr or MethodCallExpr when TemplateCall(e) is not null:
@@ -3915,7 +3915,7 @@ public sealed partial class FunctionGen
     /// with that many type parameters (or, among several, the one whose instance is the Callable expected).
     private Val GenericRoutineValue(RoutineRef r, List<RoutineDecl> set, DType? expected)
     {
-        var fitting = set.Where(o => o.TypeParams.Count == r.TypeArgs.Count && o.Fixed.Count == 0).ToList();
+        var fitting = set.Where(o => TakesTypeArgs(o, r.TypeArgs.Count) && o.Fixed.Count == 0).ToList();
         if (fitting.Count == 0)
             throw Err(r.Pos, $"no overload of '{r.Name}' takes {r.TypeArgs.Count} type argument(s)");
         var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
@@ -4246,8 +4246,8 @@ public sealed partial class FunctionGen
             for (int i = 0; i < args.Count && i + first < r.Params.Count; i++)
                 if (names?.ElementAtOrDefault(i) is { } label && label != r.Params[i + first].Name)
                     return No($"argument {i + 1} is named '{label}', but the parameter there is '{r.Params[i + first].Name}'");
-            if (r.Fixed.Count == 0 && typeArgs.Count != 0 && typeArgs.Count != r.TypeParams.Count)
-                return No($"it takes {r.TypeParams.Count} type argument(s), not {typeArgs.Count}");
+            if (r.Fixed.Count == 0 && typeArgs.Count != 0 && !TakesTypeArgs(r, typeArgs.Count))
+                return No($"it takes {TypeArgCounts(r)} type argument(s), not {typeArgs.Count}");
             BindExplicit(r, env, typeArgs, pos);
             InferTypeArgs(r, env, args, expected, first);
             var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
@@ -4845,10 +4845,21 @@ public sealed partial class FunctionGen
             return;
         }
         if (typeArgs.Count == 0) return;
-        if (typeArgs.Count != r.TypeParams.Count)
-            throw Err(pos, $"'{r.DisplayName}' takes {r.TypeParams.Count} type argument(s), got {typeArgs.Count}");
+        if (!TakesTypeArgs(r, typeArgs.Count))
+            throw Err(pos, $"'{r.DisplayName}' takes {TypeArgCounts(r)} type argument(s), got {typeArgs.Count}");
         for (int i = 0; i < typeArgs.Count; i++)
             env.Bind(r.TypeParams[i], ExplicitTypeArg(r, r.TypeParams[i], typeArgs[i]));
+    }
+
+    /// Whether a call may write `count` type arguments of `r`: all of them, or fewer when each one left out has a
+    /// default.
+    private static bool TakesTypeArgs(RoutineDecl r, int count) => Compiler.DefaultsCover(r.TypeParams, r.Clauses, count);
+
+    /// How many type arguments `r` takes, for a message: `2`, or `1 to 2` when the last has a default.
+    private static string TypeArgCounts(RoutineDecl r)
+    {
+        int required = r.TypeParams.TakeWhile(p => Compiler.DefaultOf(r.Clauses, p) is null).Count();
+        return required == r.TypeParams.Count ? $"{required}" : $"{required} to {r.TypeParams.Count}";
     }
 
     /// One type argument a call writes: a type for a type parameter, and for a value parameter a value (a number, a value
@@ -4867,6 +4878,7 @@ public sealed partial class FunctionGen
 
     /// Infers unbound type parameters by matching parameter types against argument types, then the return type
     /// against the expected type.
+    /// A parameter neither written nor inferred takes its default: inference wins over the default.
     private void InferTypeArgs(RoutineDecl r, Compiler.TypeEnv env, List<Expr> args, DType? expected, int firstArgParam)
     {
         var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
@@ -4877,6 +4889,7 @@ public sealed partial class FunctionGen
             else UnifyArrayCount(r.Params[i + firstArgParam].Type, args[i], env, unbound);
         }
         if (expected is not null) Unify(r.ReturnType, expected, env, unbound);
+        _c.BindDefaults(r, env);
     }
 
     /// An array literal, whose type comes from where it goes, still says how many values it has: `[3, 1, 2]` passed to

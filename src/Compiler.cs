@@ -597,20 +597,30 @@ public sealed partial class Compiler
             .Concat(_allRoutines.Where(r => r.Clauses.Count > 0 && !Tessera.Derive.IsImplicit(r)))
             .Where(include);
 
-    /// A declaration's value type parameters, checked where they are written, before any use: a kind a value type
-    /// parameter can't have (a flags type).
+    /// A declaration's value type parameters and defaults, checked where they are written, before any use: a kind a
+    /// value type parameter can't have (a flags type), and a default its parameter can't take (`= 300` for a U8, a
+    /// type for a value, `= FOO` that names no member). A default is resolved with the parameters before it standing
+    /// for any type or value, so it may name them.
     private void CheckTypeParams(Decl d)
     {
-        var clauses = d switch
+        var (typeParams, clauses, owner) = d switch
         {
-            RecordDecl rd => rd.Clauses,
-            VariantDecl vd => vd.Clauses,
-            RoutineDecl r => r.Clauses,
-            _ => [],
+            RecordDecl rd => (rd.TypeParams, rd.Clauses, rd.Name),
+            VariantDecl vd => (vd.TypeParams, vd.Clauses, vd.Name),
+            RoutineDecl r => (r.TypeParams, r.Clauses, r.DisplayName),
+            _ => ([], [], ""),
         };
         foreach (var c in clauses)
             foreach (var (name, _, _) in c.Params)
                 ValueKind(clauses, name, d.File);
+        var kinds = DeclaredKinds(clauses);
+        var env = new TypeEnv(d.File);
+        foreach (var p in typeParams)
+        {
+            if (DefaultOf(clauses, p) is { } given)
+                env.Bind(p, ArgFor(given, p, clauses, d.File, env, owner, clauses.SelectMany(c => c.Params).First(x => x.Name == p).Pos));
+            else BindPrecheckParam(env, p, kinds, d.File, d.Pos);
+        }
     }
 
     /// Checks every non-generic routine, library included, and returns all errors instead of stopping at the
@@ -1623,15 +1633,38 @@ public sealed partial class Compiler
     public static bool DeclaresValue(List<Clause> clauses, string name) =>
         clauses.Any(c => c.Params.Any(p => p.Name == name && p.Kind is not { Name: "typename", Args.Count: 0 }));
 
-    /// The arguments a generic record or variant is written with, each resolved by what its parameter takes.
+    /// The default a needs line gives `name` (`= SEQ_CST`), or null.
+    public static TypeArg? DefaultOf(List<Clause> clauses, string name) =>
+        clauses.Where(c => c.Kind == "require").Select(c => c.Defaults.GetValueOrDefault(name)).FirstOrDefault(d => d is not null);
+
+    /// Whether a use that writes `count` arguments of these parameters is complete: every one it leaves out has a default.
+    public static bool DefaultsCover(List<string> typeParams, List<Clause> clauses, int count) =>
+        count <= typeParams.Count && typeParams.Skip(count).All(p => DefaultOf(clauses, p) is not null);
+
+    /// The arguments a generic record or variant is written with, each resolved by what its parameter takes, then the
+    /// defaults of the parameters a use leaves out at the end (`Cell` for `Cell[SEQ_CST]`), each resolved in the
+    /// declaration's file with the parameters before it bound.
     private List<DType> GenericArgs(List<string> typeParams, List<Clause> clauses, string file, List<TypeArg> written,
         TypeEnv env, string what, string owner, Pos pos)
     {
-        if (written.Count != typeParams.Count)
-            throw new CompileError(pos, $"{what} takes {typeParams.Count} generic argument(s), got {written.Count}");
+        if (!DefaultsCover(typeParams, clauses, written.Count))
+        {
+            int required = typeParams.TakeWhile(p => DefaultOf(clauses, p) is null).Count();
+            string takes = required == typeParams.Count ? $"{typeParams.Count}" : $"{required} to {typeParams.Count}";
+            throw new CompileError(pos, $"{what} takes {takes} generic argument(s), got {written.Count}");
+        }
         var args = new List<DType>();
         for (int i = 0; i < written.Count; i++)
             args.Add(ArgFor(written[i], typeParams[i], clauses, file, env, owner, pos));
+        if (written.Count == typeParams.Count) return args;
+        var declEnv = new TypeEnv(file);
+        for (int i = 0; i < written.Count; i++) declEnv.Bind(typeParams[i], args[i]);
+        for (int i = written.Count; i < typeParams.Count; i++)
+        {
+            var given = ArgFor(DefaultOf(clauses, typeParams[i])!, typeParams[i], clauses, file, declEnv, owner, pos);
+            declEnv.Bind(typeParams[i], given);
+            args.Add(given);
+        }
         return args;
     }
 

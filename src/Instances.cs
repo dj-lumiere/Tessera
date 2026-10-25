@@ -122,6 +122,15 @@ public sealed partial class Compiler
     /// Annotations that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
 
+    /// Binds each of the routine's own parameters that a call neither wrote nor inferred to its default, in the order
+    /// the routine lists them, so a default may name a parameter before it.
+    public void BindDefaults(RoutineDecl r, TypeEnv env)
+    {
+        foreach (var p in r.TypeParams)
+            if (!env.Has(p) && DefaultOf(r.Clauses, p) is { } given)
+                env.Bind(p, ArgFor(given, p, r.Clauses, r.File, env, r.DisplayName, r.Pos));
+    }
+
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
     {
@@ -146,6 +155,7 @@ public sealed partial class Compiler
         // An owner's argument that names a type (`Byte` of `PointedSlice[Byte].to_result`) fixes it rather than binding it.
         var needed = new HashSet<string>(OwnerTypeParams(r).Where(n => !(IntType.FromName(n) is not null || DeclaresType(n)))
             .Concat(r.TypeParams));
+        BindDefaults(r, env);
         foreach (var n in needed)
             if (!env.Has(n))
                 throw new CompileError(r.Pos, $"type parameter '{n}' of '{r.DisplayName}' could not be inferred; pass it explicitly");

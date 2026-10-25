@@ -448,6 +448,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var parameters = new List<(string, TypeRef, Pos)>();
         var concepts = new List<TypeRef>();
         var when = new List<TypeRef>();
+        var defaults = new Dictionary<string, TypeArg>();
         bool AtEnd() => Is(TokenKind.Newline) || Is(TokenKind.Eof);
 
         // `T: typename`, `N: U64` declare parameters; anything else is a concept constraint.
@@ -460,6 +461,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     var name = Next();
                     Next();
                     parameters.Add((name.Text, ParseType(), name.Pos));
+                    // `O: MemoryOrder = SEQ_CST`: the default, which only a needs line declares.
+                    if (Is(TokenKind.Eq))
+                    {
+                        if (constraints == when)
+                            throw Error($"a conformance's conditions take no default: write {name.Text} without '= ...'");
+                        Next();
+                        defaults[name.Text] = ParseTypeArg(inClause: true);
+                    }
                 }
                 else constraints.Add(ParseType());
             } while (Accept(TokenKind.Comma));
@@ -479,7 +488,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (!AtEnd()) throw Error($"expected the end of the {kind} clause, found {Describe(Cur)}");
         var toks = tokens.Skip(start).Take(_i - start).ToList();
-        return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when };
+        return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when, Defaults = defaults };
     }
 
     /// `obeys C[X, ...] [when ...]` at top level, then `needs` lines for its type parameters.
@@ -493,6 +502,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             clauses.Add(ParseClause());
             SkipNewlines();
         }
+        NoDefaults(clauses, "a conformance");
         return new ConformDecl(file, annotations, clauses, pos);
     }
 
@@ -537,6 +547,49 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// Every type name a type is written with: `PointedCell`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array[T, COUNT]`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
+
+    /// The defaults a declaration's needs lines give its parameters (`needs T: typename, O: MemoryOrder = SEQ_CST`)
+    /// come after every parameter without one, in the order the declaration lists them, since a use leaves out only
+    /// trailing arguments. A default for a name the declaration doesn't list as its own (an owner's parameter in a
+    /// routine on a type, which the type's own needs line declares) is a build error too.
+    private static void CheckDefaults(List<string> typeParams, List<Clause> clauses, string what)
+    {
+        var defaulted = new Dictionary<string, Pos>();
+        foreach (var c in clauses)
+            foreach (var (name, _, at) in c.Params)
+                if (c.Defaults.ContainsKey(name))
+                {
+                    if (!typeParams.Contains(name))
+                        throw new CompileError(at, $"{name} has a default, and {what} doesn't list {name} among its own "
+                            + "parameters: a default goes on the needs line of the declaration that lists the parameter, "
+                            + "the type's own for a parameter of the type");
+                    defaulted.TryAdd(name, at);
+                }
+        string? first = null;
+        foreach (var p in typeParams)
+        {
+            if (defaulted.ContainsKey(p))
+            {
+                first ??= p;
+                continue;
+            }
+            if (first is null) continue;
+            var at = clauses.SelectMany(c => c.Params).FirstOrDefault(x => x.Name == p).Pos;
+            throw new CompileError(at == default ? defaulted[first] : at,
+                $"{first} has a default and {p}, after it, has none: a use leaves out only trailing arguments, so the "
+                + $"parameters with a default come last. List {p} before {first}, or give {p} a default too");
+        }
+    }
+
+    /// A protocol's and a conformance's parameters take no default: their arguments are always written.
+    private static void NoDefaults(List<Clause> clauses, string what)
+    {
+        foreach (var c in clauses)
+            foreach (var (name, _, at) in c.Params)
+                if (c.Defaults.ContainsKey(name))
+                    throw new CompileError(at, $"{name} has a default, and the parameters of {what} take none, since "
+                        + $"their arguments are always written: drop the '= ...' after {name}'s kind");
+    }
 
     /// The names a routine's `require` clauses declare (`T: typename`, `N: U64`).
     private static HashSet<string> RequiredNames(List<Clause> clauses)
@@ -634,6 +687,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
         }
 
+        CheckDefaults(fixedArgs.Count > 0 ? [] : typeParams, clauses, $"routine '{(owner is null ? name : $"{owner}.{name}")}'");
         var source = annotations.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
         int headerEnd = _i > 0 ? tokens[_i - 1].Pos.Line : pos.Line;
         if (inConcept)
@@ -781,6 +835,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
+        CheckDefaults(typeParams, clauses, $"'{name.Text}'");
 
         // A type with no member variables has the body `nothing`, on the line under its header (and clauses).
         bool nothing = false;
@@ -836,6 +891,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
+        CheckDefaults(typeParams, clauses, $"'{name.Text}'");
 
         var branches = new List<VariantBranch>();
         while (!AtMemberListEnd())
@@ -1056,6 +1112,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
+        NoDefaults(clauses, $"protocol '{name.Text}'");
 
         // Required routines are written `routine Me.name(...)`, `routine T.name(...)` with one of the concept's
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
@@ -1368,13 +1425,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         : text.StartsWith("-0x", StringComparison.Ordinal) ? -1
         : 0;
 
-    private TypeArg ParseTypeArg()
+    private TypeArg ParseTypeArg(bool inClause = false)
     {
         int start = _i;
         if (Is(TokenKind.Int))
         {
             var count = new TypeArgInt(Next().IntValue);
-            if (EndsTypeArg()) return count;
+            if (EndsTypeArg(inClause)) return count;
             // `8 * COUNT`: a buildtime integer expression
             _i = start;
             return new TypeArgExpr(ParseExpr());
@@ -1403,7 +1460,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (tuple)
             {
                 Expect(TokenKind.RParen, "')'");
-                if (EndsTypeArg()) return new TypeArgTuple(types);
+                if (EndsTypeArg(inClause)) return new TypeArgTuple(types);
             }
             // `(BITS + 7) // 8`: a buildtime integer expression, not a tuple of types
             _i = start;
@@ -1412,20 +1469,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // `sizeof[T]()` reads like a type until the '(', and `COUNT * 2` until the operator: back up and parse it as an
         // expression.
         var type = ParseType();
-        if (EndsTypeArg()) return new TypeArgType(type);
-        if (ChoiceMemberFollows(type)) return new TypeArgType(ChoiceMember(type));
+        if (EndsTypeArg(inClause)) return new TypeArgType(type);
+        if (ChoiceMemberFollows(type, inClause)) return new TypeArgType(ChoiceMember(type));
         _i = start;
         return new TypeArgExpr(ParseExpr());
     }
 
-    /// Whether the token after a type argument ends it: the `,` before the next one or the `]` closing the list.
-    private bool EndsTypeArg() => Is(TokenKind.Comma) || Is(TokenKind.RBracket);
+    /// Whether the token after a type argument ends it: the `,` before the next one or the `]` closing the list, and in
+    /// a needs line's default the end of the line.
+    private bool EndsTypeArg(bool inClause = false) =>
+        Is(TokenKind.Comma) || Is(TokenKind.RBracket) || inClause && (Is(TokenKind.Newline) || Is(TokenKind.Eof));
 
     /// `MemoryOrder.RELAXED` as a whole type argument: a plain type name, a dot, a member name, then the argument's end.
-    private bool ChoiceMemberFollows(TypeRef type) =>
+    private bool ChoiceMemberFollows(TypeRef type, bool inClause = false) =>
         type is { Args.Count: 0, Amp: false, Member: null } && type.Name != TypeRef.UnionName && Is(TokenKind.Dot)
         && PeekTok(1).Kind == TokenKind.Ident
-        && PeekTok(2).Kind is TokenKind.Comma or TokenKind.RBracket;
+        && (PeekTok(2).Kind is TokenKind.Comma or TokenKind.RBracket || inClause && PeekTok(2).Kind is TokenKind.Newline or TokenKind.Eof);
 
     /// Reads the `.MEMBER` after a choice's name.
     private TypeRef ChoiceMember(TypeRef choice)
