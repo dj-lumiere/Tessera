@@ -537,7 +537,7 @@ static class Cli
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
         bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
-        TextWriter? destructs = null)
+        TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -550,6 +550,7 @@ static class Cli
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
             IngridDir = IngridDir(),
             UninitFill = uninitFill,
+            LinkArguments = linkArguments ?? [],
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
         compiler.SetCrashMessageSize(crashMessageSize);
@@ -738,13 +739,17 @@ static class Cli
         return Manifest.Load(path);
     }
 
+    /// The manifest's library directories and C libraries as link flags (`-L dir`, `-l name`).
+    private static List<string> LibraryArguments(Manifest m) =>
+        [.. m.LibraryPaths.Select(p => "-L" + p), .. m.CLibraries.Select(l => "-l" + l)];
+
     private static string BuildManifest(Manifest m)
     {
         if (m.RaceCheckSetting == true) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
             uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
-            crashMessageSize: m.CrashMessageSize);
+            crashMessageSize: m.CrashMessageSize, linkArguments: LibraryArguments(m));
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         m.WriteLinkScript();
@@ -1182,7 +1187,8 @@ static class Cli
                 raceCheck: race, traceFrames: manifest?.TraceFrames,
                 failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
                 deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
-                crashMessageSize: manifest?.CrashMessageSize, destructs: destructs);
+                crashMessageSize: manifest?.CrashMessageSize, destructs: destructs,
+                linkArguments: manifest is null ? null : LibraryArguments(manifest));
         }
         catch (ManifestError e)
         {

@@ -523,6 +523,11 @@ routine start() -> None
 - One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
   differ are a build error ("'abs' is declared at f.te:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
   routine has one signature"). Declare it once, with the types its C declaration has.
+- An `@export` name a C library the build links already defines is a build error (`@export("abs")`: "names 'abs',
+  which libc.so.6, a C library the build links, already defines"). The builder reads the libraries from clang's link
+  line for the target (`src/CLibrarySymbols.cs`: an ELF `.so`'s dynamic symbols or a GNU linker script, a `.tbd` of
+  the macOS SDK, a Windows `.lib`'s archive symbol table), only for a program with an `@export`. The compiler's
+  runtime (libgcc, compiler-rt) is left out, so a program may define `__udivti3`.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
 - `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the

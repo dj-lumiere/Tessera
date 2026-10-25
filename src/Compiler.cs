@@ -15,6 +15,10 @@ public sealed partial class Compiler
     /// program doesn't, since that program brings its own runtime.
     public bool EmitLibraryExports { get; init; } = true;
 
+    /// The libraries and library directories the build adds to the link (the manifest's `-L` and `-l` flags): with the
+    /// target's own C libraries, the libraries whose names an `@export` must not take.
+    public IReadOnlyList<string> LinkArguments { get; init; } = [];
+
     /// `--uninit-fill` / `[debug] uninit-fill`: whether a slot that starts `<- .uninit()` is filled with 0xAA bytes, so
     /// a read before the routine fills it shows a value that stands out. Off by default: the slot is left as it was.
     public bool UninitFill { get; init; }
@@ -553,6 +557,7 @@ public sealed partial class Compiler
         // its error points into the routine, not at a call (GenericPrecheck.cs).
         if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
         foreach (var r in _userRoutines) CheckRoot(r);
+        if (ExportsNamingCLibrarySymbols() is [var taken, ..]) throw taken;
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
@@ -659,6 +664,7 @@ public sealed partial class Compiler
         }
         try { CheckEntryPair(); }
         catch (CompileError e) { errors.Add(e); }
+        errors.AddRange(ExportsNamingCLibrarySymbols().Where(e => scope is null || scope(e.Pos.File)));
         try { FinishThrows(); }
         catch (CompileError e) { errors.Add(e); }
         errors.AddRange(InlineRecursion());
@@ -671,6 +677,26 @@ public sealed partial class Compiler
         reportedAt = errors.Select(e => e.Pos).ToHashSet();
         errors.AddRange(CheckKeptViews().Where(e => !reportedAt.Contains(e.Pos) && (scope is null || scope(e.Pos.File))));
         return [.. errors.Take(checkedUpTo), .. errors.Skip(checkedUpTo).Where(e => !templateErrors.Contains(e.Pos))];
+    }
+
+    /// An `@export` of the program whose C name a C library the build links already defines: the program's routine would
+    /// replace the library's for every C caller in the process (CLibrarySymbols.cs reads the libraries).
+    private List<CompileError> ExportsNamingCLibrarySymbols()
+    {
+        var exports = _userRoutines.Where(r => r.AnnotationNamed("export") is { First: not null }).ToList();
+        if (exports.Count == 0 || !Target.HasOs) return [];
+        var symbols = CLibrarySymbols.For(Target, LinkArguments);
+        var errors = new List<CompileError>();
+        foreach (var r in exports)
+        {
+            var export = r.AnnotationNamed("export")!;
+            if (symbols.TryGetValue(export.First!, out string? library))
+                errors.Add(new CompileError(export.Pos, $"@export(\"{export.First}\") names '{export.First}', which {library}, a C "
+                    + $"library the build links, already defines: '{r.DisplayName}' would replace it for every C caller in the "
+                    + $"program, the C library's own included. Give the routine a C name no linked library uses, such as "
+                    + $"@export(\"{r.Module.Replace('/', '_').ToLowerInvariant()}_{export.First}\")"));
+        }
+        return errors;
     }
 
     /// Folds a preset (or a global's initializer) whether or not anything uses it, so a preset that isn't a
