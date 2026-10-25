@@ -63,21 +63,24 @@ routine prepare_core() -> None
     GlobalManager.prepare()
     return
 
-### Turns the managers on before anything reads a global: the GlobalManager, the FPU, and the CpuEventManager's vector
-### table.
+### Turns the managers on before anything reads a global: the GlobalManager, the thread-local block of the flow the reset
+### starts, the FPU, and the CpuEventManager's vector table.
 @target(arch: "aarch64", os: "none")
 @feature("fp-armv8")
 routine prepare_core() -> None
     GlobalManager.prepare()
+    prepare_thread_locals()
     enable_fpu()
     CpuEventManager.install()
     return
 
-### Turns the managers on before anything reads a global: the GlobalManager and the CpuEventManager's vector table.
+### Turns the managers on before anything reads a global: the GlobalManager, the thread-local block of the flow the reset
+### starts, and the CpuEventManager's vector table.
 @target(arch: "aarch64", os: "none")
 @feature(not "fp-armv8")
 routine prepare_core() -> None
     GlobalManager.prepare()
+    prepare_thread_locals()
     CpuEventManager.install()
     return
 
@@ -254,3 +257,49 @@ secret routine instruction_barrier() -> None
     block entry()
         isb(SY)  # isb sy
         return
+
+# -- thread-locals (AArch64) ------------------------------------------------------------------------------------------
+
+### The thread-local block of the flow the reset starts (the link script's `__tls_boot`): the 16 bytes TPIDR_EL0 points
+### at, then the `@threadlocal` globals.
+@external("c")
+@symbol("__tls_boot")
+@target(arch: "aarch64", os: "none")
+secret global TLS_BOOT: &Byte
+
+### The end of that block (the link script's `__tls_boot_end`).
+@external("c")
+@symbol("__tls_boot_end")
+@target(arch: "aarch64", os: "none")
+secret global TLS_BOOT_END: &Byte
+
+### The bytes of one thread's thread-local block, a multiple of 16: the same for every thread.
+### :returns: The bytes.
+@target(arch: "aarch64", os: "none")
+secret routine thread_local_block_size() -> U64
+    return ptrtoint[Addr, U64](TLS_BOOT_END.to[Addr]()) - ptrtoint[Addr, U64](TLS_BOOT.to[Addr]())
+
+### Points TPIDR_EL0 at the flow's thread-local block, then puts every `@threadlocal` global at its starting value there.
+@target(arch: "aarch64", os: "none")
+secret routine prepare_thread_locals() -> None
+    set_thread_pointer(TLS_BOOT.to[Addr]())
+    ThreadLocalManager.reset()
+    return
+
+### Points TPIDR_EL0, the register every `@threadlocal` global is reached through, at `at`.
+### :param at: The thread-local block.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine set_thread_pointer(at: Addr) -> None
+    block entry()
+        msr[U64](TPIDR_EL0, at)  # msr tpidr_el0, <at>
+        return
+
+### The thread-local block TPIDR_EL0 points at.
+### :returns: Its address.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine thread_pointer() -> Addr
+    block entry()
+        mrs[U64](R0, TPIDR_EL0)  # mrs x0, tpidr_el0
+        return R0

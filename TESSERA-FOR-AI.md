@@ -546,9 +546,11 @@ routine start() -> None
   parameter there ("keeps the address of the thread-local 'X' in the global 'G'"), are build errors. A local, a
   routine's result and another `@threadlocal` global may hold it. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
-  global, and a target without an OS has no thread-locals: `@threadlocal` there is a build error, the round robin threads
-  of `Standard/Unhosted` included (each thread's own state is a field of its record or a slot the program keeps per
-  thread). `@threadlocal` takes no arguments yet. A thread ticket's
+  global. Without an OS only AArch64 has a thread-local area: the link script's `.tls_boot` block for the flow the
+  reset starts (`prepare_core()` points TPIDR_EL0 at it and puts every thread-local at its starting value), and a block
+  in each slot of a `ThreadManagerByRoundRobin`, whose switch moves TPIDR_EL0 along (tests/rr_threadlocal). The
+  globals are local-exec offsets from TPIDR_EL0, aligned to 16 bytes at most. On another target without an OS
+  `@threadlocal` is a build error ("... has no operating system and no thread-local area"). `@threadlocal` takes no arguments yet. A thread ticket's
   thread resets every thread-local to its starting value before each piece of work.
 - Every routine uses the C calling convention unless `@callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
@@ -2014,7 +2016,10 @@ routine start() -> None
   `wake_all(at)` (`Standard/Unhosted/Wait.te`) go to the running manager, and outside `run` `wait_on` returns at once
   (tests/rr_wait_same_names imports both sides and builds its mailbox on them). There is no `wait_on_for` yet, and
   `Thread`, `Work`, `Channel`, `Waiter` and the `AccessManager` are Standard/Hosted's only: a program builds its waits on
-  the word wait (tests/rr_wait_wake: a mailbox of one value), and has no `@threadlocal` (a build error).
+  the word wait (tests/rr_wait_wake: a mailbox of one value). Each thread has its own `@threadlocal` globals: its slot
+  holds its record, its thread-local block (the link script's block size), a check word and its stack, the switch
+  points TPIDR_EL0 at the next thread's block, and a thread starts with every thread-local at its starting value (the
+  flow of `run` keeps its own).
 
 **Assembly.** An `@external("asm")` routine with `@target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/20b-assembly.md`): one instruction per line written like a call, operands in the

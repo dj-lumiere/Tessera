@@ -209,6 +209,13 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         l.AppendLine($"    .ARM.exidx : {{ *(.ARM.exidx*) }} > {code}");
         l.AppendLine($"    .data : ALIGN(16) {{ __data_start = .; *(.data .data.* .sdata .sdata.*) __data_end = .; }} {data}");
         l.AppendLine("    __data_load = LOADADDR(.data);");
+        // The @threadlocal globals (AArch64): .tdata and .tbss lay out one thread's block, and .tls_boot is the block
+        // of the flow the reset starts, which prepare_core points TPIDR_EL0 at. A block is the 16 bytes the thread
+        // pointer points at, then the globals, and ThreadManagerByRoundRobin cuts one of the same size into each slot.
+        l.AppendLine($"    .tdata : ALIGN(16) {{ *(.tdata .tdata.*) }} {data}");
+        l.AppendLine("    .tbss : ALIGN(16) { *(.tbss .tbss.*) } > RAM");
+        l.AppendLine("    ASSERT(ALIGNOF(.tdata) <= 16 && ALIGNOF(.tbss) <= 16, \"a @threadlocal global aligned past 16 bytes doesn't fit a thread's block\")");
+        l.AppendLine("    .tls_boot (NOLOAD) : ALIGN(16) { __tls_boot = .; . += 16 + ALIGN(SIZEOF(.tdata), 16) + ALIGN(SIZEOF(.tbss), 16); __tls_boot_end = .; } > RAM");
         l.AppendLine("    .bss (NOLOAD) : ALIGN(16) { __bss_start = .; *(.bss .bss.* .sbss .sbss.* COMMON) __bss_end = .; } > RAM");
         l.AppendLine("    __stack_bottom = ALIGN(__bss_end, 16);");
         l.AppendLine($"    __stack_top = 0x{ram.End & ~15UL:X};");

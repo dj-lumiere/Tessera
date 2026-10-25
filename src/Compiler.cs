@@ -747,9 +747,13 @@ public sealed partial class Compiler
             throw new CompileError(tl.Pos, $"@threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
         if (tl.Args.Count != 0)
             throw new CompileError(tl.Pos, "@threadlocal takes no arguments");
-        if (!Target.HasOs)
+        // Without an operating system only AArch64 has a thread-local area: the link script's block for the flow the
+        // reset starts (TPIDR_EL0 points at it from prepare_core on), and one block in each slot of a
+        // ThreadManagerByRoundRobin, whose switch moves TPIDR_EL0 along.
+        if (!Target.HasOs && Target.Arch != "aarch64")
             throw new CompileError(tl.Pos,
-                $"'{c.Name}' is @threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system to run threads");
+                $"'{c.Name}' is @threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system and no "
+                + "thread-local area: without an operating system only AArch64 has one");
     }
 
     /// `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` is a C variable the program links against: C's
@@ -1859,7 +1863,8 @@ public sealed partial class Compiler
         string symbol = external is null ? MangleVariable(c, null) : ExternalSymbol(c);
         if (_globalVars.TryGetValue(symbol, out var name)) return name;
         EnsureTypeDefined(t);
-        string threadLocal = c.AnnotationNamed("threadlocal") is null ? "" : "thread_local ";
+        // Without an operating system the program is one static image, so a thread-local is an offset from TPIDR_EL0.
+        string threadLocal = c.AnnotationNamed("threadlocal") is null ? "" : Target.HasOs ? "thread_local " : "thread_local(localexec) ";
         if (external is not null)
         {
             CheckExternalVariable(c, external);

@@ -8,8 +8,8 @@
 # the running manager's). When no thread is ready the core waits for the next interrupt (`wfi`) on the idle thread.
 #
 # The threads' memory is a region the program names (a global array, say): the manager cuts it into slots of
-# `stack_size` bytes, one per thread, each holding the thread's record at its bottom, a check word above it, and the
-# thread's stack, which a StackManager manages, above that. A slot comes back when its thread's routine returns, for
+# `stack_size` bytes, one per thread, each holding the thread's record at its bottom, its thread-local block above it,
+# a check word above that, and the thread's stack, which a StackManager manages, above that. A slot comes back when its thread's routine returns, for
 # the next `launch`. While a thread runs, RUNNING_STACK (StackManager_freestanding.te) is its stack, so the frame check
 # at the start of each routine measures from the thread's own stack bottom: a stack that runs out stops the program with
 # `StackOverflowError` before it leaves its slot. The check word catches what wrote below the stack without a frame
@@ -18,7 +18,9 @@
 # The timer is the core's virtual timer (CpuTimer.te) on the line an InterruptManagerByGic holds. `run()`
 # turns it on: the flow that calls it joins the threads, waits until every thread launched has returned, and turns it
 # off again. Each thread keeps its own failure mold and its own crash trace depth: the switch carries them
-# (Switch.te's switch_fiber, Trace.te's trace_switch).
+# (Switch.te's switch_fiber, Trace.te's trace_switch). Each thread has its own `@threadlocal` globals too: the switch
+# points TPIDR_EL0 at the block in the thread's slot (the flow of `run` keeps the block prepare_core gave it), and a
+# thread starts with every one at its starting value.
 #
 # A thread's state: READY (in the ready queue), RUNNING (on the core), WAITING (on a word), SLEEPING (until a counter
 # value), and FREE for a slot no thread holds. Every change of state happens with the core's interrupts masked, and
@@ -70,6 +72,8 @@ secret entity RoundRobinThread
     trace_depth: U64
     ### Its number, counted from 1 in the order threads were launched, 0 for the idle thread and the flow of `run`.
     number: U64
+    ### Its thread-local block, which TPIDR_EL0 points at while it runs.
+    thread_locals: Addr
 
 ### Preemptive round robin threads on one core: each ready thread runs for a slice, then the next one does.
 @target(arch: "aarch64", os: "none")
@@ -119,7 +123,7 @@ entity ThreadManagerByRoundRobin
 @target(arch: "aarch64", os: "none")
 secret common routine RoundRobinThread.construct(stack: StackManager, state: RoundRobinState) -> Me
     return Me(stack: steal stack, state, next: .hollow(), wake_at: 0, waits_on: .hollow(),
-        entry: .hollow(), arg: .hollow(), trace_depth: 0, number: 0)
+        entry: .hollow(), arg: .hollow(), trace_depth: 0, number: 0, thread_locals: .hollow())
 
 ### Gives the boot flow's and the idle thread's stack managers back (the memory under them is the program's).
 @target(arch: "aarch64", os: "none")
@@ -205,6 +209,7 @@ routine @ThreadManagerByRoundRobin.run() -> None
     me.boot.stack.bottom.poke(boot_stack.bottom.peek())
     me.boot.stack.top.poke(boot_stack.top.peek())
     me.boot.state.poke(RoundRobinState.RUNNING)
+    me.boot.thread_locals.poke(thread_pointer())
     me.running.poke(me.boot)
     RUNNING_ROUND_ROBIN.poke(me)
     gic: @InterruptManagerByGic = me.interrupts.peek()
@@ -315,12 +320,19 @@ routine @ThreadManagerByRoundRobin.preemptions() -> U64
 
 # -- the lists, with interrupts masked -----------------------------------------------------------------------------
 
-### The bytes a slot keeps for its record and its check word below the stack, 16-byte aligned.
+### The bytes a slot keeps for its record, at the slot's start, rounded up to 16.
+### :returns: The bytes.
+@target(arch: "aarch64", os: "none")
+secret routine record_bytes() -> U64
+    room: U64 = sizeof[RoundRobinThread]()
+    return (room + 15) - ((room + 15) & 15)
+
+### The bytes a slot keeps below the stack: its record, its thread-local block on a 16-byte boundary (up to 16 more
+### bytes when the slot starts off one), and 16 for the check word.
 ### :returns: The bytes.
 @target(arch: "aarch64", os: "none")
 secret routine record_room() -> U64
-    room: U64 = sizeof[RoundRobinThread]() + sizeof[U64]()
-    return (room + 15) - ((room + 15) & 15)
+    return record_bytes() + thread_local_block_size() + 32
 
 ### Cuts the region into slots the first time it is asked: the idle thread in the first, the rest free.
 @target(arch: "aarch64", os: "none")
@@ -336,6 +348,8 @@ secret routine @ThreadManagerByRoundRobin.prepare_slots() -> None
         thread.poke(RoundRobinThread.construct(
             stack: StackManager.construct(bottom: inttoptr[U64, Addr](bottom), top: inttoptr[U64, Addr](at + size)),
             state: RoundRobinState.FREE))
+        locals_at: U64 = at + record_bytes() + 15
+        thread.thread_locals.poke(inttoptr[U64, Addr](locals_at - (locals_at & 15)))
         STACK_CHECK_WORD.poke_into(inttoptr[U64, @U64](bottom - sizeof[U64]()))
         if i > 0
             thread.next.poke(me.free.peek())
@@ -483,6 +497,7 @@ secret routine @ThreadManagerByRoundRobin.switch_away() -> None
         RUNNING_STACK.poke(.hollow())
     else
         RUNNING_STACK.poke(to.stack)
+    set_thread_pointer(to.thread_locals.peek())
     resume_at: Addr = to.stack.sp.peek()
     to.stack.sp.poke(.hollow())
     switch_fiber(from: from.stack.sp, to: resume_at)
@@ -510,6 +525,7 @@ secret routine round_robin_thread_main() -> None
     manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek()
     thread: @RoundRobinThread = manager.running.peek()
     RUNNING_MOLD.poke(reserve_failure_mold())
+    ThreadLocalManager.reset()
     unmask_interrupts()
     entry: Callable[(Addr,), None] = thread.entry.peek()
     entry.call(thread.arg.peek())
