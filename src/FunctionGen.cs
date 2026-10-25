@@ -2061,8 +2061,9 @@ public sealed partial class FunctionGen
     /// `b.poke(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
     {
+        // A value parameter is a value like a preset: `L.trailing_zeros()` with `needs L: U64`.
         if (TryResolveOwner(owner) is not null || _c.FindPreset("", owner.Name, _env.File, owner.Pos, null) is not null
-            || _c.FindFree(owner.Name, _env.File, owner.Pos) is not null)
+            || _c.FindFree(owner.Name, _env.File, owner.Pos) is not null || _env.Get(owner.Name) is ConstArg)
             return;
         if (BoundInRoutine(owner.Name))
             throw Err(owner.Pos, NotVisible(owner.Name, fromNextLine: true));

@@ -313,8 +313,9 @@ public sealed partial class Compiler
 
     private ConstVal FoldNsCall(NsCallExpr n, DType? hint, TypeEnv env)
     {
-        // `N.add(1)` with N a preset is a method call on that preset.
-        if (n.Owner.Args.Count == 0 && env.Get(n.Owner.Name) is null
+        // `N.add(1)` with N a preset or a value parameter is a method call on that value.
+        if (n.Owner is { Args.Count: 0, Path: null } && env.Get(n.Owner.Name) is ConstArg
+            || n.Owner.Args.Count == 0 && env.Get(n.Owner.Name) is null
             && FindPreset("", n.Owner.Name, env.File, n.Pos, n.Owner.Path) is { IsStorage: false })
             return FoldMethod(new PresetRef(null, n.Owner.Name, n.Owner.Pos) { Path = n.Owner.Path }, n.Name, n.TypeArgs, n.Args, hint, env, n.Pos);
         var owner = TryResolveType(n.Owner, env);

@@ -781,7 +781,8 @@ routine start() -> None
 - **Value type parameters.** `needs P: U256` declares a parameter that takes a value, of any integer type up to
   `U256` / `S256`. The argument keeps every bit of that type (`Field[18446744073709551557]`, `Offset[-5]` with
   `needs D: S64`, and `Field[1]` and `Field[18446744073709551617]` are two types), and a value the type doesn't hold
-  is a build error (`Small[300]` with `needs P: U8`). In the body the name is a value of that type.
+  is a build error (`Small[300]` with `needs P: U8`). In the body the name is a value of that type, a receiver
+  included (`L.trailing_zeros()`, `P.to_wrap[U64]()`).
 - `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
   with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
