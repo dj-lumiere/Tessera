@@ -83,6 +83,10 @@ public static partial class LanguageServer
                 CollectRecovered(m.Receiver, under, into, operators);
                 foreach (var a in m.Args) CollectRecovered(a, under, into, operators);
                 return;
+            case ChainedComparison chain:
+                foreach (var at in chain.OpPos) operators.Add(at);
+                foreach (var operand in chain.Operands) CollectRecovered(operand, under, into, operators);
+                return;
             case BinaryExpr b:
                 operators.Add(b.Pos);
                 CollectRecovered(b.Left, under, into, operators);

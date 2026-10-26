@@ -252,6 +252,8 @@ public sealed partial class Compiler
                 return FoldPresetRef(r, env);
             case UnaryExpr { Op: "not" } n:
                 return new ConstVal(BoolType.Instance, FoldBool(n.Operand, env) ? 0 : 1);
+            case ChainedComparison chain:
+                return new ConstVal(BoolType.Instance, FoldBool(chain.Joined(), env) ? 1 : 0);
             case BinaryExpr { Op: "and" or "or" } l:
             {
                 bool left = FoldBool(l.Left, env);
@@ -500,6 +502,8 @@ public sealed partial class Compiler
         {
             case UnaryExpr { Op: "not" } n:
                 return !Truth(n.Operand, env);
+            case ChainedComparison chain:
+                return Truth(chain.Joined(), env);
             case BinaryExpr { Op: "and" } a:
                 return Truth(a.Left, env) && Truth(a.Right, env);
             case BinaryExpr { Op: "or" } o:

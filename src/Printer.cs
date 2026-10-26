@@ -320,6 +320,16 @@ public sealed class Printer
                 return $"{Expr(g.Base, 9)}[{Expr(g.Index)}]";
             case BinaryExpr b:
                 return Binary(b.Op, b.Left, b.Right, parentPrec);
+            case ChainedComparison chain:
+            {
+                // Each operand binds tighter than a comparison: a comparison inside one is written in parentheses.
+                string Operand(Expr x) => x is BinaryExpr { Op: var o } && Operators.Precedence(o) == 2 || x is ChainedComparison
+                    ? $"({Expr(x)})"
+                    : Expr(x, 3);
+                var text = new System.Text.StringBuilder(Operand(chain.Operands[0]));
+                for (int i = 0; i < chain.Ops.Count; i++) text.Append($" {chain.Ops[i]} {Operand(chain.Operands[i + 1])}");
+                return 2 < parentPrec ? $"({text})" : text.ToString();
+            }
             case UnaryExpr u:
                 return Unary(u.Op, u.Operand, parentPrec);
             case StealExpr st:
@@ -372,8 +382,8 @@ public sealed class Printer
         // A comparison of comparisons is written with parentheses: `a < b` and `b < c` side by side would chain.
         if (prec == 2)
         {
-            if (left is BinaryExpr { Op: var lo } && Operators.Precedence(lo) == 2) l = $"({Expr(left)})";
-            if (right is BinaryExpr { Op: var ro } && Operators.Precedence(ro) == 2) r = $"({Expr(right)})";
+            if (left is BinaryExpr { Op: var lo } && Operators.Precedence(lo) == 2 || left is ChainedComparison) l = $"({Expr(left)})";
+            if (right is BinaryExpr { Op: var ro } && Operators.Precedence(ro) == 2 || right is ChainedComparison) r = $"({Expr(right)})";
         }
         string text = $"{l} {op} {r}";
         return prec < parentPrec ? $"({text})" : text;

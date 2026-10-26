@@ -519,6 +519,24 @@ public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> Ty
 /// (Operators.Routine), except `and` / `or`, which are Bool's and evaluate the right side only when it matters.
 public sealed record BinaryExpr(string Op, Expr Left, Expr Right, Pos Pos) : Expr(Pos);
 
+/// `a < b <= c`: comparisons chained one way (`<`, `<=`, `==` together, or `>`, `>=`, `==` together). `Ops[i]` sits
+/// between `Operands[i]` and `Operands[i + 1]` at `OpPos[i]`. Each operand is evaluated once, left to right, and the
+/// chain stops at the first comparison that is false, so the operands after it are not evaluated.
+public sealed record ChainedComparison(List<Expr> Operands, List<string> Ops, List<Pos> OpPos, Pos Pos) : Expr(Pos)
+{
+    /// The comparison between operand `i` and operand `i + 1`, on the operands as written.
+    public BinaryExpr Link(int i) => new(Ops[i], Operands[i], Operands[i + 1], OpPos[i]);
+
+    /// The chain as comparisons joined with `and`, each inner operand written twice. Only for the analyses that
+    /// evaluate nothing (folding, the crashables a check holds): the build evaluates the chain itself.
+    public Expr Joined()
+    {
+        Expr joined = Link(0);
+        for (int i = 1; i < Ops.Count; i++) joined = new BinaryExpr("and", joined, Link(i), OpPos[i]);
+        return joined;
+    }
+}
+
 /// `-x`, `not x`, `~x`.
 public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
 

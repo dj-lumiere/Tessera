@@ -1114,6 +1114,9 @@ public static partial class LanguageServer
                     Expr(bin.Left);
                     Expr(bin.Right);
                     break;
+                case ChainedComparison chain:
+                    foreach (var operand in chain.Operands) Expr(operand);
+                    break;
                 case UnaryExpr un:
                     Expr(un.Operand);
                     break;

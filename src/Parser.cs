@@ -2262,17 +2262,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private static readonly HashSet<string> ComparisonOps = ["==", "!=", "===", "!==", "<", "<=", ">", ">=", "<=>"];
 
-    /// `a < b`, and a chain `a < b <= c` (`a < b and b <= c`, with b written once: a name, a literal, or a field).
+    /// `a < b`, and a chain `a < b <= c` (ChainedComparison: each operand evaluated once, left to right).
     private Expr ParseComparison()
     {
         var left = ParseRange();
         if (Cur.Kind != TokenKind.Op || !ComparisonOps.Contains(Cur.Text)) return left;
         var op = Next();
         var right = ParseRange();
-        var e = new BinaryExpr(op.Text, left, right, op.Pos);
         if (op.Text == "<=>" && Cur.Kind == TokenKind.Op && ComparisonOps.Contains(Cur.Text))
             throw Error("<=> gives an ordering, which no further comparison chains on");
-        Expr result = e;
+        if (Cur.Kind != TokenKind.Op || !ComparisonOps.Contains(Cur.Text)) return new BinaryExpr(op.Text, left, right, op.Pos);
+        List<Expr> operands = [left, right];
+        List<string> ops = [op.Text];
+        List<Pos> opPos = [op.Pos];
         // A chain goes one way: `<`, `<=`, `==` together, or `>`, `>=`, `==` together. `a != b != c` reads as "all
         // different" and is not, and `a < b > c` says nothing about a and c.
         static int Way(string o) => o switch { "<" or "<=" => 1, ">" or ">=" => -1, "==" => 0, _ => 2 };
@@ -2286,13 +2288,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(next.Pos, "a chained comparison goes one way: <, <= and == together, or >, >= and == together; " +
                     "write the other comparisons separately, joined with and (a < b and c > b)");
             if (w != 0) way = w;
-            if (right is not (ValueRef or IntLit or TypedIntLit or FloatLit or FieldExpr or PresetRef))
-                throw new CompileError(next.Pos, "the middle of a chained comparison is a name, a literal, or a field, written once and read twice: bind it first");
-            var further = ParseRange();
-            result = new BinaryExpr("and", result, new BinaryExpr(next.Text, right, further, next.Pos), next.Pos);
-            right = further;
+            operands.Add(ParseRange());
+            ops.Add(next.Text);
+            opPos.Add(next.Pos);
         }
-        return result;
+        return new ChainedComparison(operands, ops, opPos, op.Pos);
     }
 
     /// `a til b`, `a to b`, with `by s`: only a `for` walks one.

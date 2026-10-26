@@ -744,8 +744,10 @@ routine start() -> None
   (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %` (and their `%` `^` `!` forms), `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
-  comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
-  name, literal or field, and `!=`, `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
+  comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, and `!=`,
+  `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`). Any
+  operand of a chain may be any expression (`0 <= f(x) < n`, `a < xs[i] <= g()`): each is evaluated once, left to right,
+  and the first comparison that is false ends the chain, so the operands after it don't run.
   `and` / `or` / `not` are `Bool`'s own, and the right side of `and` / `or` runs only when the left leaves the answer
   open. `Bool` has no `& | ^ ~` (a build error naming `and` / `or` / `!=` / `not`): `!=` is the exclusive or of two
   `Bool`s. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.

@@ -114,6 +114,9 @@ public static class ChainLint
                 Expr(b.Left, warnings);
                 Expr(b.Right, warnings);
                 break;
+            case ChainedComparison chain:
+                foreach (var operand in chain.Operands) Expr(operand, warnings);
+                break;
             case UnaryExpr u: Expr(u.Operand, warnings); break;
             case GetItemExpr g:
                 Expr(g.Base, warnings);

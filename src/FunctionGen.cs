@@ -2200,7 +2200,7 @@ public sealed partial class FunctionGen
             case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
             case BinaryExpr { Op: "and" } fa when FlagsAnd(fa) is var (known, bare) && (known is not null || bare):
                 return known;
-            case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
+            case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" } or ChainedComparison: return BoolType.Instance;
             case UnaryExpr { Op: "try" or "check" } rc: return InferRecover(rc);
             case IntLit or FloatLit or StrLit: return null;
             case ArrayLit: return null;
@@ -2361,6 +2361,7 @@ public sealed partial class FunctionGen
             WhenExpr w => EvalWhenValue(w, expected),
             BinaryExpr { Op: "and" } fa when FlagsOf(expected) is { } flagsAnd => EvalFlagsAnd(fa, flagsAnd),
             BinaryExpr { Op: "and" or "or" } l => EvalLogic(l),
+            ChainedComparison chain => EvalChain(chain),
             UnaryExpr { Op: "not" } n => EvalNot(n),
             UnaryExpr { Op: "try" or "check" } rc => EvalRecover(rc, expected),
             RangeExpr r => throw Err(r.Pos, "a range is walked by each: each i in a til b"),
@@ -2561,6 +2562,7 @@ public sealed partial class FunctionGen
             case CallExpr c: return CallSlotsTemp(c, receiverSlots: false) || c.Args.Any(MakesTemp);
             case NsCallExpr n: return CallSlotsTemp(n, receiverSlots: false) || n.Args.Any(MakesTemp);
             case BinaryExpr b: return MakesTemp(b.Left) || MakesTemp(b.Right);
+            case ChainedComparison chain: return chain.Operands.Any(MakesTemp);
             case UnaryExpr u: return MakesTemp(u.Operand);
             case FieldExpr f: return MakesTemp(f.Base);
             case GetItemExpr g: return MakesTemp(g.Base) || MakesTemp(g.Index);
@@ -3080,6 +3082,7 @@ public sealed partial class FunctionGen
     {
         PresetRef { Owner: null, Path: null } r => _env.Get(r.Name) is ConstArg { StandIn: false },
         BinaryExpr b => ReadsValueParam(b.Left) || ReadsValueParam(b.Right),
+        ChainedComparison chain => chain.Operands.Any(ReadsValueParam),
         UnaryExpr u => ReadsValueParam(u.Operand),
         _ => false,
     };
@@ -3093,6 +3096,7 @@ public sealed partial class FunctionGen
         PresetRef { Owner: null, Path: null } r => _env.Get(r.Name) is ConstArg,
         PresetRef { Owner: { } owner } => TryResolveOwner(owner) is ChoiceType { Decl.IsFlags: false },
         BinaryExpr { Op: "==" or "!=" or "<" or "<=" or ">" or ">=" or "and" or "or" } b => Buildtime(b.Left) && Buildtime(b.Right),
+        ChainedComparison chain => chain.Operands.All(Buildtime),
         UnaryExpr { Op: "not" } n => Buildtime(n.Operand),
         _ => false,
     };
@@ -3622,6 +3626,65 @@ public sealed partial class FunctionGen
         _cur = join;
         string shortValue = isAnd ? "false" : "true";
         return new Val(EmitTmp($"phi i1 [ {shortValue}, %{aPred} ], [ {b.Op}, %{bPred} ]"), BoolType.Instance);
+    }
+
+    /// `a < b <= c`: each operand is evaluated once, left to right, and the first comparison that is false ends the
+    /// chain (false), so the operands after it are not evaluated. An operand that a later comparison reads again is
+    /// evaluated into a temporary first. A literal stays as written: it is a constant, and its type comes from the
+    /// operand beside it.
+    private Val EvalChain(ChainedComparison c)
+    {
+        var join = NewLBlock("chain");
+        var exits = new List<string>();
+        var temps = new List<string>();
+        Expr left = c.Operands[0];
+        Val last;
+        try
+        {
+            for (int i = 0; ; i++)
+            {
+                if (i == 0) left = ChainTemp(c, 0, temps);
+                bool final = i == c.Ops.Count - 1;
+                var right = final ? c.Operands[i + 1] : ChainTemp(c, i + 1, temps);
+                var link = Eval(new BinaryExpr(c.Ops[i], left, right, c.OpPos[i]), BoolType.Instance);
+                if (final)
+                {
+                    last = link;
+                    break;
+                }
+                var more = NewLBlock("chainnext");
+                exits.Add(_cur.Label);
+                Terminate($"br i1 {link.Op}, label %{more.Label}, label %{join.Label}");
+                _cur = more;
+                left = right;
+            }
+        }
+        finally
+        {
+            foreach (var t in temps) _values.Remove(t);
+        }
+        string lastPred = _cur.Label;
+        Terminate($"br label %{join.Label}");
+        _cur = join;
+        string incoming = string.Join(", ", exits.Select(e => $"[ false, %{e} ]").Append($"[ {last.Op}, %{lastPred} ]"));
+        return new Val(EmitTmp($"phi i1 {incoming}"), BoolType.Instance);
+    }
+
+    /// Operand `i` of a chain, evaluated now into a temporary that the comparisons on both sides of it read. A
+    /// literal, or an operand whose type nothing says (a bare choice member), is given back as written.
+    private Expr ChainTemp(ChainedComparison c, int i, List<string> temps)
+    {
+        var operand = c.Operands[i];
+        if (operand is IntLit or TypedIntLit or FloatLit or BoolLit or StrLit or UnitLit) return operand;
+        var type = Infer(operand);
+        if (type is null && i > 0) type = TryInfer(c.Operands[i - 1]);
+        if (type is null && i + 1 < c.Operands.Count) type = TryInfer(c.Operands[i + 1]);
+        if (type is null) return operand;
+        var v = Eval(operand, type);
+        string name = $"$chain{_tmp++}";
+        _values[name] = v;
+        temps.Add(name);
+        return new ValueRef(name, operand.Pos);
     }
 
     // ── Flags ───────────────────────────────────────────────────────────────
@@ -4784,8 +4847,8 @@ public sealed partial class FunctionGen
         // The range checks are chained comparisons.
         if (m.Name is "between" or "in_range" && m.Args.Count == 2)
             throw Err(m.Pos, m.Name == "between"
-                ? "a range check is a chained comparison: `lo <= x <= hi` (bind x to a name first when it is a call)"
-                : "a range check is a chained comparison: `lo <= x < end` (bind x to a name first when it is a call)");
+                ? "a range check is a chained comparison: `lo <= x <= hi`"
+                : "a range check is a chained comparison: `lo <= x < end`");
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
                 + "failable: receive its failure with check or try in front of the call");

@@ -380,6 +380,9 @@ public sealed partial class FunctionGen
                 case UnaryExpr { Op: "not" } un:
                     Walk(un.Operand);
                     return;
+                case ChainedComparison chain:
+                    Walk(chain.Joined());
+                    return;
                 case BinaryExpr { Op: "and" or "or" } bin:
                     Walk(bin.Left);
                     Walk(bin.Right);
