@@ -2387,6 +2387,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             // `try f(x)` / `check f(x)`: the failure of the calls in the expression after it becomes a value (a Maybe or
             // a Check) instead of stopping the program. It takes the rest of the expression.
             var op = Next();
+            if (IsIdent("if"))
+                throw Error($"you wrote {op.Text} in front of if c then a else b, so the condition and both values are all "
+                            + $"places a failure could come from and it isn't clear which one {op.Text} receives: put {op.Text} "
+                            + "on the call that fails, inside one of the values, or choose the value with when");
             return new UnaryExpr(op.Text, ParseExpr(), op.Pos);
         }
         return ParsePower();
@@ -2561,7 +2565,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         Next();
                         Old(t.Pos, "a pointer that holds nothing is written .hollow() (T.hollow() where nothing gives the type), not null");
                         return new ImplicitCallExpr("hollow", [], [], t.Pos);
-                    case "if": throw Error("if c then a else b is a value only after return; elsewhere choose with when");
+                    case "if": throw Error("you wrote if c then a else b where a value goes, and it is a value only directly "
+                                           + "after return: choose the value with when (x: T = when ...) and use its name");
                     case "when": throw Error("a when that gives a value is a binding's whole value: x: T = when ...");
                 }
                 return ParseNameExpr();

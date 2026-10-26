@@ -613,8 +613,9 @@ routine start() -> None
   its own name as a carried value (`until at >= count with at: U64 = start`) or a place.
 - **`if c` / `elseif d` / `else`.** The lines under `if c` run when `c` holds, `elseif d` (one word, `else if` is a
   build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
-  negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
-  is a value only after return; elsewhere choose with when"). A guard is an `if` whose arm leaves (`return`,
+  negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("you wrote if c then a
+  else b where a value goes, and it is a value only directly after return: choose the value with when ..."), as is
+  one inside parentheses, an argument, an operand, a subscript, or a branch of another `if`. A guard is an `if` whose arm leaves (`return`,
   `break`, `continue`, a `@noreturn` call), and the lines after it are the other case (no `else` after a guard):
 
   ```tessera
@@ -689,7 +690,8 @@ routine start() -> None
       return value * 2
   ```
 
-- `return if c then a else b` chooses a value with an `if`, only directly after `return`. `unreachable` marks a line
+- `return if c then a else b` chooses a value with an `if`, only directly after `return` (the whole value, and the
+  `else` is not another `if`). `return try if ...` is a build error: put `try`/`check` on the call inside one value. `unreachable` marks a line
   that is never reached, and `todo` a body not written yet (it crashes with `NotImplementedError` when reached, and
   the build warns once per routine).
 - An arm's or a pass's expressions run only when that arm or pass is taken: a `continue with` argument, a `when`
