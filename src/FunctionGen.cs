@@ -1140,6 +1140,7 @@ public sealed partial class FunctionGen
             else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
         CheckBuildErrors();
+        FillSharedStops();
         var (linkage, comdat) = Linkage();
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
@@ -1302,6 +1303,9 @@ public sealed partial class FunctionGen
     /// no second update.
     private (LBlock Block, Pos Pos)? _tracedAt;
 
+    /// Set while a shared stop's call is written: each line that jumps to it set the frame's line already.
+    private bool _traceMuted;
+
     /// The routine's place, its `@source` if it has one: the frame names its file.
     private Pos FramePlace => _decl.Source ?? _decl.Pos;
 
@@ -1319,7 +1323,7 @@ public sealed partial class FunctionGen
     /// another file than the frame's names the routine's own declaration instead.
     private void TraceAt(Pos callPos)
     {
-        if (!_traced) return;
+        if (!_traced || _traceMuted) return;
         var at = _lineSource is { } source && source.File == FramePlace.File ? source : callPos;
         if (at.File != FramePlace.File) at = FramePlace;
         if (_tracedAt is { } last && last.Block == _cur && last.Pos == at) return;
@@ -5335,7 +5339,8 @@ public sealed partial class FunctionGen
     /// called from, so a crash deep in the stdlib reports the line that called into it; any other passes its own
     /// line, the `@source` one if it has one.
     private Val CallerPlace(Pos callPos) =>
-        _inst.IsTrackCaller
+        _sharedPlace is { } shared ? new Val(shared, new PtrType(null))
+        : _inst.IsTrackCaller
             ? new Val(CallerParam, new PtrType(null))
             : new Val(_c.PlaceGlobal(_lineSource ?? callPos), new PtrType(null));
 
@@ -5961,7 +5966,7 @@ public sealed partial class FunctionGen
             frame.Carried.Add((c.Name, t));
             firstOps.Add(v.Op);
         }
-        Val? iterator = null;
+        Val? emitter = null;
         VariantType? iteratorMaybe = null;
         DType? itemType = null;
         if (l.Kind == LoopKind.For)
@@ -5993,11 +5998,11 @@ public sealed partial class FunctionGen
             }
             else
             {
-                iterator = EvalAny(l.Source!);
-                var emit = new MethodCallExpr(new ValueRef("$iterator", l.Pos), "emit", [], [], l.Source!.Pos);
+                emitter = EvalAny(l.Source!);
+                var emit = new MethodCallExpr(new ValueRef("$emitter", l.Pos), "emit", [], [], l.Source!.Pos);
                 CallPlan? emitPlan;
                 DType? emitted;
-                _values["$iterator"] = iterator;
+                _values["$emitter"] = emitter;
                 try
                 {
                     try { emitPlan = PlanCall(emit, null); }
@@ -6006,14 +6011,14 @@ public sealed partial class FunctionGen
                 }
                 finally
                 {
-                    _values.Remove("$iterator");
+                    _values.Remove("$emitter");
                 }
                 if (emitPlan is not { Decl.IsFailable: true } || emitted is null || emitted is VoidType)
-                    throw Err(l.Source!.Pos, "each walks a range (a til b) or an iterator in memory (one whose failable emit gives "
-                        + $"the next item and throws AbsentValueError past the end); this is {iterator.Type}");
+                    throw Err(l.Source!.Pos, "each walks a range (a til b) or an emitter in memory (one whose failable emit gives "
+                        + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;
                 if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
-                    throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this iterator hands out {itemType}");
+                    throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this emitter hands out {itemType}");
             }
         }
 
@@ -6069,7 +6074,7 @@ public sealed partial class FunctionGen
             }
             default:
             {
-                var item = ItemCall(iterator!, l);
+                var item = ItemCall(emitter!, l);
                 iteratorMaybe = (VariantType)item.Type;
                 itemSlot = NewSlot(iteratorMaybe);
                 Line($"store {iteratorMaybe.Llvm} {item.Op}, ptr {itemSlot}");
@@ -6083,7 +6088,7 @@ public sealed partial class FunctionGen
         // A loop that never ends by itself reaches its then only through a `break`, which takes its own edge there: the
         // header's way out is never taken, so what the rounds dropped before the break counts.
         if (!l.NeverEndsByItself) MemEdge(thenRegion, pos: l.Pos);
-        // An iterator's end is its AbsentValueError: the loop leaves through then. Any other failure of emit stops the
+        // An emitter's end is its AbsentValueError: the loop leaves through then. Any other failure of emit stops the
         // program on the each line, as a bare call of emit would.
         var otherFailures = iteratorMaybe is null ? [] : Crashing.FailuresOf(iteratorMaybe).Where(f => !IsEndOfIteration(f)).ToList();
         if (otherFailures.Count == 0)
@@ -6175,16 +6180,16 @@ public sealed partial class FunctionGen
         if (!afterReached) Terminate("unreachable");
     }
 
-    /// Whether a crashable is the end of an iteration: `AbsentValueError`, which an iterator's emit throws past its last
+    /// Whether a crashable is the end of an iteration: `AbsentValueError`, which an emitter's emit throws past its last
     /// item.
     private static bool IsEndOfIteration(DType t) =>
         t is RecordType { Decl: { Name: "AbsentValueError", IsLibrary: true } };
 
-    /// `check iterator.emit()` for an `each` over an iterator in memory, the iterator evaluated once.
-    private Val ItemCall(Val iterator, LoopStmt l)
+    /// `check emitter.emit()` for an `each` over an emitter in memory, the emitter evaluated once.
+    private Val ItemCall(Val emitter, LoopStmt l)
     {
-        string name = "$iterator";
-        _values[name] = iterator;
+        string name = "$emitter";
+        _values[name] = emitter;
         try
         {
             return EvalAny(new UnaryExpr("check", new MethodCallExpr(new ValueRef(name, l.Pos), "emit", [], [], l.Source!.Pos), l.Source!.Pos));

@@ -46,6 +46,37 @@ public sealed partial class FunctionGen
         return slot;
     }
 
+    /// The one slot every return of this failable routine puts its carrier in, and the one block that returns it. Each
+    /// `return` and `throw` fills a field or two of the slot and jumps to that block, so LLVM keeps the tag and the
+    /// value as separate values joined at the block: once the routine is inlined, a caller's test of the tag folds into
+    /// the branch that chose it (`a * b` costs the overflow test, not a carrier built and taken apart).
+    private string? _carrierOut;
+    private LBlock? _carrierReturn;
+
+    private string CarrierOutSlot(string carrierLlvm)
+    {
+        if (_carrierOut is null)
+        {
+            _carrierOut = "%carrier.out";
+            _allocas.Add($"{_carrierOut} = alloca {carrierLlvm}");
+        }
+        return _carrierOut;
+    }
+
+    /// Ends the routine with the carrier in CarrierOutSlot: the places are given back here, then on to the return block.
+    private void ReturnCarrier(string carrierLlvm, Action? last = null)
+    {
+        if (_carrierReturn is null)
+        {
+            var saved = _cur;
+            _carrierReturn = NewLBlock("carrier.return");
+            _cur = _carrierReturn;
+            Terminate($"ret {carrierLlvm} {EmitTmp($"load {carrierLlvm}, ptr {CarrierOutSlot(carrierLlvm)}")}");
+            _cur = saved;
+        }
+        Return($"br label %{_carrierReturn.Label}", last);
+    }
+
     /// Whether the carrier in `slot` holds its value: the tag's low half is one of the value's IDs.
     private string HoldsValue(string slot, string carrierLlvm, DType valueType)
     {
@@ -83,6 +114,9 @@ public sealed partial class FunctionGen
         _c.DeclareMemcpy();
         Line($"call void @llvm.memcpy.p0.p0.i64(ptr {CarrierField(to, toLlvm, 2)}, ptr {CarrierField(from, fromLlvm, 2)}, i64 {count}, i1 false)");
     }
+
+    /// Whether a crashable's value is empty (a record with no fields): a failure of it is its tag alone.
+    private bool HoldsNothing(DType t, Pos pos) => t is RecordType && _c.SizeAlign(t, pos).Size == 0;
 
     /// Whether a tagged layout has a storage field: a carrier always has one, and a variant only when a branch holds
     /// something.
@@ -175,10 +209,10 @@ public sealed partial class FunctionGen
         string carrier = Compiler.CarrierName(_inst);
         for (int i = _statementTemps.Count - 1; i >= 0; i--)
             EmitStmtCore(new DropStmt(new ValueRef(_statementTemps[i].Name, pos), pos));
-        string own = NewCarrierSlot(carrier);
+        string own = CarrierOutSlot(carrier);
         string tag = EmitTmp($"load i64, ptr {CarrierField(slot, carrierLlvm, 0)}");
         Line($"store i64 {tag}, ptr {CarrierField(own, carrier, 0)}");
-        Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {own}")}");
+        ReturnCarrier(carrier);
     }
 
     // ── The mold ────────────────────────────────────────────────────────────
@@ -205,14 +239,14 @@ public sealed partial class FunctionGen
     /// Ends the routine with a failure: its carrier holds the tag of the one in `held` (a tagged layout), and the
     /// crashable goes into the flow's mold just before the return, after the routine's places are given back (a
     /// routine that runs then may use the mold itself).
-    private void ReturnFailure(string held, string heldLlvm, Pos pos)
+    private void ReturnFailure(string held, string heldLlvm, Pos pos, bool moldUnread = false)
     {
         string carrier = Compiler.CarrierName(_inst);
-        string slot = NewCarrierSlot(carrier);
+        string slot = CarrierOutSlot(carrier);
         string tag = EmitTmp($"load i64, ptr {CarrierField(held, heldLlvm, 0)}");
         Line($"store i64 {tag}, ptr {CarrierField(slot, carrier, 0)}");
-        string value = EmitTmp($"load {carrier}, ptr {slot}");
-        Return($"ret {carrier} {value}", () => CopyTagged(held, heldLlvm, MoldAddr(pos), Compiler.MoldLlvm));
+        if (moldUnread) ReturnCarrier(carrier);
+        else ReturnCarrier(carrier, () => CopyTagged(held, heldLlvm, MoldAddr(pos), Compiler.MoldLlvm));
     }
 
     /// A failure a `check` of a traced routine keeps, made in the standard library (or another untraced routine), which
@@ -255,11 +289,69 @@ public sealed partial class FunctionGen
         foreach (var (type, block) in arms)
         {
             _cur = block;
-            var error = inMold ? LoadValue(MoldAddr(pos), Compiler.MoldLlvm, type, type) : LoadValue(slot, carrierLlvm, type, type);
+            // A crashable with no fields (IntegerOverflowError) is the same whatever the mold holds: it isn't read.
+            bool empty = inMold && HoldsNothing(type, pos);
+            if (empty && SharesStops)
+            {
+                StopShared(type, seq, pos);
+                continue;
+            }
+            var error = empty ? new Val("zeroinitializer", type)
+                : inMold ? LoadValue(MoldAddr(pos), Compiler.MoldLlvm, type, type) : LoadValue(slot, carrierLlvm, type, type);
             Stop(error, new Val(seq, IntType.U(32)), pos);
         }
         _cur = none;
         Terminate("unreachable");
+    }
+
+    /// A stop of the routine's own for each crashable with no fields, which every bare call that fails with it jumps
+    /// to, passing the failure's number and the place of its line. The routine then holds one call of `fail_with` per
+    /// crashable instead of one per call that can fail, so a small routine with checked arithmetic stays small enough
+    /// for LLVM to inline. Only in an optimized build: a debug build keeps each stop on its own line for a debugger.
+    private sealed record SharedStop(LBlock Block, List<(string From, string Failure, string Place)> Incoming);
+
+    private readonly Dictionary<DType, SharedStop> _sharedStops = [];
+
+    /// Set while a shared stop's call is written: the place its `fail_with` reports, a phi of the lines that jump there.
+    private string? _sharedPlace;
+
+    private bool SharesStops => _c.Optimized && Emitting && !_inst.IsTrackCaller;
+
+    private void StopShared(DType type, string failure, Pos pos)
+    {
+        // The frame's line is the failing call's, set on the way: the shared call sets none of its own.
+        TraceAt(pos);
+        if (!_sharedStops.TryGetValue(type, out var stop))
+        {
+            var saved = _cur;
+            stop = new SharedStop(NewLBlock("shared.stop"), []);
+            _sharedStops[type] = stop;
+            _cur = stop.Block;
+            // The two phis, written once every line that jumps here is known (FillSharedStops).
+            Line("");
+            Line("");
+            string place = $"%shared.place.{stop.Block.Label}";
+            _sharedPlace = place;
+            _traceMuted = true;
+            try { Stop(new Val("zeroinitializer", type), new Val($"%shared.failure.{stop.Block.Label}", IntType.U(32)), pos); }
+            finally { _sharedPlace = null; _traceMuted = false; }
+            _cur = saved;
+        }
+        stop.Incoming.Add((_cur.Label, failure, _c.PlaceGlobal(_lineSource ?? pos)));
+        Terminate($"br label %{stop.Block.Label}");
+    }
+
+    /// Writes the phis of the shared stops, once the whole routine is written.
+    private void FillSharedStops()
+    {
+        foreach (var stop in _sharedStops.Values)
+        {
+            string label = stop.Block.Label;
+            stop.Block.Lines[0] = $"%shared.failure.{label} = phi i32 {string.Join(", ", stop.Incoming.Select(e => $"[ {e.Failure}, %{e.From} ]"))}";
+            stop.Block.Lines[1] = $"%shared.place.{label} = phi ptr {string.Join(", ", stop.Incoming.Select(e => $"[ {e.Place}, %{e.From} ]"))}";
+            stop.Block.Dbg[0] = null;
+            stop.Block.Dbg[1] = null;
+        }
     }
 
     /// Calls the stdlib's `fail_with[E](error, failure)`, which reports the failure through `Crash` with `pos` as the
@@ -571,9 +663,9 @@ public sealed partial class FunctionGen
             Return($"ret {carrier} poison");
             return;
         }
-        string slot = NewCarrierSlot(carrier);
+        string slot = CarrierOutSlot(carrier);
         StoreValue(slot, carrier, v);
-        Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {slot}")}");
+        ReturnCarrier(carrier);
     }
 
     /// `throw e`: the routine ends with the failure `e`, a crashable (a new failure, noted with where it was made in a
@@ -599,7 +691,8 @@ public sealed partial class FunctionGen
             }
             string held = NewCarrierSlot(Compiler.MoldLlvm);
             StoreValue(held, Compiler.MoldLlvm, v, FailureTagOp(v.Type, r.Pos));
-            ReturnFailure(held, Compiler.MoldLlvm, r.Pos);
+            // A crashable with no fields leaves nothing in the mold to read: the carrier's tag is the whole failure.
+            ReturnFailure(held, Compiler.MoldLlvm, r.Pos, moldUnread: HoldsNothing(v.Type, r.Pos));
             return;
         }
         // A Crashables, or a variant whose every branch is a crashable (`variant FsError`), goes as the failure it holds.
