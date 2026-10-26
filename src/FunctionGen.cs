@@ -1828,6 +1828,9 @@ public sealed partial class FunctionGen
             case WhenStmt w:
                 EmitWhen(w, null);
                 break;
+            case LoopStmt l when SpilledEmitter(l) is { } spilled:
+                EmitLines(spilled);
+                break;
             case LoopStmt l:
                 EmitLoop(l);
                 break;
@@ -5935,6 +5938,25 @@ public sealed partial class FunctionGen
     }
 
     // ── Loops ───────────────────────────────────────────────────────────────
+
+    /// `each x in xs.emitter()`: an emitter that a call hands out has no place, and its `emit` needs one. The loop
+    /// then walks a STACK place that holds it for the loop, the same lines as `e: &ListEmitter[T] <- xs.emitter()`
+    /// followed by `each x in e`, in a body of their own so the place goes back when the loop is done. Null for any
+    /// other loop.
+    private List<Stmt>? SpilledEmitter(LoopStmt l)
+    {
+        if (l is not { Kind: LoopKind.For, Source: CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr } || l.Source is null)
+            return null;
+        if (InferQuiet(l.Source) is not RecordType emitter) return null;
+        string name = $"$each_emitter{_tmp++}";
+        var held = new TypeRef("$each_emitter", [], l.Source.Pos) { Known = emitter };
+        var place = new TypeRef("BorrowedCell", [new TypeArgType(held)], l.Source.Pos) { Path = Compiler.SystemModule, Amp = true };
+        return
+        [
+            new BindStmt(name, place, l.Source, l.Source.Pos) { Borrows = true },
+            l with { Source = new ValueRef(name, l.Source.Pos) },
+        ];
+    }
 
     /// `each` / `while` / `until`: a header block holds a phi for each carried value (and an `each` range's index), the
     /// body runs with them, `continue with` sends the next round's values back to the header, and the loop's end

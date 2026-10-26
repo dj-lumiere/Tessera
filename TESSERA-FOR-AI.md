@@ -630,12 +630,15 @@ routine start() -> None
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
   by -1` steps. A stepped range ends before an index that would pass the end of its type (`each i: S8 in 100 to 127
   by 20` walks 100 and 120 and stops, it never wraps around). A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
-  names the type (for an index, say), and `each x in iter` reads an emitter in memory (one whose failable `emit` gives the next
-  item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
-  a bare call of emit would. Each collection makes its emitter with `.emitter()` (`e: &ListEmitter[Point] <- points.emitter()`). An
-  emitter hands out each item once: after an `each` that ends by itself it is empty, so a second `each` over it on every
-  path, or an `each` inside a loop over an emitter made outside that loop, is a build error ("runs zero times"). Make the
-  emitter inside the loop, or call `.emitter()` again. An `each` left with `break` leaves the rest for the next one. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
+  names the type (for an index, say). A range is walked by counting, with no emitter. `each x in xs.emitter()` walks a
+  collection: each collection makes its emitter with `.emitter()`, and the builder keeps that emitter in a STACK place for
+  the loop, with nothing to give back. Write this form by default: every loop gets a new emitter. `each x in e` reads
+  an emitter in a place you named (`e: &ListEmitter[Point] <- points.emitter()`), when the walk goes on after a `break`
+  or `try e.emit()` reads it by hand. An `each` reads until emit throws `AbsentValueError`, its end. Any other failure
+  of emit stops the program on the `each` line, as a bare call of emit would. An emitter hands out each item once: after
+  an `each` that ends by itself it is empty, so a second `each` over a named emitter on every path, or an `each` inside
+  a loop over an emitter made outside that loop, is a build error ("runs zero times"). Make the emitter inside the loop,
+  or call `.emitter()` again. An `each` left with `break` leaves the rest for the next one. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
   before each pass: write the condition that ends the loop. `loop` doesn't end by itself: only `break`, `return` or
   `throw` leaves it, so the lines after a `loop` without a `break` never run, and a routine that ends with such a loop
   needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
@@ -947,7 +950,8 @@ routine start() -> None
   while an entity's place writes the entity: `{list}`), and a generic `to[T]` (it
   would hide `PointedCell`'s `to<@U>`). You can't call a pointer method on a temporary:
   `m.emitter().emit()` fails with "has no method 'emit'"; put the emitter in a place
-  first (`iter: &DictEmitter[TKey, TValue] <- m.emitter()`).
+  first (`iter: &DictEmitter[TKey, TValue] <- m.emitter()`). `each` is the exception: `each x in m.emitter()` keeps
+  the emitter in a place for the loop.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module
   included): a constraint is a fact about the type, said where the type is declared. So a
@@ -1419,7 +1423,8 @@ routine sum_to(n: U64) -> U64
         return total
 ```
 
-Walking a collection (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
+Walking a collection: `each x in xs.emitter()` for the whole walk, and an emitter in a named place when the items are
+read by hand (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
 there and `each x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ArrayEmitter`, `RotatableListEmitter`,
 `SortedListEmitter`, `SortedSetEmitter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
