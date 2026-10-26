@@ -96,6 +96,9 @@ public sealed partial class FunctionGen
         public List<(string Pred, List<string> Ops)> Incoming { get; } = [];
         /// A `for` over a range: the index, its type, the bound, the step, and whether the bound is included.
         public (string Name, IntType Type, Val To, Val Step, bool Inclusive, bool Descending, bool Stepped)? Range { get; set; }
+        /// For a signed step written as something other than a literal: the i1 that says it is negative, so the walk
+        /// goes down. Null when the step's written form decides the direction.
+        public string? DownwardOp { get; set; }
         /// The hidden flag of an inclusive range, named per loop so a loop inside another has its own.
         public string LiveFlag { get; set; } = FunctionGen.LiveFlag;
         /// The names visible in the header: the loop's outer scope and its carried values.
@@ -1198,6 +1201,20 @@ public sealed partial class FunctionGen
     private static string ParamOp(string block, string param) => $"%p.{block}.{IrName(param)}";
 
     private string Tmp() => $"%t{_tmp++}";
+
+    /// Crashes with RangeStepZeroError when a range's step, held in a value, is 0: such a range never reaches its end.
+    private void RequireNonzeroStep(Val step, Pos pos)
+    {
+        var zero = NewLBlock("stepzero");
+        var ok = NewLBlock("stepok");
+        string isZero = EmitTmp($"icmp eq {step.Type.Llvm} {step.Op}, 0");
+        Terminate($"br i1 {isZero}, label %{zero.Label}, label %{ok.Label}");
+        _cur = zero;
+        var type = _c.ResolveType(new TypeRef("RangeStepZeroError", [], pos) { Path = Compiler.SystemModule }, _env);
+        TraceAt(pos);
+        Stop(new Val("zeroinitializer", type), new Val("0", IntType.U(32)), pos);
+        _cur = ok;
+    }
 
     private LBlock NewLBlock(string prefix)
     {
@@ -6001,8 +6018,19 @@ public sealed partial class FunctionGen
                 if (indexType is not IntType it) throw Err(range.Pos, $"a range walks integers, and this one is over {indexType}");
                 var from = Eval(range.From, it);
                 var to = Eval(range.To, it);
-                bool descending = range.Step is UnaryExpr { Op: "-" } or IntLit { Value.Sign: < 0 };
+                bool literalStep = range.Step is null or IntLit or UnaryExpr { Op: "-", Operand: IntLit };
+                bool descending = range.Step is UnaryExpr { Op: "-", Operand: IntLit } or IntLit { Value.Sign: < 0 };
+                if (range.Step is IntLit { Value.IsZero: true } or UnaryExpr { Op: "-", Operand: IntLit { Value.IsZero: true } })
+                    throw Err(range.Step.Pos, "you wrote `by 0`, but a step of 0 never moves, so the range would never reach its end. "
+                        + "Give it a step that moves: `by 1` (or leave `by` out) to count up, `by -1` to count down");
                 var step = range.Step is null ? new Val("1", it) : Eval(range.Step, it);
+                if (!literalStep)
+                {
+                    // A step held in a value: 0 crashes before the first round (RangeStepZeroError, as RazorForge's
+                    // ranges do), and a negative one walks down, whatever the written form looks like.
+                    RequireNonzeroStep(step, range.Step!.Pos);
+                    if (!it.IsUnsigned) frame.DownwardOp = EmitTmp($"icmp slt {it.Llvm} {step.Op}, 0");
+                }
                 if (_values.ContainsKey(l.Var!))
                     throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's index takes a name of its own (a name is bound once)");
                 frame.Carried.Add((l.Var!, it));
@@ -6091,6 +6119,11 @@ public sealed partial class FunctionGen
                 string pred = r.Descending ? (r.Inclusive ? "ge" : "gt") : (r.Inclusive ? "le" : "lt");
                 string sign = r.Type.IsUnsigned ? "u" : "s";
                 cond = EmitTmp($"icmp {sign}{pred} {r.Type.Llvm} {index}, {r.To.Op}");
+                if (frame.DownwardOp is { } downward)
+                {
+                    string down = EmitTmp($"icmp s{(r.Inclusive ? "ge" : "gt")} {r.Type.Llvm} {index}, {r.To.Op}");
+                    cond = EmitTmp($"select i1 {downward}, i1 {down}, i1 {cond}");
+                }
                 if (r.Inclusive || r.Stepped) cond = EmitTmp($"and i1 {cond}, {_values[frame.LiveFlag].Op}");
                 break;
             }
