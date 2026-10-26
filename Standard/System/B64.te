@@ -1001,7 +1001,7 @@ secret routine b64_add_round_to_odd(a: B64, b: B64) -> B64
 ### :returns: `x.mul_add(y, p.neg())`.
 @target(arch: "aarch64")
 @inline
-secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
+routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = x.mul_add_unchecked(a: y, b: -p)
     return e
 
@@ -1015,7 +1015,7 @@ secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
 @target(arch: "x86_64")
 @feature("fma")
 @inline
-secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
+routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = x.mul_add_unchecked(a: y, b: -p)
     return e
 
@@ -1028,7 +1028,7 @@ secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
 @target(arch: "x86_64")
 @feature(not "fma")
 @inline
-secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
+routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = b64_mul_error_soft(x, y, p)
     return e
 
@@ -1040,7 +1040,7 @@ secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
 ### :returns: `x.mul_add(y, p.neg())`.
 @target(arch: not ("aarch64", "x86_64"))
 @inline
-secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
+routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = b64_mul_error_soft(x, y, p)
     return e
 
@@ -1056,13 +1056,22 @@ secret routine b64_mul_error_soft(x: B64, y: B64, p: B64) -> B64
     field_x: U64 = (x.bits() >> 52) & 0x7FF
     field_y: U64 = (y.bits() >> 52) & 0x7FF
 
-    x_normal: Bool = field_x -% 1 < 2018
-    y_normal: Bool = field_y -% 1 < 2018
-    product: U64 = field_x +% field_y
-    inside: Bool = product -% 1076 < 1992
-    factors: Bool = x_normal and y_normal
-    if factors and inside
+    # one branch: the three range tests are folded into a word first
+    x_outside: U64 = (field_x -% 1 >= 2018).to[U64]()
+    y_outside: U64 = (field_y -% 1 >= 2018).to[U64]()
+    product_outside: U64 = (field_x +% field_y -% 1076 >= 1992).to[U64]()
+    if (x_outside | y_outside | product_outside) == 0
         return b64_dekker_error(x, y, p)
+    return b64_mul_error_fused(x, y, p)
+
+### `x.mul_add(y, p.neg())` by the software fused multiply-add, for {b64_mul_error_soft}'s factors outside Dekker's
+### range. Kept out of line, so the common path stays a few instructions.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param p: `x * y` rounded to nearest.
+### :returns: `x.mul_add(y, p.neg())`.
+@noinline
+secret routine b64_mul_error_fused(x: B64, y: B64, p: B64) -> B64
     return x.mul_add_unchecked(a: y, b: -p)
 
 ### The rounding error of the product `p = x * y` (rounded to nearest), exactly: `x * y - p`, by Dekker's
@@ -1088,6 +1097,167 @@ secret routine b64_dekker_error(x: B64, y: B64, p: B64) -> B64
     t3: B64 = t2 -! xl *! yh
     e: B64 = xl *! yl -! t3
     return e
+
+### {b64_mul_error} for factors already known to lie in Dekker's range: `x` and `y` zero or normal and below 2^996,
+### with the exponents of a nonzero product adding up to a value in [-970, 1021]. A caller that has checked that once
+### skips {b64_mul_error_soft}'s own range test on targets without the FMA instruction. With the FMA instruction.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param p: `x * y` rounded to nearest.
+### :returns: `x.mul_add(y, p.neg())`.
+@target(arch: "aarch64")
+@inline
+routine b64_mul_error_in_range(x: B64, y: B64, p: B64) -> B64
+    e: B64 = x.mul_add_unchecked(a: y, b: -p)
+    return e
+
+### {b64_mul_error_in_range} as on AArch64, with the x86 FMA instruction (targets with the `fma` feature).
+### :param x: The first factor.
+### :param y: The second factor.
+### :param p: `x * y` rounded to nearest.
+### :returns: `x.mul_add(y, p.neg())`.
+@target(arch: "x86_64")
+@feature("fma")
+@inline
+routine b64_mul_error_in_range(x: B64, y: B64, p: B64) -> B64
+    e: B64 = x.mul_add_unchecked(a: y, b: -p)
+    return e
+
+### {b64_mul_error_in_range} as on AArch64, the same bits, by Dekker's product ({b64_dekker_error}) on x86 without the
+### `fma` feature.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param p: `x * y` rounded to nearest.
+### :returns: `x.mul_add(y, p.neg())`.
+@target(arch: "x86_64")
+@feature(not "fma")
+@inline
+routine b64_mul_error_in_range(x: B64, y: B64, p: B64) -> B64
+    e: B64 = b64_dekker_error(x, y, p)
+    return e
+
+### {b64_mul_error_in_range} as on AArch64, the same bits, by Dekker's product ({b64_dekker_error}) on targets other
+### than AArch64 and x86_64.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param p: `x * y` rounded to nearest.
+### :returns: `x.mul_add(y, p.neg())`.
+@target(arch: not ("aarch64", "x86_64"))
+@inline
+routine b64_mul_error_in_range(x: B64, y: B64, p: B64) -> B64
+    e: B64 = b64_dekker_error(x, y, p)
+    return e
+
+### {b64_mul_sub_near} for factors in {b64_mul_error_in_range}'s range. With the FMA instruction.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "aarch64")
+@inline
+secret routine b64_mul_sub_near_in_range(x: B64, y: B64, c: B64) -> B64
+    r: B64 = x.mul_add_unchecked(a: y, b: -c)
+    return r
+
+### {b64_mul_sub_near_in_range} as on AArch64, with the x86 FMA instruction (targets with the `fma` feature).
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "x86_64")
+@feature("fma")
+@inline
+secret routine b64_mul_sub_near_in_range(x: B64, y: B64, c: B64) -> B64
+    r: B64 = x.mul_add_unchecked(a: y, b: -c)
+    return r
+
+### {b64_mul_sub_near_in_range} as on AArch64, the same bits, on x86 without the `fma` feature: (p - c) + e as in
+### {b64_mul_sub_near_soft}, with e from {b64_dekker_error}.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "x86_64")
+@feature(not "fma")
+@inline
+secret routine b64_mul_sub_near_in_range(x: B64, y: B64, c: B64) -> B64
+    p: B64 = x *! y
+    return (p -! c) +! b64_dekker_error(x, y, p)
+
+### {b64_mul_sub_near_in_range} as on AArch64, the same bits, on targets other than AArch64 and x86_64: (p - c) + e as
+### in {b64_mul_sub_near_soft}, with e from {b64_dekker_error}.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: not ("aarch64", "x86_64"))
+@inline
+secret routine b64_mul_sub_near_in_range(x: B64, y: B64, c: B64) -> B64
+    p: B64 = x *! y
+    return (p -! c) +! b64_dekker_error(x, y, p)
+
+### `x * y - c` rounded once, as `x.mul_add(y, c.neg())` gives it, for a `c` within a factor of two of `x * y` rounded
+### and a product whose rounding error is a B64 (it is unless the product underflows): the residual of an estimate,
+### such as r^2 x - 1 in a Newton step or s^2 - a for s near sqrt(a). With the FMA instruction.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "aarch64")
+@inline
+secret routine b64_mul_sub_near(x: B64, y: B64, c: B64) -> B64
+    r: B64 = x.mul_add_unchecked(a: y, b: -c)
+    return r
+
+### `x * y - c` rounded once as {b64_mul_sub_near} on AArch64, with the x86 FMA instruction (targets with the `fma`
+### feature).
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "x86_64")
+@feature("fma")
+@inline
+secret routine b64_mul_sub_near(x: B64, y: B64, c: B64) -> B64
+    r: B64 = x.mul_add_unchecked(a: y, b: -c)
+    return r
+
+### `x * y - c` rounded once as {b64_mul_sub_near} on AArch64, the same bits, on x86 without the `fma` feature
+### ({b64_mul_sub_near_soft}).
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: "x86_64")
+@feature(not "fma")
+@inline
+secret routine b64_mul_sub_near(x: B64, y: B64, c: B64) -> B64
+    r: B64 = b64_mul_sub_near_soft(x, y, c)
+    return r
+
+### `x * y - c` rounded once as {b64_mul_sub_near} on AArch64, the same bits, on targets other than AArch64 and
+### x86_64 ({b64_mul_sub_near_soft}).
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@target(arch: not ("aarch64", "x86_64"))
+@inline
+secret routine b64_mul_sub_near(x: B64, y: B64, c: B64) -> B64
+    r: B64 = b64_mul_sub_near_soft(x, y, c)
+    return r
+
+### `x * y - c` rounded once without an FMA instruction, bit for bit the fused result under {b64_mul_sub_near}'s
+### conditions: with p = x * y rounded and e = x * y - p exactly ({b64_mul_error}), p - c is exact by Sterbenz's
+### lemma (p lies in [c/2, 2c]), so (p - c) + e is x * y - c exactly before its one rounding.
+### :param x: The first factor.
+### :param y: The second factor.
+### :param c: The value subtracted, near `x * y`.
+### :returns: `x.mul_add(y, c.neg())`.
+@inline
+secret routine b64_mul_sub_near_soft(x: B64, y: B64, c: B64) -> B64
+    p: B64 = x *! y
+    return (p -! c) +! b64_mul_error(x, y, p)
 
 ### Narrows to B16, rounding once to nearest (ties to even). {B64.to_unchecked[B16]} gives an infinity instead of failing.
 ### :returns: The nearest B16. An infinity stays infinite, and NaN stays NaN.

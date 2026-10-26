@@ -7,6 +7,9 @@
 # until it changes sign, and the sign of the residual at the midpoint gives the rounding. Round to nearest only:
 # +0 gives +inf, -0 gives -inf, +inf gives +0, a negative x gives NaN, NaN comes back quiet.
 #
+# The Newton step's two fused multiply-adds are b64_mul_error and b64_mul_sub_near (their _in_range forms for most x),
+# which on a target without the instruction compute the same bits from Dekker's exact product.
+#
 # Ported from CORE-MATH, src/binary64/rsqrt/rsqrt.c.
 # Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
 # MIT license: see LICENSE-CORE-MATH
@@ -31,8 +34,14 @@ routine B64.rsqrt_unchecked() -> Me
         else => return cm_b64_rsqrt_special(me)
     # one Newton step r' = r - r/2 (r^2 x - 1), with r x as rx + drx to about 106 bits
     rx: Me = r *! me
-    drx: Me = r.mul_add_unchecked(a: me, b: -rx)
-    h: Me = r.mul_add_unchecked(a: rx, b: -1.0) +! r *! drx
+    h: Me = when
+        e -% 0x100 < 0x600 =>
+            # x in [2^-767, 2^769): r, x, rx, and both products lie in Dekker's range
+            near: Me = b64_mul_error_in_range(x: r, y: me, p: rx)
+            becomes b64_mul_sub_near_in_range(x: r, y: rx, c: 1.0) +! r *! near
+        else =>
+            drx: Me = b64_mul_error(x: r, y: me, p: rx)
+            becomes b64_mul_sub_near(x: r, y: rx, c: 1.0) +! r *! drx
     dr: Me = (r *! 0.5) *! h
     rf: Me = r -! dr
     idr: U64 = dr.bits()
