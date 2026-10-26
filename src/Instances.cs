@@ -147,6 +147,7 @@ public sealed partial class Compiler
                 throw new CompileError(placed.Pos,
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not @external(\"asm\")");
         BlockRule.Check(r);
+        EmitterReuseRule.Check(r);
         CheckFailableBoundary(r);
         CheckInlining(r);
         CheckUntraced(r);

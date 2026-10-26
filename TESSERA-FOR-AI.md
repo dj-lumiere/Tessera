@@ -190,7 +190,7 @@ routine start() -> None
   `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
   `&List[S64]`'s `getview()` is the List's span. Passing a `&T` where a `@T` is expected lends its view. Returning a
   STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
-- A place that a routine fills later (an out parameter, `out.construct(...)`, an iterator's place) starts as
+- A place that a routine fills later (an out parameter, `out.construct(...)`, an emitter's place) starts as
   `p: &T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
   memset in place). A place whose type holds no pointer (no `PointedCell`, `Addr`, `Callable`, `@[T]`, `BorrowedCell`, `BorrowedSlice`) may
@@ -630,9 +630,12 @@ routine start() -> None
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
   by -1` steps. A stepped range ends before an index that would pass the end of its type (`each i: S8 in 100 to 127
   by 20` walks 100 and 120 and stops, it never wraps around). A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
-  names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose failable `emit` gives the next
+  names the type (for an index, say), and `each x in iter` reads an emitter in memory (one whose failable `emit` gives the next
   item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
-  a bare call of emit would. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
+  a bare call of emit would. Each collection makes its emitter with `.emitter()` (`e: &ListEmitter[Point] <- points.emitter()`). An
+  emitter hands out each item once: after an `each` that ends by itself it is empty, so a second `each` over it on every
+  path, or an `each` inside a loop over an emitter made outside that loop, is a build error ("runs zero times"). Make the
+  emitter inside the loop, or call `.emitter()` again. An `each` left with `break` leaves the rest for the next one. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
   before each pass: write the condition that ends the loop. `loop` doesn't end by itself: only `break`, `return` or
   `throw` leaves it, so the lines after a `loop` without a `break` never run, and a routine that ends with such a loop
   needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
@@ -647,7 +650,7 @@ routine start() -> None
   values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `each`
   carries values the same way: `each i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
 - **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run once whenever the loop is left
-  for the line after it: when the loop ends on its own (the condition fails, the range or iterator is exhausted) and
+  for the line after it: when the loop ends on its own (the condition fails, the range or emitter is exhausted) and
   after its own `break` (a `break` of a loop inside only leaves that loop). A `return` leaves the routine and skips
   them. They see the carried values' last values (not the `each` variable). A loop whose `then` leaves (ends in
   `return`, say) always leaves, so nothing may follow it. Loops have no `else`: the case where the loop would not run
@@ -943,8 +946,8 @@ routine start() -> None
   `&Point` or `&S64` place `{p}` writes the cell, its address and manager, with a warning that asks for `{p.load()}`,
   while an entity's place writes the entity: `{list}`), and a generic `to[T]` (it
   would hide `PointedCell`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a place
-  first (`iter: &DictIter[TKey, TValue] <- .construct(m)`).
+  `m.emitter().emit()` fails with "has no method 'emit'"; put the emitter in a place
+  first (`iter: &DictEmitter[TKey, TValue] <- m.emitter()`).
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module
   included): a constraint is a fact about the type, said where the type is declared. So a
@@ -966,11 +969,11 @@ routine start() -> None
   routine, and a generic type the body forms (`Set[T]` needs `HashEquatable[T]`), must have its constraints met by
   the ones in force. A generic conformance is checked too: the routines that meet it must have their constraints met
   by its `when` plus the type's `needs`. A routine picked by a type argument that is a type parameter
-  (`x.to[T]()`) is checked at each instantiation. A record whose fields form another generic type (`DictIter` holds
+  (`x.to[T]()`) is checked at each instantiation. A record whose fields form another generic type (`DictEmitter` holds
   a `@Dict[TKey, TValue]`) carries that type's constraints in its own `needs`. Protocols: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, the operator protocols, `Destructible`, `Representable`, `HexRepresentable` (`represent_hex_into`, every
   integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
-  capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
+  capability is an `-able` adjective), and the roles `Emitter`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   protocol only through an `obeys` (on its record, or a top-level `obeys C[X]` line), and the builder checks the
   declared routines' signatures. Conditional conformance: `obeys Equatable[BorrowedCell[T]] when T: typename, Equatable[T]`.
   `Reversed[T]` (Core) is a `T` whose `compare` is flipped (`Reversed[S64].construct(5)`): Comparable, Equatable,
@@ -1028,7 +1031,7 @@ routine start() -> None
   `split(separator:, manager:)` and `words(manager:)` (a `BorrowedSlice[@[Byte]]` of views into the text, RazorForge's and
   Suflae's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
-  wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
+  wraps bytes from C, and text made from other text (`slice`, `getslice`, the emitters, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
   back once (`line: &[Byte] <- Console.ask_line(HEAP)`, then `drop line`), and observe a `Maybe` or `Check` of one
@@ -1069,7 +1072,7 @@ routine start() -> None
   (its own `throw`, or a bare call that fails) crashes there, even with `try` or `check` further up.
 - **The standard library's failures** are crashables of a few numbers at most: `IntegerOverflowError`,
   `DivisionByZeroError`, `NegativeExponentError`, `IndexOutOfBoundsError` (`index`, `count`), `AbsentValueError` (an
-  iterator past its end, an empty list's last element, unwrap of an empty Maybe), `KeyNotFoundError`,
+  emitter past its end, an empty list's last element, unwrap of an empty Maybe), `KeyNotFoundError`,
   `NumericOverflowError`, `NumericDomainError` (`ilog2(0)`, `isqrt` of a negative, a NaN result), `UnacceptedValueError`
   (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
   channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
@@ -1329,7 +1332,7 @@ routine start() -> None
 - In the standard library, these are entities: `BorrowedSlice[T]`, `BorrowedCell[T]`, every collection (`List`, `Set`, `Dict`, the
   sorted ones, `RotatableList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `CoroutineManager`,
   `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
-  `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
+  `MemoryManager`, a `@[T]`, a `@T`, and an emitter stay records.
 - An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no place of its
   own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed place that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
@@ -1416,14 +1419,14 @@ routine sum_to(n: U64) -> U64
         return total
 ```
 
-Iterating a collection (`emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
-there and `each x in iter` stops there; an iterator over elements in memory, `ListIter`, `ArrayIter`, `RotatableListIter`,
-`SortedListIter`, `SortedSetIter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
+Walking a collection (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
+there and `each x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ArrayEmitter`, `RotatableListEmitter`,
+`SortedListEmitter`, `SortedSetEmitter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
-    iter: &ListIter[S64] <- .construct(list)
+    iter: &ListEmitter[S64] <- list.emitter()
 
     loop with total: S64 = 0
         item: Maybe[S64] = try iter.emit()
@@ -1584,12 +1587,12 @@ Keys and elements may be entities in every collection: `Set[File]`, `Dict[Counte
 nor a record key is copied for a lookup. They are handed over with `steal` (a key that doesn't go in, because an equal one is
 already there, ends at once), and `remove`, a replaced value, `clear`, and destruct end them. Every lookup takes a key's
 place (`set.has(probe)`, lent) or a key value (`set.has(Counter.construct(3))`, which ends after the lookup). An entity
-element is read through `getslot` and the slot iterators (the failable `next` on `SortedListIter`,
-`SortedSetIter`), never copied: `getitem`, `get_by_rank`, `first`, and a `PriorityEntry` are for record elements.
+element is read through `getslot` and the slot emitters (the failable `next` on `SortedListEmitter`,
+`SortedSetEmitter`), never copied: `getitem`, `get_by_rank`, `first`, and a `PriorityEntry` are for record elements.
 Changing a key in place through its slot breaks the collection's order.
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
-removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
+removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Emitters are
 `XIter[T].construct(collection)`. Don't mutate a collection while iterating it.
 
 ## Conventions
@@ -1882,7 +1885,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, manager)` (the `PartitionManager`
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
-- listing: `list(at, iter)` starts a `DirIter` (a place, `iter: &DirIter <- .hollow()`), then
+- listing: `list(at, iter)` starts a `DirEmitter` (a place, `iter: &DirEmitter <- .hollow()`), then
   `each entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
 - paths: `absolute(at, manager)`, `canonical(at, manager)`.
 
@@ -2134,7 +2137,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   failable call gives the `Maybe`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
   `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
   `OsEnvironment.variable` (not set), `Bool.then_present`, and `compare_exchange` (`None` when it wrote, the value
-  found when not). An iterator's `emit` is failable and throws `AbsentValueError` past the end.
+  found when not). An emitter's `emit` is failable and throws `AbsentValueError` past the end.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
   `CStrView.from_ptr(p)`). A conversion that can fail is a failable `to[T]()`.
@@ -2216,7 +2219,7 @@ decide what `[...]` after it is. Before `(` it is a routine's or type's argument
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
-PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
+PascalCase: `Dict[TKey, TValue]`, `Emitter[TItem, TEmitter]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver
 type's, and the receiver type's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `PointedCell[T].to[@TPointee]`. A value (const) parameter is named like a
@@ -2240,7 +2243,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 `destruct`:
 
 - `Type.construct(...) -> Me` is the constructor, a typewise routine: `List[S64].construct(manager)`,
-  `ListIter[T].construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
+  `ListEmitter[T].construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
   place instead, through a pointer: `out.construct(inner)` for `BufWriter[T]`.
 - `routine @T.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. The statement `drop x` calls it, and nothing runs it for you. A program's own line
