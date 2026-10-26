@@ -144,7 +144,9 @@ public sealed partial class Compiler
         // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.te). The race check
         // reports faults itself.
         if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(HostedModule, "install_fault_handlers", start.Pos))}");
-        _entry.AppendLine($"  {EntryCall(startInst)}");
+        // The entry has no debug location to keep `start`'s frame in if LLVM inlined it there: with the trace read
+        // from the stack, start stays a routine of its own.
+        _entry.AppendLine($"  {EntryCall(startInst)}{(TraceFromStack ? " noinline" : "")}");
         _entry.AppendLine($"  %status = {EntryCall(exitCode)}");
         _entry.AppendLine("  ret i32 %status");
         _entry.AppendLine("}");

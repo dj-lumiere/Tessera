@@ -26,6 +26,9 @@ static class Cli
 
         --no-stdlib-exports: leave out the standard library's @export routines (the default crash report, the B16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
+        --frame-pointers: every routine keeps a frame record, for a library a crash trace read from the stack walks
+                through (with --emit-llvm, such as Ingrid's runtime library). A traced build on Linux x86_64 keeps
+                them on its own: it reads its crash trace from the stack.
         --show-destructs: print the destruct routines the builder writes for the program's own types (a type that
                 holds something to release and writes no destruct), as Tessera source, each after a comment naming
                 its type. The test runner compares them with <name>.destructs when that file exists.
@@ -380,7 +383,7 @@ static class Cli
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
         bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null,
-        bool ShowDestructs = false);
+        bool ShowDestructs = false, bool FramePointers = false);
 
     internal static bool RaceCheckable(BuildTarget target) => BuildModes.RaceCheckable(target);
 
@@ -415,6 +418,7 @@ static class Cli
         var inputs = new List<string>();
         string? output = null;
         bool emit = false, stdlibExports = true, uninitFill = false, heapCheck = false, showDestructs = false;
+        bool framePointers = false;
         bool? trace = null, race = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
@@ -429,6 +433,7 @@ static class Cli
                 case "--uninit-fill": uninitFill = true; break;
                 case "--heap-check": heapCheck = true; break;
                 case "--show-destructs": showDestructs = true; break;
+                case "--frame-pointers": framePointers = true; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 case "--race-check": race = true; break;
                 case "--no-race-check": race = false; break;
@@ -442,7 +447,7 @@ static class Cli
         var target = targetArgs.Build();
         if (race == true) RequireRaceCheckable(target);
         return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race ?? mode.RaceCheckedByDefault(target),
-            uninitFill, heapCheck, targetArgs.Board, showDestructs);
+            uninitFill, heapCheck, targetArgs.Board, showDestructs, framePointers);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -537,11 +542,16 @@ static class Cli
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
         bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
-        TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null)
+        TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
-        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault(), heapCheck, raceCheck)
+        bool traced = trace ?? mode.TracedByDefault();
+        // An executable reads its crash trace from the stack where the builder writes the table for it (Link runs the
+        // steps): IR handed out on its own keeps the shadow stack, which needs nothing more.
+        bool fromStack = executable && TraceTable.Supports(target.Arch, target.Os)
+            && Environment.GetEnvironmentVariable("TESSERA_TRACE_SHADOW") != "1";
+        var compiler = new Compiler(target, decls, traced, heapCheck, raceCheck, fromStack)
         {
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
@@ -551,6 +561,7 @@ static class Cli
             IngridDir = IngridDir(),
             UninitFill = uninitFill,
             LinkArguments = linkArguments ?? [],
+            FramePointers = framePointers,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
         compiler.SetCrashMessageSize(crashMessageSize);
@@ -767,7 +778,7 @@ static class Cli
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
             trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck,
-            destructs: o.ShowDestructs ? Console.Out : null);
+            destructs: o.ShowDestructs ? Console.Out : null, framePointers: o.FramePointers);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -846,16 +857,41 @@ static class Cli
     private static void Link(string ir, string exe, BuildTarget target, BuildMode mode, IEnumerable<string>? extra = null)
     {
         string ll = Path.ChangeExtension(TempExe(), ".ll");
+        string? asm = null;
         File.WriteAllText(ll, ir);
         try
         {
+            // A build that reads its crash trace from the stack: optimize, give each traced call its chain, write the
+            // assembly, mark the calls' return addresses, then assemble and link that (TraceTable).
+            if (TraceTable.Wanted(ir))
+            {
+                string optimized = Path.ChangeExtension(ll, ".opt.ll");
+                try
+                {
+                    // The race check instruments the code while it is optimized.
+                    var sanitize = (extra ?? []).Where(a => a.StartsWith("-fsanitize=", StringComparison.Ordinal));
+                    RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-emit-llvm", .. sanitize, ll, "-o", optimized]);
+                    var annotation = TraceTable.Annotate(File.ReadAllText(optimized));
+                    File.WriteAllText(optimized, annotation.Ir);
+                    asm = Path.ChangeExtension(ll, ".s");
+                    RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-Xclang", "-disable-llvm-passes", "-g", optimized, "-o", asm]);
+                    File.WriteAllText(asm, TraceTable.Patch(File.ReadAllText(asm), target.Arch, annotation));
+                    if (Environment.GetEnvironmentVariable("TESSERA_TRACE_KEEP") is { Length: > 0 } keep)
+                    {
+                        File.Copy(optimized, keep + ".opt.ll", true);
+                        File.Copy(ll, keep + ".ll", true);
+                        File.Copy(asm, keep + ".s", true);
+                    }
+                }
+                finally { TryDelete(optimized); }
+            }
             var psi = new ProcessStartInfo(Toolchain.Clang)
             {
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, ll, "-o", exe })
+            foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, asm ?? ll, "-o", exe })
                 psi.ArgumentList.Add(a);
             // The routines carry the CPU and features in their attributes, module-level assembly takes them from here.
             if (target.Cpu is not null || target.Features.Count > 0)
@@ -896,7 +932,29 @@ static class Cli
         finally
         {
             TryDelete(ll);
+            if (asm is not null) TryDelete(asm);
         }
+    }
+
+    /// Runs clang for one step of a build that reads its crash trace from the stack, for the target and its CPU.
+    private static void RunClang(BuildTarget target, IEnumerable<string> args)
+    {
+        var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+        psi.ArgumentList.Add("--target=" + target.LlvmTriple);
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        if (target.Cpu is not null || target.Features.Count > 0)
+            foreach (var a in CpuModel.ClangCpuArguments(target, target.Features)) psi.ArgumentList.Add(a);
+        Process p;
+        try { p = Process.Start(psi)!; }
+        catch (System.ComponentModel.Win32Exception) { throw new ToolError("clang was not found on PATH"); }
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        string err = p.StandardError.ReadToEnd();
+        string output = outTask.Result;
+        p.WaitForExit();
+        if (p.ExitCode != 0)
+            throw new ToolError(err.Contains("<inline asm>", StringComparison.Ordinal)
+                ? $"the assembler doesn't accept an instruction of an assembly routine. Check its mnemonic and operands:\n{err}"
+                : $"clang failed (this is a builder bug if the IR is invalid):\n{output}{err}");
     }
 
     private static readonly ConcurrentDictionary<string, string?> Builtins = new();

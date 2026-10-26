@@ -229,6 +229,7 @@ public sealed partial class Compiler
             : $"!{{i32 7, !\"Dwarf Version\", i32 {(Target.Os is "macos" or "ios" ? 4 : 5)}}}");
         int version = Meta("!{i32 2, !\"Debug Info Version\", i32 3}");
         var o = new StringBuilder();
+        o.Append(TraceTableMetadata());
         o.AppendLine($"!llvm.dbg.cu = !{{!{unit}}}");
         o.AppendLine($"!llvm.module.flags = !{{!{dwarf}, !{version}}}");
         o.AppendLine();

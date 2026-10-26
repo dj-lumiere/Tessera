@@ -1,7 +1,10 @@
 namespace Tessera;
 
-/// The crash trace: a traced build keeps, per thread, the program's routines it is in, so a crash report can say how
-/// the program got where it crashed (Standard/Trace.te holds the storage and the routines the builder calls). Each
+/// The crash trace: a traced build can say which of the program's routines a crash is in. An executable for a target
+/// TraceTable supports reads it from the stack (TraceFromStack): nothing below is placed, each call a traced routine
+/// makes carries its place as its debug location, and TraceTable writes the table of return addresses. Elsewhere the
+/// build keeps, per thread, a shadow stack of the program's routines it is in (Standard/Trace.te holds the storage and
+/// the routines the builder calls). Each
 /// traced routine calls trace_push on entry with its name, file, and declaration's place, keeping the frame's place it
 /// gives, trace_at before each call it makes with that place and the call's line and column, and trace_pop just before
 /// it returns, after its return value is computed, so
@@ -13,6 +16,25 @@ public sealed partial class Compiler
     /// Whether the program's routines keep the crash trace. An untraced build never calls the trace routines, and the
     /// stdlib's `@trace("on")` declarations drop out of it, so it has no trace storage or code at all.
     public bool Trace { get; }
+
+    /// Whether this traced build reads the trace from the stack (TraceTable) instead of keeping a shadow stack: no
+    /// trace call is placed, each call a traced routine makes carries its place as its debug location, and the
+    /// traced routines are listed for the table. Set (by the constructor) for an executable on a target TraceTable supports.
+    public bool TraceFromStack { get; }
+
+    /// The traced routines' subprograms with their frames' names and files, for `!tessera.trace`.
+    private readonly List<(int Subprogram, string Name, string File)> _tracedSubprograms = [];
+
+    /// Lists a traced routine for the table: its subprogram, name, and file.
+    public void NoteTracedSubprogram(int subprogram, string name, string file) => _tracedSubprograms.Add((subprogram, name, file));
+
+    /// The named metadata that lists the traced routines, or nothing outside a table build.
+    private string TraceTableMetadata()
+    {
+        if (!TraceFromStack) return "";
+        var entries = _tracedSubprograms.Select(t => Meta(TraceTable.Entry(t.Subprogram, t.Name, t.File, false))).ToList();
+        return $"{TraceTable.NamedMetadata} = !{{{string.Join(", ", entries.Select(e => "!" + e))}}}\n";
+    }
 
     /// `@trace("on")` / `@trace("off")` keeps a standard library declaration only in a traced or an untraced build: the
     /// trace's storage and the routines the builder calls are there only when something calls them, and the trace
@@ -26,7 +48,10 @@ public sealed partial class Compiler
         {
             "on" => Trace,
             "off" => !Trace,
-            _ => throw new CompileError(a.Pos, "@trace takes \"on\" or \"off\""),
+            // A traced build keeps either a shadow stack or the table it reads the stack with.
+            "shadow" => Trace && !TraceFromStack,
+            "stack" => Trace && TraceFromStack,
+            _ => throw new CompileError(a.Pos, "@trace takes \"on\", \"off\", \"shadow\", or \"stack\""),
         };
     }
 

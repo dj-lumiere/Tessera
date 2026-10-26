@@ -1,13 +1,8 @@
 # Tessera stdlib: the crash trace
 #
-# A traced build keeps, for each thread, the program's routines it is in, so a
-# crash can say how the program got there. The builder calls trace_push when one
-# of the program's routines starts (its name and file, giving back the frame's
-# place), trace_at before each call the routine makes (the call's line and column
-# into that place: a frame is read only while its routine is in a call, so that's
-# the place it has), and trace_pop just before it returns. A crash handler reads the trace
-# through trace_depth and trace_frame, most recent frame first. The default
-# handler (Os/Crash.te) prints it after the place:
+# A traced build can say how the program got where it crashed: the program's routines it is in, most recent frame
+# first. A crash handler reads the trace through trace_depth and trace_frame. The default handler (Os/Crash.te)
+# prints it after the place:
 #
 #     tessera: IndexOutOfBoundsError: Index is out of bounds for the collection.
 #       at examples/grid.te:12:9
@@ -15,32 +10,37 @@
 #       0: at fill (examples/grid.te:12:9)
 #       1: at start (examples/grid.te:30:5)
 #
-# The frames are a ring of TRACE_CAPACITY: a deeper trace keeps its innermost
-# frames, and trace_depth still says how deep it was. The standard library isn't
-# traced, so a crash inside it shows the line of the program that called it, and
-# neither is a routine marked @untraced or @inline, nor the crash handler.
+# The standard library isn't traced, so a crash inside it shows the line of the program that called it, and neither
+# is a routine marked @untraced or @inline, nor the crash handler.
 #
-# The trace is thread-local on a target with an operating system, so each thread
-# has its own. A target without one has no thread-locals: there the trace is a
-# plain global, which an interrupt handler's frames share (they come and go
-# before the code they interrupted goes on, so the depth stays right).
+# The trace is kept one of two ways, which the declarations below choose with @trace("shadow") / @trace("stack"):
 #
-# Each storage declaration is @trace("on"), kept only in a traced build, and the
-# accessors have a @trace("off") twin that reads an empty trace. An untraced build
-# (--no-trace, [debug] trace = false, and release-time and release-space unless
-# told otherwise) calls none of the routines the builder uses, so it has no trace
-# storage or code at all.
+# - Read from the stack (an executable for Linux on x86-64): the program stores nothing while it runs. Every routine
+#   keeps a frame record, and the builder writes a table of the return address of each call a traced routine makes
+#   (src/TraceTable.cs). A reader walks the frame records (the section at the end of this file).
+# - A shadow stack (elsewhere): the builder calls trace_push when one of the program's routines starts (its name and
+#   file, giving back the frame's place), trace_at before each call the routine makes (the call's line and column into
+#   that place: a frame is read only while its routine is in a call, so that's the place it has), and trace_pop just
+#   before it returns. The frames are a ring of TRACE_CAPACITY: a deeper trace keeps its innermost frames, and
+#   trace_depth still says how deep it was. The trace is thread-local on a target with an operating system, so each
+#   thread has its own. A target without one has no thread-locals: there the trace is a plain global, which an
+#   interrupt handler's frames share (they come and go before the code they interrupted goes on, so the depth stays
+#   right).
+#
+# The accessors have a @trace("off") twin that reads an empty trace. An untraced build (--no-trace, [debug] trace =
+# false, and release-time and release-space unless told otherwise) calls none of the routines the builder uses, so it
+# has no trace storage or code at all.
 
 module System
 
 ### The running thread's trace.
 @threadlocal
 @target(os: not "none")
-@trace("on")
+@trace("shadow")
 secret global TRACE: &TraceStack
 ### The trace on a target without an operating system: one, shared with interrupt handlers.
 @target(os: "none")
-@trace("on")
+@trace("shadow")
 secret global TRACE: &TraceStack
 
 ### The number of frames the trace keeps: the innermost ones, when the program is deeper.
@@ -70,7 +70,7 @@ secret record TraceStack
 ### :param file: Its source file.
 ### :returns: The frame's place in the trace.
 @inline
-@trace("on")
+@trace("shadow")
 secret routine trace_push(name: CStrView, file: CStrView) -> @TraceFrame
     stack: @TraceStack = TRACE
     depth: U64 = stack.depth.peek()
@@ -88,7 +88,7 @@ secret routine trace_push(name: CStrView, file: CStrView) -> @TraceFrame
 ### :param line: The call's line.
 ### :param column: The call's column.
 @inline
-@trace("on")
+@trace("shadow")
 secret routine trace_at(frame: @TraceFrame, line: U32, column: U32) -> None
     line.poke_into(frame.line)
     column.poke_into(frame.column)
@@ -101,7 +101,7 @@ secret routine trace_at(frame: @TraceFrame, line: U32, column: U32) -> None
 ### :param line: The call's line.
 ### :param column: The call's column.
 @inline
-@trace("on")
+@trace("shadow")
 secret routine trace_at_moving(frame: @TraceFrame, line: U32, column: U32) -> None
     stack: @TraceStack = TRACE
     depth: U64 = stack.depth.peek()
@@ -115,7 +115,7 @@ secret routine trace_at_moving(frame: @TraceFrame, line: U32, column: U32) -> No
 
 ### Ends the innermost frame: the builder calls it just before a traced routine returns.
 @inline
-@trace("on")
+@trace("shadow")
 secret routine trace_pop() -> None
     stack: @TraceStack = TRACE
     depth: U64 = stack.depth.peek()
@@ -125,7 +125,7 @@ secret routine trace_pop() -> None
 ### The number of frames the running thread is in: the traced routines that have started and not returned. It may be
 ### more than TRACE_CAPACITY, the frames the trace keeps.
 ### :returns: The depth, or 0 in an untraced build.
-@trace("on")
+@trace("shadow")
 routine trace_depth() -> U64
     stack: @TraceStack = TRACE
     depth: U64 = stack.depth.peek()
@@ -142,7 +142,7 @@ routine trace_depth() -> U64
 ### :param back: How many frames out from the innermost, below both trace_depth() and TRACE_CAPACITY.
 ### :returns: The frame. Past those bounds it's what an older frame left in the ring: never a crash, since a crash
 ### handler reads it.
-@trace("on")
+@trace("shadow")
 routine trace_frame(back: U64) -> TraceFrame
     stack: @TraceStack = TRACE
     depth: U64 = stack.depth.peek()
@@ -166,17 +166,26 @@ routine trace_frame(back: U64) -> TraceFrame
 ### every thread a stack runs on.
 ### :param depth: The depth of the stack about to run.
 ### :returns: The depth the thread had.
-@trace("on")
+@trace("shadow")
 routine trace_switch(depth: U64) -> U64
     stack: @TraceStack = TRACE
     was: U64 = stack.depth.peek()
     stack.depth.poke(depth)
     return was
 
-### Makes `depth` the running thread's trace depth: nothing to do, since this build keeps no trace.
+### Makes `depth` the running thread's trace depth: nothing to do, since this build keeps no trace, or reads it from
+### the stack each flow has.
 ### :param depth: The depth of the stack about to run.
 ### :returns: 0.
 @trace("off")
+routine trace_switch(depth: U64) -> U64
+    return 0
+
+### Makes `depth` the running thread's trace depth: nothing to do, since this build reads the trace from the stack
+### each flow has.
+### :param depth: The depth of the stack about to run.
+### :returns: 0.
+@trace("stack")
 routine trace_switch(depth: U64) -> U64
     return 0
 
@@ -224,7 +233,7 @@ secret record FailureTable
 ### each `throw` of a crashable.
 ### :param previous: The number of the failure this one wraps, or 0.
 ### :returns: The failure's number, never 0.
-@trace("on")
+@trace("shadow")
 routine failure_note(previous: U32) -> U32
     table: @FailureTable = FAILURES
     seq: U32 = next_failure_number()
@@ -257,6 +266,28 @@ secret routine next_failure_number() -> U32
     next: U32 = (FAILURE_COUNT.peek() +% 1).max(1)
     FAILURE_COUNT.poke(next)
     return next
+
+### Notes the running flow's trace, read from the stack, as a new failure's, wrapping `previous` (0 for none): the
+### builder calls it for each `throw` of a crashable. The walk stops once it has the frames a failure keeps. Never
+### inlined: the walk starts at its own frame, whose return address is the throw's.
+### :param previous: The number of the failure this one wraps, or 0.
+### :returns: The failure's number, never 0.
+@noinline
+@trace("stack")
+routine failure_note(previous: U32) -> U32
+    table: @FailureTable = FAILURES
+    seq: U32 = next_failure_number()
+    slot: U64 = table.next.peek()
+    entry: @FailureTrace = table.entries.to[@FailureTrace]().stride(slot)
+    kept: U64 = FAILURE_FRAMES.min(TRACE_CAPACITY)
+    depth: U64 = trace_walk(start: frame_address(), fault_pc: .hollow(), skip: 0, want: kept,
+        out: entry.frames.to[@TraceFrame](), early: true)
+
+    table.next.poke((slot + 1) % FAILURE_TRACES)
+    entry.seq.poke(seq)
+    entry.previous.poke(previous)
+    entry.depth.poke(depth)
+    return seq
 
 ### Notes nothing: this build keeps no trace.
 ### :param previous: Unused.
@@ -320,4 +351,290 @@ needs TWriter: typename, Writer[TWriter]
             out.write("\nIt wraps the failure made at:")
             continue with number: previous
     out.write("\n  (not remembered here: made on another thread, or later failures took its place)")
+    return
+
+# -- the trace read from the stack ---------------------------------------------------------------------------------
+#
+# A traced build for a target the builder reads the stack on (Linux on x86-64) keeps no shadow stack: every routine
+# keeps a frame record (the caller's frame pointer, then the return address), and the builder writes a table
+# (src/TraceTable.cs) that says, for the return address of each call a traced routine makes, the frames the call is
+# in: the routine that makes it, with the call's line and column, and each traced routine LLVM inlined it into. A
+# reader walks the frame records from its own frame, skips the return addresses the table doesn't name (the standard
+# library's, the crash service's own), and stops at the first return address outside the program's code (the C
+# library's thread start, a fiber's first frame, a signal's return). A fault starts from the frame it interrupted,
+# which the fault handler notes (note_fault_context).
+
+### The table of return addresses: per section of code, the program's routines and the calls traced routines make.
+@external("c")
+@symbol("tessera_trace_table")
+secret global TRACE_TABLE: &U32
+### The chains of frames: for each, its first frame in TRACE_FRAMES and how many.
+@external("c")
+@symbol("tessera_trace_chains")
+secret global TRACE_CHAINS: &U32
+### The frames the chains are made of, then one per traced routine (line 0) for a fault's innermost frame.
+@external("c")
+@symbol("tessera_trace_frames")
+secret global TRACE_FRAMES: &TraceFrame
+
+### Where the crash being reported on this thread happened, hollow until Crash.raise notes it: a shared stop's call
+### stands for every line that jumps to it, so the innermost frame takes this place's line and column.
+@threadlocal
+@target(os: not "none")
+secret global CRASH_PLACE: &Addr
+### The frame pointer and the instruction a fault interrupted on this thread, hollow until a fault handler notes them.
+@threadlocal
+@target(os: not "none")
+secret global FAULT_FRAME: &Addr
+@threadlocal
+@target(os: not "none")
+secret global FAULT_PC: &Addr
+
+### Code besides the program's own that keeps frame records and may call the program back (Ingrid's runtime library):
+### a walk goes on through its frames instead of stopping there. Both 0 for none.
+secret global WALK_THROUGH_LOW: &U64
+secret global WALK_THROUGH_HIGH: &U64
+
+### The column a shared stop's call carries in the table (TraceTable.PlaceColumn).
+secret preset PLACE_COLUMN: U32 = 65535
+
+### The running routine's frame pointer (its frame record, in a build that keeps them).
+### :returns: The address of its frame record.
+@external("llvm")
+@template("{result} = call ptr @llvm.frameaddress.p0(i32 0)")
+routine frame_address() -> Addr
+
+### Lets a walk of the trace go on through the frames of code from `low` up to `high`: a library that keeps frame
+### records and calls the program back (Ingrid's runtime library runs a Work's body and raises crashes of its own).
+### :param low: The library code's first address.
+### :param high: The address after its last.
+routine trace_walk_through(low: Addr, high: Addr) -> None
+    WALK_THROUGH_LOW.poke(ptrtoint[Addr, U64](low))
+    WALK_THROUGH_HIGH.poke(ptrtoint[Addr, U64](high))
+    return
+
+### Notes where the crash being reported happened, for the trace read from the stack (Crash.raise calls it).
+### :param place: The crash's place, or hollow.
+@trace("stack")
+routine note_crash_place(place: @SourceLocation) -> None
+    CRASH_PLACE.poke(place.to[Addr]())
+    return
+
+### Notes nothing: this build doesn't read the trace from the stack.
+### :param place: Unused.
+@trace("shadow")
+routine note_crash_place(place: @SourceLocation) -> None
+    return
+
+### Notes nothing: this build keeps no trace.
+### :param place: Unused.
+@trace("off")
+routine note_crash_place(place: @SourceLocation) -> None
+    return
+
+### Notes the frame pointer and the instruction a fault interrupted, from the signal's context, so the trace a fault
+### report reads starts there. A frame pointer outside the running flow's stack (a C routine that used the register
+### for something else) isn't noted.
+### :param context: The signal's `ucontext_t`.
+@target(arch: "x86_64", os: "linux")
+routine note_fault_context(context: Addr) -> None
+    # uc_mcontext.gregs is at 40: REG_RBP is its 10th word, REG_RIP its 16th.
+    base: U64 = ptrtoint[Addr, U64](context)
+    frame: U64 = inttoptr[U64, @U64](base + 120).peek()
+    pc: U64 = inttoptr[U64, @U64](base + 168).peek()
+    stack: @StackManager = StackManager.current()
+    bottom: U64 = ptrtoint[Addr, U64](stack.bottom.peek())
+    top: U64 = ptrtoint[Addr, U64](stack.top.peek())
+    if frame < bottom or frame >= top or (frame & 7) != 0
+        return
+    FAULT_FRAME.poke(inttoptr[U64, Addr](frame))
+    FAULT_PC.poke(inttoptr[U64, Addr](pc))
+    return
+
+### Notes nothing: the trace is read from the stack only on Linux on x86-64.
+### :param context: Unused.
+@target(arch: not "x86_64", os: not "none")
+routine note_fault_context(context: Addr) -> None
+    return
+
+### Notes nothing: the trace is read from the stack only on Linux on x86-64.
+### :param context: Unused.
+@target(arch: "x86_64", os: ("macos", "windows"))
+routine note_fault_context(context: Addr) -> None
+    return
+
+### The frame pointer a fault interrupted on this thread, hollow when none was noted.
+### :returns: The frame pointer.
+@target(os: not "none")
+routine fault_frame_pointer() -> Addr
+    return FAULT_FRAME.peek()
+
+### The instruction a fault interrupted on this thread, hollow when none was noted.
+### :returns: Its address.
+@target(os: not "none")
+routine fault_pc() -> Addr
+    return FAULT_PC.peek()
+
+### The number of frames the running flow is in: the traced routines it is in, read from the stack. Never inlined:
+### the walk starts at its own frame, whose return address is its caller's call.
+### :returns: The depth.
+@noinline
+@trace("stack")
+routine trace_depth() -> U64
+    return trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), skip: 0, want: 0, out: .hollow(), early: false)
+
+### A frame of the running flow's trace, counting from the innermost: 0 is the routine that crashed, or that called
+### the standard library routine that did, 1 its caller, and so on. Never inlined, like trace_depth.
+### :param back: How many frames out from the innermost.
+### :returns: The frame, or an empty one past the trace's depth.
+@noinline
+@trace("stack")
+routine trace_frame(back: U64) -> TraceFrame
+    frame: &TraceFrame <- (name: "", file: "", line: 0, column: 0)
+
+    trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), skip: back, want: 1, out: frame, early: true)
+    return frame.load()
+
+### Where a walk of this flow starts: the frame a fault interrupted, or the caller's own.
+### :returns: The frame pointer.
+@trace("stack")
+secret routine walk_start() -> Addr
+    fault: Addr = FAULT_FRAME.peek()
+    if fault.is_not_hollow()
+        return fault
+    return frame_address()
+
+### A 32-bit word of the table read as a signed offset from where it is: the address it names.
+### :param at: The word's address.
+### :returns: The address.
+secret routine table_target(at: U64) -> U64
+    word: U64 = inttoptr[U64, @U32](at).peek().to[U64]()
+    return when
+        word >= 0x80000000 => at +% word -% 0x100000000
+        else => at +% word
+
+### The frame of the traced routine whose code holds `pc`, for a fault's innermost frame.
+### :param pc: The address.
+### :returns: Its frame's index in TRACE_FRAMES, -1 for a routine of the program that isn't traced, and -2 for an
+###     address outside the program's code.
+routine trace_routine_at(pc: U64) -> S64
+    table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
+    groups: U64 = inttoptr[U64, @U32](table).peek().to[U64]()
+
+    each g in 0 til groups
+        group: U64 = table + 8 + g * 16
+        count: U64 = inttoptr[U64, @U32](group).peek().to[U64]()
+        routines: U64 = table_target(group + 8)
+        # the last routine that starts at or before pc
+        found: U64 = last_at_or_below(base: routines, count: count, stride: 16, value: pc)
+        if found < count
+            entry: U64 = routines + found * 16
+            if pc <= table_target(entry + 4)
+                frame: U32 = inttoptr[U64, @U32](entry + 8).peek()
+                return when
+                    frame == 0xFFFFFFFF => -1
+                    else => frame.to[S64]()
+    then
+        return -2
+
+### The chain of the call whose return address is `ra`.
+### :param ra: The return address.
+### :returns: The chain's index in TRACE_CHAINS, or -1 when no traced routine makes that call.
+routine trace_site_at(ra: U64) -> S64
+    table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
+    groups: U64 = inttoptr[U64, @U32](table).peek().to[U64]()
+
+    each g in 0 til groups
+        group: U64 = table + 8 + g * 16
+        count: U64 = inttoptr[U64, @U32](group + 4).peek().to[U64]()
+        sites: U64 = table_target(group + 12)
+        found: U64 = last_at_or_below(base: sites, count: count, stride: 8, value: ra)
+        if found < count
+            entry: U64 = sites + found * 8
+            if table_target(entry) == ra
+                return inttoptr[U64, @U32](entry + 4).peek().to[S64]()
+    then
+        return -1
+
+### Of `count` entries `stride` bytes apart from `base`, sorted by the address their first word names, the last whose
+### address is at most `value`.
+### :param base: The first entry.
+### :param count: How many there are.
+### :param stride: The bytes from one entry to the next.
+### :param value: The address looked for.
+### :returns: Its index, or `count` when every entry's address is above `value`.
+secret routine last_at_or_below(base: U64, count: U64, stride: U64, value: U64) -> U64
+    # the entries below `low` are at most value, those from `high` on above it
+    until low >= high with low: U64 = 0, high: U64 = count
+        middle: U64 = low + (high - low) // 2
+        if table_target(base + middle * stride) <= value
+            continue with low: middle + 1, high: high
+        continue with low: low, high: middle
+    then
+        return when
+            low == 0 => count
+            else => low - 1
+
+### Walks the running flow's frames from the frame record at `start`, innermost first (in a build that reads its
+### trace from the stack: the table must be there), and copies frames `skip` up to
+### `skip + want` into `out`. A fault's interrupted instruction `fault_pc` (hollow for none) gives the innermost
+### frame, the traced routine it is in, with no line. The innermost frame of a shared stop takes the crash's place.
+### :param start: The first frame record.
+### :param fault_pc: The instruction a fault interrupted, or hollow.
+### :param skip: The frames to pass before copying.
+### :param want: The frames to copy.
+### :param out: Where they go, or hollow to copy none.
+### :param early: True to stop once the frames wanted are copied: the count is then not the whole depth.
+### :returns: The number of frames walked: the trace's depth when `early` is false.
+routine trace_walk(start: Addr, fault_pc: Addr, skip: U64, want: U64, out: @TraceFrame, early: Bool) -> U64
+    total: &U64 <- 0
+    done: U64 = skip + want
+
+    if fault_pc.is_not_hollow()
+        routine_frame: S64 = trace_routine_at(ptrtoint[Addr, U64](fault_pc))
+        if routine_frame >= 0
+            put_frame(index: total.load(), frame: routine_frame.to[U64](), skip, want, out)
+            (total.load() + 1).store_into(total)
+    loop with fp: U64 = ptrtoint[Addr, U64](start)
+        if fp == 0 or (fp & 7) != 0 or (early and total.load() >= done)
+            break
+        next: U64 = inttoptr[U64, @U64](fp).peek()
+        ra: U64 = inttoptr[U64, @U64](fp + 8).peek()
+        if trace_routine_at(ra) == -2 and not (ra >= WALK_THROUGH_LOW.peek() and ra < WALK_THROUGH_HIGH.peek())
+            break
+        chain: S64 = trace_site_at(ra)
+        if chain >= 0
+            row: U64 = ptrtoint[Addr, U64](TRACE_CHAINS.to[Addr]()) + chain.to[U64]() * 8
+            first: U64 = inttoptr[U64, @U32](row).peek().to[U64]()
+            count: U64 = inttoptr[U64, @U32](row + 4).peek().to[U64]()
+            each k in 0 til count
+                put_frame(index: total.load(), frame: first + k, skip, want, out)
+                (total.load() + 1).store_into(total)
+        if next <= fp
+            break
+        continue with fp: next
+    return total.load()
+
+### Copies frame `frame` of TRACE_FRAMES into `out` when it is frame `index` of the walk and among the ones wanted. The
+### innermost frame of a shared stop takes the line and column of the crash being reported.
+### :param index: Its place in the walk, 0 for the innermost.
+### :param frame: Its index in TRACE_FRAMES.
+### :param skip: The frames the walk passes before copying.
+### :param want: The frames it copies.
+### :param out: Where they go, or hollow.
+secret routine put_frame(index: U64, frame: U64, skip: U64, want: U64, out: @TraceFrame) -> None
+    if out.is_hollow() or index < skip or index >= skip + want
+        return
+    at: TraceFrame = TRACE_FRAMES.to[@TraceFrame]().stride(frame).peek()
+    target: @TraceFrame = out.stride(index - skip)
+    target.poke(at)
+    if not (at.column == PLACE_COLUMN)
+        return
+    place: Addr = CRASH_PLACE.peek()
+    if place.is_hollow() or index != 0
+        target.column.poke(0)
+        return
+    crash: @SourceLocation = place.to[@SourceLocation]()
+    target.line.poke(crash.line.peek())
+    target.column.poke(crash.column.peek())
     return

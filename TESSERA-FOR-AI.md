@@ -629,7 +629,9 @@ routine start() -> None
 
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
   by -1` steps. A stepped range ends before an index that would pass the end of its type (`each i: S8 in 100 to 127
-  by 20` walks 100 and 120 and stops, it never wraps around). A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
+  by 20` walks 100 and 120 and stops, it never wraps around). The step's sign sets the direction, also for a step held
+  in a value (`each i in hi to lo by step` with `step` -2 walks down). `by 0` is a build error, and a step held in a
+  value that is 0 crashes with `RangeStepZeroError` before the first round. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
   names the type (for an index, say). A range is walked by counting, with no emitter. `each x in xs.emitter()` walks a
   collection: each collection makes its emitter with `.emitter()`, and the builder keeps that emitter in a STACK place for
   the loop, with nothing to give back. Write this form by default: every loop gets a new emitter. `each x in e` reads
@@ -1159,21 +1161,28 @@ routine start() -> None
   meanwhile waits for the stop. When the routine returns, stopping follows. Without an OS the program puts its routine
   in the slot in `when_power_on`, right after `prepare_core()` (the slot is a global). The default (an empty slot, or
   before the globals are in place without an OS): with an OS the report on standard error (`tessera: Name: message`, `  at
-  file:line:col`, `Stack trace:`, and for a failure `The failure was made at:` and its frames), without one nothing.
+  file:line:col`, `Stack trace:`, and for a failure `The failure was made at:` and its frames), without one the same
+  report on the serial port the board file names (`[devices] serial = { kind = "pl011", base = 0x09000000 }`, on
+  `qemu-virt-aarch64` and `raspi4b`). On a board without a serial port `when_power_on` must put a routine in the slot (a
+  build error otherwise): one of its own, or `Crash.report_with(stop_quietly.to[Callable]())` to stop without a report.
   `Crash.stop()`: with an OS exit status 82, without one on Cortex-M a breakpoint when a debugger is attached
   (DHCSR's C_DEBUGEN), then a system reset (AIRCR), then waiting for interrupts, and elsewhere waiting.
-- The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `@inline` or
-  `@untraced` ones), and the default report prints it after the place, innermost first: `Stack trace:` then `  0: at
-  fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A reporting routine of your own reads it
-  with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a `TraceFrame`: `name` / `file` as
-  `CStrView`, `line` / `column`, 0 is the innermost). It's on in debug and release, off in release-time and
-  release-space, and `--no-trace` / `--trace` or `[debug] trace = false|true` in config.toml override that.
-  Thread-local with an OS, a plain global without.
+- The crash trace: the program's routines a crash is in (not the stdlib's, not `@inline` or `@untraced` ones), which
+  the default report prints after the place, innermost first: `Stack trace:` then `  0: at fill (grid.te:12:9)`, and
+  `  ... (40 frames total)` past the 32 it shows. A routine LLVM inlined is a frame of its own all the same. A reporting
+  routine of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
+  `TraceFrame`: `name` / `file` as `CStrView`, `line` / `column`, 0 is the innermost). It's on in debug and release,
+  off in release-time and release-space, and `--no-trace` / `--trace` or `[debug] trace = false|true` in config.toml
+  override that. On Linux x86-64 an executable reads it from the stack when it's asked for: every routine keeps a frame
+  record, and the builder writes a table of the return address of each call a traced routine makes (TraceTable.cs,
+  Trace.te), so while the program runs it only keeps the frame records. Elsewhere (other
+  targets, without an OS, `--emit-llvm` output) the program keeps a shadow stack of frames as it runs, thread-local
+  with an OS and a plain global without.
 - `[debug] trace-frames = N` (a power of two, 1 to 4096, default 32) sets the frames the crash trace and each
   failure's trace keep (`TRACE_CAPACITY`, `FAILURE_FRAMES`), `[debug] failure-traces = N` (1 to 4096, default 32) the
   failures each thread remembers (`FAILURE_TRACES`).
 - A failure keeps where it was made (traced builds only): a `throw` of a crashable calls `failure_note`, which copies
-  the thread's crash trace into a per-thread ring of recent failures (no heap) under a number (never 0, unique across
+  the crash trace at that moment into a per-thread ring of recent failures (no heap) under a number (never 0, unique across
   threads) and stores the number in the high 32 bits of the carrier's tag. A failure thrown in a `when` arm that
   observed one records that one as the failure it wraps. `write_failure_trace(seq: n, out: w)` writes `The failure was
   made at:` and the frames (`  0: at load (f.te:44:34)`, innermost first), then `It wraps the failure made at:` and its
@@ -1745,8 +1754,9 @@ several tickets at once.
   makes with `FIBERS` stay on their thread. A passable fiber may start more work on the pool (another passable fiber ticket) and wait: the waiting passable fiber parks, its
   thread runs other passable fibers (recursive splitting: `tests/thread_pool_manager.te`). Passable fibers don't choose their thread, so they
   share values like threads do (unbroken values, exclusive accesses, channels). Threads start with the first passable fiber and end at
-  `drop pool`: give every passable fiber ticket back and retrieve every piece of work first. In a program that runs pool passable fibers, the builder calls the crash trace's
-  `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
+  `drop pool`: give every passable fiber ticket back and retrieve every piece of work first. In a program that runs pool passable fibers and keeps the crash trace as a
+  shadow stack, the builder calls its `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of
+  the thread it runs on (a trace read from the stack is each fiber's own).
 
 **Unbroken values.** `Unbroken[T]` (Core, `Unbroken.te`) is a record aligned to T's size whose every access is unbroken: the
 form for state a program shares between threads (thread work changes shared memory only through an exclusive access
@@ -2009,8 +2019,10 @@ routine when_power_on() -> None
 to `__bss_end`, and `copy_data()`, `__data_load` to `__data_start` .. `__data_end`, skipped when both are the same
 place), `enable_fpu()` when the build may use an FPU, and `CpuEventManager.install()` on AArch64 and RISC-V. Then the
 reporting routine goes in the Crash service's slot, first after `prepare_core()` (the slot is a global): a crash
-before that stops the default way, `Crash.stop()`, with no report. Then the board's own steps (clocks, pins, a
-serial port). Touching a global before `prepare_core()` (or `GlobalManager.prepare()` / `zero_bss()`) is a build
+before that gets the default report (on the board's serial port, or none on a board without one), then `Crash.stop()`. Then the board's own steps (clocks, pins, a
+serial port). A board without a serial port in its file has no default report, so a `when_power_on` there that puts no
+routine in the slot is a build error that names both choices: a reporting routine of the program's, or
+`stop_quietly` (System) to stop without one. Touching a global before `prepare_core()` (or `GlobalManager.prepare()` / `zero_bss()`) is a build
 error, and so is a `when_power_on` that never calls one of them. Work that touches no global (a watchdog) may come
 first. Then `start()` runs, then a loop that halts (`hlt` / `wfi`). On RISC-V the link script defines no
 `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M reset vector, so the board
@@ -2278,6 +2290,8 @@ syntax sugar to shorten code; readability comes from decomposition and naming.
 compile-error text). A test whose config.toml names a `board` runs in the emulator its `<name>.qemu` file names
 (one line, the emulator and its arguments, the program's path added last), its serial port's text compared with
 `<name>.expected`. Where the emulator isn't installed the test is skipped with a note (tests/rr_*: the
-ThreadManagerByRoundRobin on `qemu-virt-aarch64`, run by CI's freestanding job). Programs in `examples/` carry `.expected` files too. The large tests are ordinary checked-in
+ThreadManagerByRoundRobin on `qemu-virt-aarch64`, run by CI's freestanding job). A board test whose program ends by
+stopping its core (a crash: the emulator keeps running) has a `<name>.stops` file: the emulator is stopped after 3
+seconds, and that is the test's end. Programs in `examples/` carry `.expected` files too. The large tests are ordinary checked-in
 files. Their expected values were checked against an independent reference (Python models, mpmath), so edit them
 like any other test.

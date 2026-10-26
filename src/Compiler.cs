@@ -108,10 +108,11 @@ public sealed partial class Compiler
     /// `--race-check`): every routine is instrumented, and the standard library's `@race_check("on")` declarations are
     /// kept instead of its `@race_check("off")` ones.
     public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool heapCheck = false,
-        bool raceCheck = false)
+        bool raceCheck = false, bool traceFromStack = false)
     {
         Target = target;
         Trace = trace;
+        TraceFromStack = trace && traceFromStack;
         HeapCheck = heapCheck;
         RaceCheck = raceCheck;
         var targetForms = new Dictionary<string, RoutineDecl>();
@@ -558,6 +559,13 @@ public sealed partial class Compiler
 
     /// The function attribute the race check instruments a routine by, or nothing.
     public string RaceAttr => RaceCheck ? " sanitize_thread" : "";
+
+    /// `--frame-pointers`: every routine keeps a frame record, for a library whose frames a crash trace read from the
+    /// stack walks through (Ingrid's runtime library, which calls the program's code back).
+    public bool FramePointers { get; init; }
+
+    /// The attribute that keeps a routine's frame record, or nothing.
+    public string FramePointerAttr => FramePointers ? " \"frame-pointer\"=\"all\"" : "";
 
     // ── Output ──────────────────────────────────────────────────────────────
 

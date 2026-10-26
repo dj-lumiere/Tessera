@@ -1084,6 +1084,7 @@ public sealed partial class FunctionGen
                     }
         }
         if (Debug) BeginSubprogram();
+        if (Debug && _traced && _c.TraceFromStack) _c.NoteTracedSubprogram(_sp, _decl.DisplayName, FramePlace.File.Replace('\\', '/'));
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
@@ -1161,8 +1162,8 @@ public sealed partial class FunctionGen
         var (linkage, comdat) = Linkage();
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
-        string? push = _traced ? TracePush() : null;
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.RaceAttr}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
+        string? push = _traced && !_c.TraceFromStack ? TracePush() : null;
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.RaceAttr}{_c.FramePointerAttr}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var f in _flagInits) _out.AppendLine($"  {f}");
@@ -1240,8 +1241,33 @@ public sealed partial class FunctionGen
     private void Line(string s)
     {
         if (_cur.Terminated) throw new InvalidOperationException("emitting into a terminated block");
+        if (_c.TraceFromStack && Debug && IsTracedCallLine(s))
+        {
+            // A call a traced routine makes is a frame's place in the table read from the stack: its debug location
+            // is the place. No call merges with another (once LLVM inlines a routine into a traced one, its calls are
+            // a traced routine's too): a merged call would lose one of the two places.
+            _cur.Lines.Add(s + " nomerge");
+            _cur.Dbg.Add(_traced && _pendingCallPlace is { } place ? $", !dbg !{Location(place)}" : _loc);
+            _pendingCallPlace = null;
+            return;
+        }
         _cur.Lines.Add(s);
         _cur.Dbg.Add(_loc);
+    }
+
+    /// The place TraceAt gave the next call, in a build that reads the trace from the stack.
+    private Pos? _pendingCallPlace;
+
+    /// Whether an IR line is a call of a routine (not an LLVM intrinsic or inline assembly) that ends with its
+    /// arguments, so attributes can follow.
+    private static bool IsTracedCallLine(string s)
+    {
+        int call = s.StartsWith("call ", StringComparison.Ordinal) ? 0 : s.IndexOf(" = call ", StringComparison.Ordinal) is int at and >= 0 ? at + 3 : -1;
+        if (call < 0 || !s.EndsWith(')')) return false;
+        int callee = s.IndexOf('@', call);
+        int asm = s.IndexOf(" asm ", call, StringComparison.Ordinal);
+        if (asm >= 0 && (callee < 0 || asm < callee)) return false;
+        return callee < 0 || !s.AsSpan(callee).StartsWith("@llvm.");
     }
 
     // ── Debug information ───────────────────────────────────────────────────
@@ -1354,9 +1380,17 @@ public sealed partial class FunctionGen
     /// another file than the frame's names the routine's own declaration instead.
     private void TraceAt(Pos callPos)
     {
-        if (!_traced || _traceMuted) return;
+        if (!_traced) return;
         var at = _lineSource is { } source && source.File == FramePlace.File ? source : callPos;
         if (at.File != FramePlace.File) at = FramePlace;
+        if (_c.TraceFromStack)
+        {
+            // The place goes on the call as its debug location. A shared stop's one call stands for every line that
+            // jumps to it: its column says the crash's place is the frame's.
+            _pendingCallPlace = _traceMuted ? at with { Col = TraceTable.PlaceColumn } : at;
+            return;
+        }
+        if (_traceMuted) return;
         if (_tracedAt is { } last && last.Block == _cur && last.Pos == at) return;
         _tracedAt = (_cur, at);
         Line(_c.TraceCall("trace_at", Compiler.TraceFrameValue, at.Line.ToString(CultureInfo.InvariantCulture),
@@ -1373,7 +1407,7 @@ public sealed partial class FunctionGen
         GiveBackStackPlaces(0, _memReturnPos ?? _decl.Pos);
         Mem(new MemoryRules.Exit(null, true, [], _memReturnPos ?? _decl.Pos));
         if (FrameCalls && _c.FrameCall("give_back_frame") is { } giveBack) Line(giveBack);
-        if (_traced) Line(_c.TraceCall("trace_pop"));
+        if (_traced && !_c.TraceFromStack) Line(_c.TraceCall("trace_pop"));
         last?.Invoke();
         Terminate(ret);
     }
