@@ -1,7 +1,8 @@
 # Tessera stdlib: how a crash stops a program without an operating system
 #
 # The Crash service reports a crash, then stops the program (Crash.te). With an operating system it exits with status
-# 82. Without one the core stops in the way its architecture has (Unhosted's stop_core).
+# 82. Without one the core stops in the way its architecture has (Unhosted's stop_core). On a board whose file names a
+# serial port (`[devices] serial`), a crash with no reporting routine in the slot is reported on that port.
 
 module System
 
@@ -12,3 +13,84 @@ import Unhosted
 @noreturn
 common routine Crash.stop() -> None
     stop_core()
+
+### The board's serial port, where the link script puts its registers (`__serial_base`, from the board file).
+@external("c")
+@symbol("__serial_base")
+@target(os: "none", serial: "pl011")
+global SERIAL_REGISTERS: &Byte
+
+### The default report on a board with a serial port: `tessera: <name>: <message>`, the place on a second line, the
+### crash trace, and for a failure where it was made, on the board's serial port, in the shape the hosted report has
+### on standard error. The Crash service calls it when its slot holds no routine, before the program's when_power_on
+### set one too.
+### :param name: The kind of failure, such as `IntegerOverflowError`.
+### :param message: What happened.
+### :param place: Where the crash happened, or hollow when it isn't known.
+@target(os: "none", serial: "pl011")
+@untraced
+secret routine default_crash_report(name: @[Byte], message: @CrashMessage,
+    place: @SourceLocation) -> None
+    port: &Pl011 <- .construct(base: SERIAL_REGISTERS.to[Addr]())
+    sink: &CrashSink <- CrashSink(state: port.to[Addr](), writer: write_to_serial.to[Callable]())
+
+    port.write("tessera: {name}: ")
+    message.write_into(sink)
+    if not place.is_hollow()
+        file: @[Byte] = place.file.peek()
+        line: U32 = place.line.peek()
+        port.write("\n  at {file}:{line}")
+        column: U32 = place.column.peek()
+        if not (column == 0)
+            port.write(":{column}")
+    port.write("\n")
+    write_trace_to_serial(port)
+    failure: U32 = message.failure.peek()
+    if failure == 0
+        return
+    write_failure_trace(seq: failure, out: port)
+    port.write("\n")
+    return
+
+### Hands a piece of a crash's message to the serial port at `state`.
+### :param state: The Pl011.
+### :param data: The first byte.
+### :param count: The number of bytes.
+@target(os: "none", serial: "pl011")
+@untraced
+secret routine write_to_serial(state: Addr, data: @Byte, count: U64) -> None
+    port: @Pl011 = state.to[@Pl011]()
+    port.write_bytes(data, count)
+    return
+
+### Writes the crash trace to the serial port, most recent frame first, as the hosted report does: `Stack trace:`,
+### then `  0: at <routine> (<file>:<line>:<column>)` per frame, and `  ... (<n> frames total)` past the frames the
+### trace keeps. Nothing for an empty trace (an untraced build).
+### :param port: The serial port.
+@target(os: "none", serial: "pl011")
+@untraced
+secret routine write_trace_to_serial(port: @Pl011) -> None
+    depth: U64 = trace_depth()
+    shown: U64 = depth.min(TRACE_CAPACITY)
+
+    if depth == 0
+        return
+    port.write("Stack trace:\n")
+
+    each back in 0 til shown
+        at: TraceFrame = trace_frame(back)
+        name: @[Byte] = at.name.getview()
+        file: @[Byte] = at.file.getview()
+        line: U32 = at.line
+        if line == 0
+            port.write("  {back}: at {name} ({file})\n")
+        else
+            column: U32 = at.column
+            if column == 0
+                port.write("  {back}: at {name} ({file}:{line})\n")
+            else
+                port.write("  {back}: at {name} ({file}:{line}:{column})\n")
+    then
+        if depth > TRACE_CAPACITY
+            port.write("  ... ({depth} frames total)\n")
+        return

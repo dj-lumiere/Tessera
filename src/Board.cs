@@ -22,13 +22,16 @@ namespace Tessera;
 /// ram = { start = 0x0, size = "948mib" }  # the RAM the program uses
 /// ```
 ///
-/// A board with flash writes `flash = { start = 0x08000000, size = "1mib" }` in place of `image`. Sizes are integers
+/// A board with flash writes `flash = { start = 0x08000000, size = "1mib" }` in place of `image`. `[devices]` names the
+/// board's real-time clock (`rtc = { kind = "pl031", base = 0x09010000 }`) and its serial port (`serial = { kind =
+/// "pl011", base = 0x09000000 }`, where a crash is reported when the program puts no reporting routine in the Crash
+/// service's slot). Sizes are integers
 /// or strings with a unit (`"64kib"`, `"4mib"`, `"1gib"`, `"512b"`, `"32kb"`). The map has these two regions only,
 /// and the builder writes the link script from it (LinkScript): the code, the constants, and the globals' first values
 /// go in flash (or the image), the globals at the start of RAM (or right after the image, which is in RAM), and the
 /// stack from the end of RAM down to the end of the globals.
 public sealed record Board(string Path, string Name, BuildTarget Target, Board.Region? Flash, ulong? Image, Board.Region Ram,
-    Board.Device? Rtc = null)
+    Board.Device? Rtc = null, Board.Device? Serial = null)
 {
     /// A region of memory: its first address and its size in bytes.
     /// A device of the board the standard library drives: its kind (`pl031`) and the address of its registers.
@@ -36,6 +39,10 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
 
     /// The kinds of real-time clock the standard library has a manager for (Unhosted's RtcManagerBy...).
     public static readonly string[] RtcKinds = ["pl031"];
+
+    /// The kinds of serial port the standard library writes to (Unhosted's Pl011): the port a crash is reported on when
+    /// the program puts no reporting routine in the Crash service's slot.
+    public static readonly string[] SerialKinds = ["pl011"];
 
     public readonly record struct Region(ulong Start, ulong Size)
     {
@@ -75,7 +82,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
     {
         ["board"] = ["name", "triple", "cpu", "features"],
         ["memory"] = ["flash", "image", "ram"],
-        ["devices"] = ["rtc"],
+        ["devices"] = ["rtc", "serial"],
     };
 
     /// Reads the board file `spec` names (Locate).
@@ -145,7 +152,18 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
             rtc = new Device(kind, Address(rt["base"], "rtc.base", path));
             target = target with { Rtc = kind };
         }
-        return new Board(path, name, target, flash, image, ram, rtc);
+        Device? serial = null;
+        if (root.TryGetValue("devices", out var ds) && ((TomlTable)ds).TryGetValue("serial", out var sv))
+        {
+            if (sv is not TomlTable st || st.Keys.Any(k => k is not ("kind" or "base")) || st["kind"] is not string kind
+                || !st.ContainsKey("base"))
+                throw new ManifestError(path, "[devices] serial is the board's serial port: serial = { kind = \"pl011\", base = 0x09000000 }");
+            if (!SerialKinds.Contains(kind))
+                throw new ManifestError(path, $"[devices] serial: the standard library writes to no '{kind}' serial port (kinds: {string.Join(", ", SerialKinds)})");
+            serial = new Device(kind, Address(st["base"], "serial.base", path));
+            target = target with { Serial = kind };
+        }
+        return new Board(path, name, target, flash, image, ram, rtc, serial);
     }
 
     /// A region written `{ start = ..., size = ... }`.
@@ -221,6 +239,8 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         l.AppendLine($"    __stack_top = 0x{ram.End & ~15UL:X};");
         // The real-time clock's registers, for Unhosted's Clock.now().
         if (Rtc is { } rtc) l.AppendLine($"    __rtc_base = 0x{rtc.Base:X};");
+        // The serial port's registers, where the default crash report goes.
+        if (Serial is { } serial) l.AppendLine($"    __serial_base = 0x{serial.Base:X};");
         l.AppendLine("    ASSERT(__stack_bottom < __stack_top, \"the globals fill the board's RAM, and the stack has no room\")");
         l.AppendLine("}");
         return l.ToString();

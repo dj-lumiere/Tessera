@@ -924,6 +924,9 @@ static class Cli
     /// How long a test program may run before it is stopped, in seconds.
     private const int TestSeconds = 10;
 
+    /// How long a test for a board whose program stops its core (`<name>.stops`) runs in the emulator, in seconds.
+    private const int StopSeconds = 3;
+
     /// How many times longer a test built with the race check may run. ThreadSanitizer watches every memory access
     /// and every lock, which makes a program several times slower.
     private const int RaceCheckSlowdown = 3;
@@ -1243,7 +1246,7 @@ static class Cli
             if (target.HasOs)
                 result = Exec(exe, captureOutput: true, input,
                     limitSeconds: race ? TestSeconds * RaceCheckSlowdown : TestSeconds);
-            else result = Emulate(emulator!, exe, input);
+            else result = Emulate(emulator!, exe, input, stops: File.Exists(stem + ".stops"));
             var (code, stdout, stderr) = result;
             int expectedCode = File.Exists(stem + ".exit") ? int.Parse(File.ReadAllText(stem + ".exit").Trim()) : 0;
             if (code != expectedCode) return $"exit code {code}, expected {expectedCode}{(stderr.Length > 0 ? $"; stderr: {stderr}" : "")}";
@@ -1293,10 +1296,13 @@ static class Cli
 
     /// Runs a test built for a board in its emulator (EmulatorFor). The program's serial port is the emulator's
     /// standard output, and the program ends the emulator itself (psci_power_off).
-    private static (int, string, string) Emulate(string[] emulator, string exe, byte[]? input)
+    /// A test with a `<name>.stops` file ends by stopping the core (a crash: Crash.stop waits there), which leaves the
+    /// emulator running: it is stopped after StopSeconds, and that is the test's end (exit code 0) instead of a failure.
+    private static (int, string, string) Emulate(string[] emulator, string exe, byte[]? input, bool stops = false)
     {
         var (code, stdout, stderr) = Exec(emulator[0], captureOutput: true, input, programArgs: [.. emulator[1..], exe],
-            limitSeconds: TestSeconds);
+            limitSeconds: stops ? StopSeconds : TestSeconds);
+        if (stops) (code, stderr) = code == -1 ? (0, "") : (code, $"the core was to stop, and the emulator ended with {code} instead; {stderr}");
         // The serial port writes \n, and QEMU's console may turn it into \r\n.
         return (code, stdout.Replace("\r\n", "\n"), stderr);
     }

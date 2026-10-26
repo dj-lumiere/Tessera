@@ -422,6 +422,11 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     /// without one.
     public string? Rtc { get; init; }
 
+    /// The kind of the board's serial port (`pl011`), from the board file's `[devices] serial`, or null when the board
+    /// names none. `@target(serial: "pl011")` keeps a declaration only for such a board, `@target(serial: "none")` only
+    /// without one.
+    public string? Serial { get; init; }
+
     /// `--feature`: features to add (`+name`) or remove (`-name`) on top of the CPU's.
     public IReadOnlyList<string> Features { get; init; } = [];
 
@@ -499,7 +504,8 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         "abi" => Abi == value,
         "size" => Size.ToString(CultureInfo.InvariantCulture) == value,
         "rtc" => (Rtc ?? "none") == value,
-        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size, rtc)"),
+        "serial" => (Serial ?? "none") == value,
+        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size, rtc, serial)"),
     };
 }
 

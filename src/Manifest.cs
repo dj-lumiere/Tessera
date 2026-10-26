@@ -190,7 +190,7 @@ public sealed record Manifest(
         if (board is not null && triple.LlvmTriple != board.Target.LlvmTriple)
             throw new ManifestError(path, $"[target] triple is {triple.Arch}-{triple.Os}-{triple.Abi}, and the board {board.Name} " +
                 $"is {board.Target.Arch}-{board.Target.Os}-{board.Target.Abi}: leave triple out, the board gives it");
-        if (board is not null) triple = triple with { Cpu = board.Target.Cpu, Features = board.Target.Features, Rtc = board.Target.Rtc };
+        if (board is not null) triple = triple with { Cpu = board.Target.Cpu, Features = board.Target.Features, Rtc = board.Target.Rtc, Serial = board.Target.Serial };
         if (board is null && !triple.HasOs)
             throw new ManifestError(path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
                 "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Tessera's) " +

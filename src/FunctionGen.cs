@@ -59,6 +59,10 @@ public sealed partial class FunctionGen
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
     private bool? _memoryReady;
+
+    /// In a program's `when_power_on` without an operating system: whether it puts a routine in the Crash service's slot
+    /// (Crash.report_with). Null in any other routine.
+    private bool? _crashSlotSet;
     private LBlock _cur = null!;
 
     /// The block of the routine being emitted (`entry`, or a named block): the scope IR names and the lints speak of.
@@ -976,6 +980,7 @@ public sealed partial class FunctionGen
         // readies it at all: nothing else zeroes .bss or copies .data.
         bool bootEntry = !_decl.IsLibrary && _decl is { Owner: null, Name: Compiler.WhenPowerOnName } && !_c.Target.HasOs;
         _memoryReady = bootEntry ? false : null;
+        _crashSlotSet = bootEntry ? false : null;
         try
         {
             EmitRoutine();
@@ -983,6 +988,15 @@ public sealed partial class FunctionGen
                 throw Err(_decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
                     + "(Unhosted), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
+            // A board without a serial port has nowhere for the default report to go: the program says what a crash
+            // does, so a crash never stops without a word by accident.
+            if (_crashSlotSet == false && _c.Target.Serial is null)
+                throw Err(_decl.Pos,
+                    "this board names no serial port, so a crash has nowhere to be reported, and when_power_on puts no "
+                    + "reporting routine in the Crash service's slot: put one in after prepare_core(), "
+                    + "Crash.report_with(report.to[Callable]()) with a routine of yours that writes to a UART or blinks an LED, "
+                    + "or choose to stop without a report, Crash.report_with(stop_quietly.to[Callable]()). A board file "
+                    + "that names its serial port ([devices] serial) gets a report there by default");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
@@ -5161,6 +5175,8 @@ public sealed partial class FunctionGen
             && (ready is { Module: Compiler.UnhostedModule, Owner: null, Name: "prepare_core" }
                 || ready is { Module: Compiler.MemoryModule, Owner.Name: "GlobalManager", Name: "prepare" or "zero_bss" }))
             _memoryReady = true;
+        if (_crashSlotSet == false && plan.Decl is { IsLibrary: true, Module: Compiler.SystemModule, Owner.Name: "Crash", Name: "report_with" })
+            _crashSlotSet = true;
         // x86_64 without an operating system has no vector table the CpuEventManager points the CPU at.
         if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: Compiler.UnhostedModule, Owner.Name: "CpuEventManager" }
             && _c.Target is { Arch: "x86_64", HasOs: false })
