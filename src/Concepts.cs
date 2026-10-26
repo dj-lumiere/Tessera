@@ -211,7 +211,7 @@ public sealed partial class Compiler
             VerifyConformance(concept, args, conf);
             return null;
         }
-        // A conformance to a concept that refines this one (`SlotIterator` refines `Iterator`) gives this one too. A
+        // A conformance to a concept that refines this one (`SlotEmitter` refines `Emitter`) gives this one too. A
         // concept that only groups others (`Numeric`) holds through its own: it counts here only where a conformance
         // to it is declared for these arguments, or it would hold through the very concept being asked.
         foreach (var refining in _conceptDecls.Values.SelectMany(d => d))
@@ -427,7 +427,7 @@ public sealed partial class Compiler
     }
 
     /// The arguments of `refining` for which it gives `concept[args]` directly (its `conform` clause names `concept`
-    /// over its own parameters, as `concept SlotIterator[TItem, TIter]` does with `conform Iterator[TItem, TIter]`), or
+    /// over its own parameters, as `concept SlotEmitter[TItem, TEmitter]` does with `conform Emitter[TItem, TEmitter]`), or
     /// null when it doesn't refine `concept` or its parameters aren't all fixed by `args`.
     private static List<DType>? RefinedArgs(ConceptDecl refining, ConceptDecl concept, List<DType> args)
     {

@@ -1,0 +1,63 @@
+# Tessera stdlib collection: ArrayEmitter[T, COUNT]
+#
+# Forward emitter over a fixed-size Array[T, COUNT] held behind a pointer.
+# The count N is computed once at construction via sizeof division and stored
+# in the record so emit() never needs generic arithmetic.
+#
+# Satisfies concept SlotEmitter[T, ArrayEmitter[T, COUNT]] (and so Emitter).
+
+module System
+
+### A forward emitter over an {Array[T, COUNT]} held behind a pointer. The count `COUNT` is stored once at construction, and the array must outlive the emitter.
+### :typeparam T: The element type.
+### :typeparam COUNT: The number of elements.
+record ArrayEmitter[T, COUNT]
+obeys SlotEmitter[T, ArrayEmitter[T, COUNT]]
+needs T: typename, COUNT: U64
+    data: @T  # bitcast of the original @Array[T, COUNT]
+    index: U64
+    count: U64  # = COUNT, resolved at monomorphisation
+
+### Creates an emitter positioned before the first element of `arr`.
+### :param arr: The array to walk.
+### :returns: A new emitter at index `0`.
+common routine ArrayEmitter[T, COUNT].construct(arr: @Array[T, COUNT]) -> Me
+needs T: typename, COUNT: U64
+    data: @T = bitcast[@Array[T, COUNT], @T](arr)
+    emitter: Me = Me(data: data, index: 0, count: COUNT)
+    return emitter
+
+### An emitter over the array, at its first element: `e: &ArrayEmitter[T, COUNT] <- array.emitter()`, then `each x in e`.
+### :returns: A new {ArrayEmitter[T, COUNT]} over `me`.
+routine @Array[T, COUNT].emitter() -> ArrayEmitter[T, COUNT]
+needs T: typename, COUNT: U64
+    emitter: ArrayEmitter[T, COUNT] = ArrayEmitter[T, COUNT].construct(me)
+    return emitter
+
+### Yields the next element and advances the emitter.
+### :returns: The next element, in index order.
+### :throws: Throws `AbsentValueError` after the last element has been yielded.
+failable routine @ArrayEmitter[T, COUNT].emit() -> T
+needs T: typename, COUNT: U64
+    index: U64 = me.index.peek()
+
+    count: U64 = me.count.peek()
+    if index >= count
+        throw AbsentValueError()
+    data: @T = me.data.peek()
+    value: T = data.stride(index).peek()
+    me.index.poke(index + 1)
+    return value
+
+### Hands out the next element's slot and advances the emitter.
+### :returns: The address of the next element, in index order.
+### :throws: Throws `AbsentValueError` after the last element has been handed out.
+failable routine @ArrayEmitter[T, COUNT].next() -> @T
+needs T: typename, COUNT: U64
+    index: U64 = me.index.peek()
+
+    if index >= me.count.peek()
+        throw AbsentValueError()
+    me.index.poke(index + 1)
+    element: @T = me.data.peek().stride(index)
+    return element

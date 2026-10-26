@@ -1,0 +1,45 @@
+# Tessera stdlib: BytesCharsEmitter
+#
+# Forward emitter over the characters (Char) of a UTF-8 @[Byte].
+# Advances by a variable number of bytes per step via utf8_decode.
+# emit() throws AbsentValueError after the last character.
+# A malformed byte sequence yields U+FFFD (the replacement character) and
+# advances past the offending byte, so iteration always terminates.
+#
+# Satisfies concept Emitter[Char, BytesCharsEmitter].
+
+module System/Text
+
+### Emitter over the characters (`Char`) of a UTF-8 {@[Byte]}. It satisfies `Emitter[Char, BytesCharsEmitter]`. A malformed sequence yields U+FFFD and skips one byte, so iteration always ends.
+record BytesCharsEmitter
+obeys Emitter[Char, BytesCharsEmitter]
+    str: @[Byte]
+    index: U64
+
+### Starts an emitter at the first byte of `str`.
+### :param str: The view to iterate. It is not copied, so its bytes must outlive the emitter.
+### :returns: An emitter positioned before the first element.
+common routine BytesCharsEmitter.construct(str: @[Byte]) -> Me
+    emitter: Me = Me(str: str, index: 0)
+    return emitter
+
+### Yields the next element and advances the emitter.
+### :returns: The next element, in order.
+### :throws: Throws `AbsentValueError` after the last element has been yielded.
+failable routine @BytesCharsEmitter.emit() -> Char
+    index: U64 = me.index.peek()
+    str: @[Byte] = me.str.peek()
+
+    str_len: U64 = str.count
+    if index >= str_len
+        throw AbsentValueError()
+    data: @Byte = str.data
+    decoded: Utf8Decoded = utf8_decode(bytes: data, pos: index, len: str.count)
+    ok: Bool = decoded.ok
+    # on a decode error next_pos == index, so advance by 1 to avoid an infinite loop
+    safe_next: U64 = index + 1
+    advance: U64 = when
+        ok => decoded.next_pos
+        else => safe_next
+    me.index.poke(advance)
+    return decoded.char

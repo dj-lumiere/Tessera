@@ -1,0 +1,54 @@
+# Tessera stdlib collection: SetEmitter[T]
+#
+# Walks Set[T] in insertion order. Visits each live entry in the entries
+# arrays, skipping entries marked dead by `remove`.
+#
+# Mutating the set during iteration produces undefined behaviour.
+#
+# Satisfies concept Emitter[T, SetEmitter[T]].
+
+module Collections
+
+### An emitter over a {Set[T]} in insertion order. Removed elements are skipped. Changing the set while iterating is undefined behavior.
+### :typeparam T: The element type.
+record SetEmitter[T]
+obeys Emitter[T, SetEmitter[T]]
+needs T: typename, HashEquatable[T]
+    set: @Set[T]
+    index: U64
+
+### Creates an emitter positioned before the first element of `set`.
+### :param set: The set to walk.
+### :returns: A new emitter at the first entry.
+common routine SetEmitter[T].construct(set: @Set[T]) -> Me
+needs T: typename
+    emitter: Me = Me(set: set, index: 0)
+    return emitter
+
+### An emitter over the set, at its first element: `e: &SetEmitter[T] <- set.emitter()`, then `each x in e`.
+### :returns: A new {SetEmitter[T]} over `me`.
+routine @Set[T].emitter() -> SetEmitter[T]
+needs T: typename
+    emitter: SetEmitter[T] = SetEmitter[T].construct(me)
+    return emitter
+
+### Yields the next element and advances the emitter.
+### :returns: The next element, in insertion order.
+### :throws: Throws `AbsentValueError` after the last element has been yielded.
+failable routine @SetEmitter[T].emit() -> T
+needs T: typename
+    set: @Set[T] = me.set.peek()
+    count: U64 = set.entries_count.peek()
+
+    # Advance until we hit a live entry or exhaust the array.
+    # index >= count holds at once when the set is empty, so it returns None.
+    each index in me.index.peek() til count
+        entry_states: @U8 = set.entry_states.data.peek()
+        state: U8 = entry_states.stride(index).peek()
+        if state == 1
+            keys: @T = set.keys.data.peek()
+            key: T = keys.stride(index).peek()
+            me.index.poke(index + 1)
+            return key
+        continue
+    throw AbsentValueError()

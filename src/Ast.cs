@@ -334,7 +334,7 @@ public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, Lis
     /// or `throw` leaves it.
     public bool NeverEndsByItself => Kind == LoopKind.While && Cond is BoolLit { Value: true }
                                      || Kind == LoopKind.Until && Cond is BoolLit { Value: false };
-    /// `each x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
+    /// `each x in source`: the name each element is bound to, and what is walked (a range, or an emitter in memory).
     public string? Var { get; init; }
     /// `each k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.
     public TypeRef? VarType { get; init; }

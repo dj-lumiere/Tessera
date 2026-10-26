@@ -16,7 +16,7 @@ Run one with `dotnet run -- run examples/<name>.te`. Every program has a `<name>
 | [caesar](caesar.te) | `Byte` text, a stack buffer borrowed with `<-`, `@[Byte].construct` |
 | [insertion_sort](insertion_sort.te) | `Array[T, COUNT]` copied from a preset into a place, `getitem` / `setitem`, and `List[S64].sort` from the stdlib |
 | [brackets](brackets.te) | `List[T]` as a stack, a `choice` result, a `when` over every member, one `finish` block for every exit |
-| [word_count](word_count.te) | `Bytes` views, `Dict[Bytes, USize]` in insertion order, `DictIter` |
+| [word_count](word_count.te) | `Bytes` views, `Dict[Bytes, USize]` in insertion order, `DictEmitter` |
 | [temperature](temperature.te) | `B64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed_into` |
 
 Larger programs in [`tests/`](../tests) combine these: [Dijkstra](../tests/dijkstra.te), a

@@ -22,7 +22,8 @@ public static class OldSpellings
         "Atomic" => Renamed(name, "Unbroken[T] now"),
         "AtomicStorable" or "AtomicExchangeable" or "AtomicAddable" or "AtomicMaskable" or "AtomicFloatAddable" =>
             Renamed(name, "Unbroken" + name["Atomic".Length..] + " now"),
-        "CircularList" or "CircularListIter" => Renamed(name, "RotatableList" + name["CircularList".Length..] + " now"),
+        "CircularList" => Renamed(name, "RotatableList now"),
+        "CircularListIter" => Renamed(name, "RotatableListEmitter now"),
         // A manager with a way of its own is named for what it manages, then how: HeapManagerByC.
         "CHeapManager" => Renamed(name, "HeapManagerByC now"),
         "CheckedHeapManager" => Renamed(name, "HeapManagerByCheckedHeap now"),

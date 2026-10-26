@@ -1,0 +1,98 @@
+# Tessera stdlib collection: SortedDictEmitter[TKey, TValue]
+#
+# In-order emitter over SortedDict[TKey, TValue]. Yields KVPair[TKey, TValue] with keys in
+# ascending sorted order. It keeps the path from the root to the current node
+# on an inline stack, so a full traversal is O(n) and the emitter allocates
+# nothing.
+#
+# KVPair[TKey, TValue] is defined in option.te.
+#
+# Satisfies concept Emitter[KVPair[TKey, TValue], SortedDictEmitter[TKey, TValue]].
+
+module Collections
+
+### Every internal node has at least two children, so 2^64 entries fit in 64 levels.
+secret preset SORTED_DICT_ITER_DEPTH: U64 = 64
+
+### `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
+### left of that key has been walked already.
+record SortedDictEmitter[TKey, TValue]
+obeys Emitter[KVPair[TKey, TValue], SortedDictEmitter[TKey, TValue]]
+needs TKey: typename, TValue: typename, Comparable[TKey]
+    nodes: Array[@SortedDictNode[TKey, TValue], SORTED_DICT_ITER_DEPTH]
+    indices: Array[U64, SORTED_DICT_ITER_DEPTH]
+    depth: U64
+
+### Creates an emitter positioned before the smallest key, descending to the leftmost leaf.
+### :param map: The sorted dict to walk.
+### :returns: A new emitter, already positioned when the map is not empty.
+common routine SortedDictEmitter[TKey, TValue].construct(map: @SortedDict[TKey, TValue]) -> Me
+needs TKey: typename, TValue: typename
+    emitter: &Me <- .hollow()
+
+    root: @SortedDictNode[TKey, TValue] = map.root.peek()
+    empty: Bool = root.is_hollow()
+    emitter.depth.poke(0)
+    if not empty
+        emitter.push_leftmost(root)
+    first: Me = emitter.load()
+    return first
+
+### An emitter over the dict, at its smallest key: `e: &SortedDictEmitter[TKey, TValue] <- dict.emitter()`, then `each x in e`.
+### :returns: A new {SortedDictEmitter[TKey, TValue]} over `me`.
+routine @SortedDict[TKey, TValue].emitter() -> SortedDictEmitter[TKey, TValue]
+needs TKey: typename, TValue: typename
+    emitter: SortedDictEmitter[TKey, TValue] = SortedDictEmitter[TKey, TValue].construct(me)
+    return emitter
+
+### Pushes node and the first child of each level below it, down to a leaf.
+### :param node: The node to start from.
+secret routine @SortedDictEmitter[TKey, TValue].push_leftmost(node: @SortedDictNode[TKey, TValue]) -> None
+needs TKey: typename, TValue: typename
+    loop with current: @SortedDictNode[TKey, TValue] = node
+        depth2: U64 = me.depth.peek()
+        leaf2: Bool = current.leaf.peek()
+        me.nodes[depth2] = current
+        me.indices[depth2] = 0
+        me.depth.poke(depth2 + 1)
+        if leaf2
+            return
+        continue with current: current.children[0]
+
+### Steps to the next entry in ascending key order, climbing to a parent or descending to the next leaf as needed.
+### :returns: Where the next entry lives, smallest key first.
+### :absent: After the entry with the largest key.
+secret routine @SortedDictEmitter[TKey, TValue].next_spot() -> Maybe[SortedDictSpot[TKey, TValue]]
+needs TKey: typename, TValue: typename
+    loop
+        depth2: U64 = me.depth.peek()
+        if depth2 == 0
+            break
+        level: U64 = depth2 - 1
+        node: @SortedDictNode[TKey, TValue] = me.nodes[level]
+        index: U64 = me.indices[level]
+        count: U64 = node.count.peek()
+        if index < count
+            leaf: Bool = node.leaf.peek()
+            me.indices[level] = index + 1
+            if not leaf
+                right: @SortedDictNode[TKey, TValue] = node.children[index + 1]
+                me.push_leftmost(right)
+            return SortedDictSpot[TKey, TValue](node: node, index: index)
+        me.depth.poke(level)
+        continue
+    return None()
+
+### Yields the next element and advances the emitter.
+### :returns: The next element, smallest key first.
+### :throws: Throws `AbsentValueError` after the last element has been yielded.
+failable routine @SortedDictEmitter[TKey, TValue].emit() -> KVPair[TKey, TValue]
+needs TKey: typename, TValue: typename
+    when me.next_spot()
+        is SortedDictSpot[TKey, TValue] as spot =>
+            node: @SortedDictNode[TKey, TValue] = spot.node
+            pair: KVPair[TKey, TValue] = KVPair[TKey, TValue](
+                key: node.keys.getslot(spot.index).peek(),
+                value: node.values.getslot(spot.index).peek())
+            return pair
+        is None => throw AbsentValueError()

@@ -1,0 +1,96 @@
+# Tessera stdlib collection: SortedListEmitter[T]
+#
+# In-order emitter over SortedList[T]. Yields elements from index 0 to
+# count-1. It keeps the path from the root to the current leaf on an inline
+# stack, so a full traversal is O(n) and the emitter allocates nothing.
+#
+# Satisfies concept SlotEmitter[T, SortedListEmitter[T]] (and so Emitter).
+
+module Collections
+
+### Every internal node has at least two children, so 2^64 elements fit in 64 levels.
+secret preset SORTED_LIST_ITER_DEPTH: U64 = 64
+
+### `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the child being walked (internal) or
+### the next value to yield (leaf).
+record SortedListEmitter[T]
+obeys SlotEmitter[T, SortedListEmitter[T]]
+needs T: typename, Comparable[T]
+    nodes: Array[@SortedListNode[T], SORTED_LIST_ITER_DEPTH]
+    indices: Array[U64, SORTED_LIST_ITER_DEPTH]
+    depth: U64
+
+### Creates an emitter positioned before the smallest element, descending to the leftmost leaf.
+### :param list: The sorted list to walk.
+### :returns: A new emitter, already positioned when the list is not empty.
+common routine SortedListEmitter[T].construct(list: @SortedList[T]) -> Me
+needs T: typename
+    emitter: &Me <- .hollow()
+
+    root: @SortedListNode[T] = list.root.peek()
+    empty: Bool = root.is_hollow()
+    emitter.depth.poke(0)
+    if not empty
+        emitter.push_leftmost(root)
+    first: Me = emitter.load()
+    return first
+
+### An emitter over the list, at its smallest element: `e: &SortedListEmitter[T] <- list.emitter()`, then `each x in e`.
+### :returns: A new {SortedListEmitter[T]} over `me`.
+routine @SortedList[T].emitter() -> SortedListEmitter[T]
+needs T: typename
+    emitter: SortedListEmitter[T] = SortedListEmitter[T].construct(me)
+    return emitter
+
+### Pushes node and the first child of each level below it, down to a leaf.
+### :param node: The node to start from.
+secret routine @SortedListEmitter[T].push_leftmost(node: @SortedListNode[T]) -> None
+needs T: typename
+    loop with current: @SortedListNode[T] = node
+        depth2: U64 = me.depth.peek()
+        leaf2: Bool = current.leaf.peek()
+        me.nodes[depth2] = current
+        me.indices[depth2] = 0
+        me.depth.poke(depth2 + 1)
+        if leaf2
+            return
+        continue with current: current.children[0]
+
+### Hands out the next element's slot and advances the emitter.
+### :returns: The next element's address, smallest first.
+### :throws: Throws `AbsentValueError` after the last element has been handed out.
+failable routine @SortedListEmitter[T].next() -> @T
+needs T: typename
+    loop
+        depth2: U64 = me.depth.peek()
+        if depth2 == 0
+            break
+        level: U64 = depth2 - 1
+        node: @SortedListNode[T] = me.nodes[level]
+        index: U64 = me.indices[level]
+        if node.leaf.peek()
+            count: U64 = node.count.peek()
+            if index < count
+                me.indices[level] = index + 1
+                at: @T = node.values.getslot(index)
+                return at
+        else
+            # the child at `indices[level]` is done, so walk the next one, if there is one
+            index2: U64 = index + 1
+            count: U64 = node.count.peek()
+            if index2 < count
+                me.indices[level] = index2
+                me.push_leftmost(node.children[index2])
+                continue
+        me.depth.poke(level)
+        continue
+    throw AbsentValueError()
+
+### Yields the next element and advances the emitter.
+### :returns: The next element, smallest first.
+### :throws: Throws `AbsentValueError` after the last element has been yielded.
+failable routine @SortedListEmitter[T].emit() -> T
+needs T: typename
+    slot: @T = when check me.next()
+        is @T as at => at
+    return slot.peek()

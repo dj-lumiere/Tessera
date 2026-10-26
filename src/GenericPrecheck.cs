@@ -270,7 +270,7 @@ public sealed partial class Compiler
     };
 
     /// The type a concept's required routine is on, for one application of the concept: its first parameter for
-    /// `Me.name`, the parameter it names (`TIter.next`), or a fixed type (`Bytes.to_result[T]`).
+    /// `Me.name`, the parameter it names (`TEmitter.next`), or a fixed type (`Bytes.to_result[T]`).
     private DType? RequirementOwner(ConceptDecl concept, List<DType> args, RoutineDecl req)
     {
         var cenv = ConceptEnv(concept, args);
@@ -328,7 +328,7 @@ public sealed partial class Compiler
     public CompileError PrecheckNoMethod(ArchetypeType t, string method, string value, DType valueType, Pos pos)
     {
         var scope = _precheck!;
-        // A concept's routine on one of its own parameters (`Me.compare`, `TIter.next`), not on a fixed type.
+        // A concept's routine on one of its own parameters (`Me.compare`, `TEmitter.next`), not on a fixed type.
         bool OnParam(ConceptDecl c, RoutineDecl q) =>
             q.Name == method && q.Owner is { Args.Count: 0 } o && (o.Name == "Me" || c.TypeParams.Contains(o.Name));
         var providers = _conceptDecls.Values.SelectMany(g => g)
