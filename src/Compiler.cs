@@ -1407,18 +1407,6 @@ public sealed partial class Compiler
                 if (t.Args is not [TypeArgType value])
                     throw new CompileError(t.Pos, "Check takes the value's type: Check[T]");
                 return Crashing.Check(ResolveType(value.Type, env), []);
-            // `Optional[T]`, a `T?` whose T holds an entity, is the standard library's Maybe under the name that says so.
-            case "Optional" when t.Path is null or SystemModule && FindVariant(t.Name, env.File, t.Pos, t.Path) is null
-                                 && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
-            {
-                if (t.Args is not [TypeArgType held])
-                    throw new CompileError(t.Pos, "Optional takes the type it may hold: Optional[T], or T?");
-                var maybe = ResolveType(new TypeRef("Maybe", t.Args, t.Pos) { Path = SystemModule, Question = true }, env);
-                if (maybe is VariantType { Args: [var inner] } && !Entities.Holds(inner) && inner is not ArchetypeType)
-                    throw new CompileError(t.Pos, $"Optional[{inner.Name}] holds an entity or nothing, and {inner.Name} is a value: "
-                        + $"write Maybe[{inner.Name}], or {inner.Name}?");
-                return maybe;
-            }
             case "Crashables" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
                 throw new CompileError(t.Pos, "Crashables is what a check caught, named in a when arm: is Crashables as e");
         }
@@ -1465,13 +1453,7 @@ public sealed partial class Compiler
             var args = GenericArgs(v.TypeParams, v.Clauses, v.File, t.Args, env, $"variant '{v.Name}'", v.Name, t.Pos);
             // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
-            // `Maybe[E]` written with an entity E is `Optional[E]`: the name says the value holds an entity (or nothing).
-            if (v is { Name: "Maybe" } && v.Module == SystemModule && !t.Question && args is [var held] && Entities.Holds(held)
-                && t.Args is [TypeArgType { Type: var heldRef }] && heldRef.Known is null
-                && !(heldRef is { Args.Count: 0, Path: null } && env.Has(heldRef.Name)))
-                throw new CompileError(t.Pos, $"{held.Name} {(Entities.IsEntity(held) ? "is an entity" : "holds an entity")}, so a "
-                    + $"{held.Name} or nothing is an Optional: write Optional[{held.Name}], or {held.Name}?");
-            if (!(v is { Name: "Maybe" } && v.Module == SystemModule) && args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType branch)
+            if (!(v is { Name: "Optional" } && v.Module == SystemModule) && args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType branch)
                 throw new CompileError(t.Pos, OptionalStaysInFrame(branch, $"{v.Name}[...]")
                     + $": take the {branch.Leaves[0].Name} out with when first (is {branch.Leaves[0].Name} as x)");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
@@ -1975,8 +1957,8 @@ public sealed partial class Compiler
     }
 
     /// A variant's branch types. A type may be a branch once: two branches of one type (`Result[S64, S64]`, or
-    /// `Maybe[Unit]`, whose `T` is `Unit` too) couldn't be told apart, and neither can a branch that is a variant
-    /// holding another branch's type (`Maybe[Maybe[S64]]` has `Unit` on both levels).
+    /// `Optional[Unit]`, whose `T` is `Unit` too) couldn't be told apart, and neither can a branch that is a variant
+    /// holding another branch's type (`Optional[Optional[S64]]` has `Unit` on both levels).
     private List<DType> VariantBranches(VariantType v)
     {
         var env = new TypeEnv(v.Decl.File);
@@ -2174,7 +2156,7 @@ public sealed partial class Compiler
                 // The storage is words as wide as its alignment, so an optimized copy moves words, not bytes.
                 var (aligner, size, align) = VariantStorage(v);
                 long words = (size + align - 1) / align;
-                // A flagged Maybe is the flag and then the value itself: `{ i1, T }`, the storage field being the T.
+                // A flagged Optional is the flag and then the value itself: `{ i1, T }`, the storage field being the T.
                 string body = aligner is null
                     ? v.TagLlvm
                     : v.IsFlagged ? $"i1, [0 x {v.Leaves[0].Llvm}], {v.Leaves[0].Llvm}"

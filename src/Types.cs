@@ -293,7 +293,6 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Crashing.IsCheck(this) ? $"Check[{Args[0].Name}]"
-        : IsMaybe && Entities.Holds(Args[0]) ? $"Optional[{Args[0].Name}]"
         : Decl.IsAnonymous
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
@@ -307,22 +306,22 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     /// The tag: the branch type's ID in the low 32 bits.
     public static IntType Tag => IntType.U(64);
 
-    /// Whether this is the standard library's `Maybe[T]` (`T?`), written `Optional[T]` when T holds an entity.
-    public bool IsMaybe => Decl is { Name: "Maybe", IsAnonymous: false } && Decl.Module == Compiler.SystemModule;
+    /// Whether this is the standard library's `Optional[T]` (`T?`).
+    public bool IsOptional => Decl is { Name: "Optional", IsAnonymous: false } && Decl.Module == Compiler.SystemModule;
 
     /// Whether the variant is laid out as a present flag and the value, `{ i1, [0 x T], T }` (the bytes of `{ i1, T }`):
-    /// a `Maybe[T]` whose `T` isn't a variant written inline. Its tag is 1 when it holds the T and 0 for None, so the
+    /// an `Optional[T]` whose `T` isn't a variant written inline. Its tag is 1 when it holds the T and 0 for None, so the
     /// all-zero value, `.hollow()`, is None.
-    public bool IsFlagged => IsMaybe && Leaves.Count == 2;
+    public bool IsFlagged => IsOptional && Leaves.Count == 2;
 
-    /// Whether this is an `Optional[E]`, a flagged Maybe whose `T` holds an entity: one address, `ptr`, of the place the
+    /// Whether this is an `Optional[E]`, a flagged Optional whose `T` holds an entity: one address, `ptr`, of the place the
     /// E lives in, null for None. The place is the frame of the routine whose call made the Optional.
     public bool IsAddressed => IsFlagged && Entities.Holds(Leaves[0]);
 
-    /// The tag's LLVM type: `i1` for a flagged Maybe, else `i64`.
+    /// The tag's LLVM type: `i1` for a flagged Optional, else `i64`.
     public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;
 
-    /// The tag of a value of `leaf`: 1 for a flagged Maybe's T and 0 for its None, else the leaf type's ID.
+    /// The tag of a value of `leaf`: 1 for a flagged Optional's T and 0 for its None, else the leaf type's ID.
     public uint LeafId(DType leaf) => IsFlagged ? (LeafIndex(leaf) == 0 ? 1u : 0u) : TypeId(leaf);
 
     private List<DType>? _leaves;

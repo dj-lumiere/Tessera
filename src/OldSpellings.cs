@@ -20,6 +20,7 @@ public static class OldSpellings
         "Box" => Renamed(name, "BorrowedCell[T] now (written &T)"),
         "Memory" => Renamed(name, "BorrowedSlice[T] now (written &[T])"),
         "Atomic" => Renamed(name, "Unbroken[T] now"),
+        "Maybe" => Renamed(name, "Optional[T] now (written T?)"),
         "AtomicStorable" or "AtomicExchangeable" or "AtomicAddable" or "AtomicMaskable" or "AtomicFloatAddable" =>
             Renamed(name, "Unbroken" + name["Atomic".Length..] + " now"),
         "CircularList" => Renamed(name, "RotatableList now"),

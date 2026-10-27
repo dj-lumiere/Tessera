@@ -20,7 +20,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// `&T` or `&[T]`, the short form of the standard library's `BorrowedCell[T]` / `BorrowedSlice[T]`, as written.
     public bool Amp { get; init; }
 
-    /// `T?`, as written: the standard library's `Maybe[T]`, which is named `Optional[T]` when T holds an entity.
+    /// `T?`, as written: the standard library's `Optional[T]`, which is named `Optional[T]` when T holds an entity.
     public bool Question { get; init; }
 
     /// `failable Callable[(T,), U]`: a routine value that may fail, written as a parameter's type. The call that hands a

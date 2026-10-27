@@ -1198,15 +1198,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new TypeRef(TypeRef.UnionName, branches, first.Pos);
     }
 
-    /// A type atom with any `?` after it: `S64?` is `Maybe[S64]`, `Counter?` (an entity) `Optional[Counter]`, and
-    /// `@S64?` a Maybe of the pointer.
+    /// A type atom with any `?` after it: `S64?` is `Optional[S64]`, `Counter?` (an entity) `Optional[Counter]`, and
+    /// `@S64?` an Optional of the pointer.
     private TypeRef ParseOptionalAtom()
     {
         var atom = ParseTypeAtom();
         while (Is(TokenKind.Question))
         {
             Next();
-            atom = new TypeRef("Maybe", [new TypeArgType(atom)], atom.Pos) { Path = Compiler.SystemModule, Question = true };
+            atom = new TypeRef("Optional", [new TypeArgType(atom)], atom.Pos) { Path = Compiler.SystemModule, Question = true };
         }
         return atom;
     }
@@ -1749,7 +1749,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return new DestructureStmt(names, value, pos);
         }
 
-        // `try f(x)` as a line runs the call and lets a failure go: the Maybe it gives is left unread.
+        // `try f(x)` as a line runs the call and lets a failure go: the Optional it gives is left unread.
         if (RecoveryNext() && Cur.Text == "try")
         {
             var tried = ParseUnary();
@@ -2404,7 +2404,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (RecoveryNext())
         {
-            // `try f(x)` / `check f(x)`: the failure of the calls in the expression after it becomes a value (a Maybe or
+            // `try f(x)` / `check f(x)`: the failure of the calls in the expression after it becomes a value (an Optional or
             // a Check) instead of stopping the program. It takes the rest of the expression.
             var op = Next();
             if (IsIdent("if"))

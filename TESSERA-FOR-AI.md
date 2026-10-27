@@ -26,7 +26,7 @@ top to bottom with declarations seen everywhere, and the end of the file is its 
 STACK places back there, and every other place must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `System` and every module under it (always seen: the built-in types,
-`Maybe`, `Check`, `None`, `@[T]`, `BorrowedSlice`, `BorrowedCell`, the protocols, formatting, the memory managers, `HEAP`), and what
+`Optional`, `Check`, `None`, `@[T]`, `BorrowedSlice`, `BorrowedCell`, the protocols, formatting, the memory managers, `HEAP`), and what
 it imports, so a `List` needs `import Collections`, and `Console` / `ProcessManager` need `import Hosted`
 (the hosted side, the only one that calls libc). The standard library has two sides, and the build target keeps one:
 `Hosted` on a target with an operating system, `Unhosted` on one whose OS is `none` (the startup
@@ -56,7 +56,7 @@ Collections/Dict` names a type.
 The standard library's modules:
 
 - `System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Items`, `Slots`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
-  `Maybe`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
+  `Optional`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
   crash trace, and hashing.
 - `System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
   (`B16`, `BF16`, `B32`, `B64`, `B128`), plus `SoftFloat` (the compiler runtime without an FPU).
@@ -111,7 +111,7 @@ routine start() -> None
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns `None`, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
-  error it returns), `:absent:` (when a `Maybe` comes back `None`), `:note:`, and `:see:` as needed. No `;` in the
+  error it returns), `:absent:` (when an `Optional` comes back `None`), `:note:`, and `:see:` as needed. No `;` in the
   prose, facts only. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns on a routine
   without one, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
   missing `:returns:`, in every file except those under a `tests`, `playground`, `scratch`, or `generated` directory, and except
@@ -207,7 +207,7 @@ routine start() -> None
   memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
   `peek_volatile`, `fetch_add_unbroken`, ...), and only a `BorrowedCell[T]` reads and writes its own (`load` / `store`). A span
   turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
-  `@T`), `try view.getitem(i)` a `Maybe`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
+  `@T`), `try view.getitem(i)` an `Optional`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
   address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
   is a build error, write `xs.getslot(i).poke(v)`. `BorrowedCell[T]` (`&T`, `{at, manager}`) and `BorrowedSlice[T]` (`&[T]`, `{data, count,
   manager}`, `BorrowedSlice.te`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
@@ -393,7 +393,7 @@ routine start() -> None
   write there. The check follows values out of the routine:
   - A value read out of such a place carries what the place holds: `k.load()` of a `k: &Knot` whose field holds the
     address of its own other field is a value that reaches the frame slot `k`, and so is the name of a `when` arm
-    (`is @S64 as p` on a `Maybe[@S64]` holding a frame address) and the value of a value `when` whose arm gives one.
+    (`is @S64 as p` on an `Optional[@S64]` holding a frame address) and the value of a value `when` whose arm gives one.
   - A value that holds such a view (a place or entity the view was poked into, a record built with one, `R(held: l)`
     as well as `(held: l)`) carries it: returning it, storing it, or handing it to a routine that keeps it is an
     error. `drop q` hands `q` to its `destruct`, so a `destruct` that moves what `q` holds into a global is one.
@@ -698,7 +698,7 @@ routine start() -> None
   is written: the arms that fail leave, the one that succeeds gives its value:
 
   ```tessera
-  routine double_or_zero(item: Maybe[S64]) -> S64
+  routine double_or_zero(item: Optional[S64]) -> S64
       value: S64 = when item
           is S64 as value => value
           is None => return 0
@@ -780,7 +780,7 @@ routine start() -> None
 - Integer arithmetic is failable: `add`, `sub`, `mul`, `floordiv`, `mod`, `neg`, `abs`, `pow`, and `next_power_of_two`
   throw `IntegerOverflowError` (`floordiv` / `mod` by zero `DivisionByZeroError`, a negative exponent
   `NegativeExponentError`), so a bare `a + b` that overflows stops the program on its line and `try a + b` gives
-  `Maybe` (`None` on overflow). `try a + b` builds to the overflow intrinsic and a select, with no heap and no call:
+  `Optional` (`None` on overflow). `try a + b` builds to the overflow intrinsic and a select, with no heap and no call:
   a failure the standard library throws is noted for the crash report only when a `check` of a traced routine keeps
   it. A numeric `to[T]()` that can lose the value is failable the same way: it throws `IntegerOverflowError` when the
   value doesn't fit (a bare call stops, `try x.to[U8]()` gives `None`), builds to the range test and no heap, and a
@@ -1052,7 +1052,7 @@ routine start() -> None
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the emitters, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
-  back once (`line: &[Byte] <- Console.ask_line(HEAP)`, then `drop line`), and observe a `Maybe` or `Check` of one
+  back once (`line: &[Byte] <- Console.ask_line(HEAP)`, then `drop line`), and observe an `Optional` or `Check` of one
   with `when` (`when try Console.ask_line(manager)` then `is BorrowedSlice[Byte] as line => ...`). A BorrowedSlice lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -1090,7 +1090,7 @@ routine start() -> None
   (its own `throw`, or a bare call that fails) crashes there, even with `try` or `check` further up.
 - **The standard library's failures** are crashables of a few numbers at most: `IntegerOverflowError`,
   `DivisionByZeroError`, `NegativeExponentError`, `IndexOutOfBoundsError` (`index`, `count`), `AbsentValueError` (an
-  emitter past its end, an empty list's last element, unwrap of an empty Maybe), `KeyNotFoundError`,
+  emitter past its end, an empty list's last element, unwrap of an empty Optional), `KeyNotFoundError`,
   `NumericOverflowError`, `NumericDomainError` (`ilog2(0)`, `isqrt` of a negative, a NaN result), `UnacceptedValueError`
   (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
   channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
@@ -1102,7 +1102,7 @@ routine start() -> None
   service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
   and stops (status 82 with an OS). `throw` in a failable routine only gives the failure back to the caller. This
   holds inside a failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
-- **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Maybe[T]`, or `Optional[T]` for an entity, `None` on failure), `check f(x)`
+- **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Optional[T]`, `None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
   calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
   and the failures: `is NotFoundError as e` one crashable, `is FsError as e` a variant of crashables (the ones the
@@ -1409,16 +1409,16 @@ routine start() -> None
 
 - A variant lists TYPES, one per line (its branches), not named cases: `variant Expr / S64 / BinaryExpr / Empty`,
   each a type (`record BinaryExpr / left: S64 / right: S64`, `record Empty`). A value of the variant is a value of one
-  of its branch types. Several values go in a record of their own. `Maybe[T]` has branches `T` and `None`,
+  of its branch types. Several values go in a record of their own. `Optional[T]` has branches `T` and `None`,
   `Check[T]` has `T` and the crashables its check can give.
-- **`T?` is `Maybe[T]` or `Optional[T]`**, picked by `T`'s kind. For a `T` whose values hold nothing with a release
-  duty it is `Maybe[T]`, a value laid out as `{ i1, T }` (the present flag, then the value; `{ i1, [0 x T], T }` in
-  the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it is copied, a preset, a field of a record. For
-  an entity `T` (or one holding an entity) it is `Optional[T]`: one address (`ptr`) of the place the `T` lives in,
-  null for None, handed over with `steal`. Both are read and made as a variant (`m: S64? = 5`, `return None()`,
-  `when`, `is None`, `try`). Writing `Maybe[Counter]` with an entity is a build error that names
-  `Optional[Counter]` or `Counter?`, and `Optional[S64]` one that names `Maybe[S64]` or `S64?`. A `Maybe` of a variant
-  written inline (`Maybe[Circle | Square]`) keeps the tagged layout, since its flag can't say which branch.
+- **`T?` is `Optional[T]`**, the one named type whose kind follows what it holds: the builder lays it out by `T`'s
+  kind. For a `T` whose values hold nothing with a release duty it is a value laid out as `{ i1, T }` (the present
+  flag, then the value; `{ i1, [0 x T], T }` in the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it
+  is copied, a preset, a field of a record. For an entity `T` (or one holding an entity) it is one address (`ptr`) of
+  the place the `T` lives in, null for None, handed over with `steal`. Both are read and made as a variant
+  (`m: S64? = 5`, `return None()`, `when`, `is None`, `try`). `Maybe` is an unknown type whose error names
+  `Optional[T]` and `T?`. An `Optional` of a variant written inline (`Optional[Circle | Square]`) keeps the tagged
+  layout, since its flag can't say which branch.
 - **Where an Optional's entity lives.** In the frame of the routine whose call made the Optional, so no memory comes
   from a manager the code doesn't name. A routine that returns `T?` is given the place for the `T` by its caller as a
   hidden last parameter: `return x` moves the `T` there, `return None()` is null. `try f()` of a routine that returns
@@ -1430,14 +1430,14 @@ routine start() -> None
   memory from a manager (`<- f() from HEAP`), a `Callable` that returns one (and taking such a routine as a value),
   and storing one into a place again (`poke`, `store`: take the `T` out with `when` and keep it in a place of its
   own). A link that may be absent is an address, `next: @Node` (hollow when there is none) or `@Node?`.
-- Two branches of the same type are a build error (a `variant` listing `S64` twice, `Maybe[None]`), and so is a branch that is a
-  variant holding another branch's type (`Maybe[Maybe[S64]]`): wrap one in a record of its own. A branch that is `None` is the
+- Two branches of the same type are a build error (a `variant` listing `S64` twice, `Optional[None]`), and so is a branch that is a
+  variant holding another branch's type (`Optional[Optional[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).
 - Build: a value of a branch type goes where the variant is expected as it is, one level deep: `e: Expr = 5`,
-  `e: Expr = Empty()`, `m: Maybe[S64] = 5`, `return value`, `return None()`, a carried
+  `e: Expr = Empty()`, `m: Optional[S64] = 5`, `return value`, `return None()`, a carried
   value, a routine argument. An untyped literal goes in through the one branch that takes it (an integer literal
   never picks a choice branch). Two levels of NAMED variants don't widen by themselves (`Exited` -> `ExitStatus` ->
-  `Maybe[ExitStatus]`): bind the middle type first (`status: ExitStatus = Exited(code)`, then `return status`). A
+  `Optional[ExitStatus]`): bind the middle type first (`status: ExitStatus = Exited(code)`, then `return status`). A
   value `when` widens each arm: `n` in one arm, `None()` in another.
 - Read with `when e`: `is S64 as n => use(n)` names the value for that arm's line or lines, `is Empty =>` observes
   without naming, `is S64, is BinaryExpr => ...` puts
@@ -1452,13 +1452,13 @@ routine start() -> None
   loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
   an error, write `define Choice = A | B`, then `@Choice`. Parentheses around a lone union are an error too.
   `define Shape = Circle | Square` names one.
-- An inline variant is NOT a layer: as a branch of another variant (`Maybe[Circle | Square]`) its branches
-  are that variant's own. So `return Square(side: 2.0)` goes into that Maybe directly, `is Circle as c` observes
-  it on the Maybe directly, and `is Circle | Square as shape` observes several and names the value as the union. A
+- An inline variant is NOT a layer: as a branch of another variant (`Optional[Circle | Square]`) its branches
+  are that variant's own. So `return Square(side: 2.0)` goes into that Optional directly, `is Circle as c` observes
+  it on the Optional directly, and `is Circle | Square as shape` observes several and names the value as the union. A
   value of `A | B` goes into `A | B | C` (or any variant whose branches include A and B) by copying tag and storage.
-  Overlap rules apply to the flattened branches (`S64 | Maybe[S64]` is an error, `S64` on both levels), reported
+  Overlap rules apply to the flattened branches (`S64 | Optional[S64]` is an error, `S64` on both levels), reported
   where the type is written. They derive the five protocols like any variant, each when every branch has it.
-- Layout (every variant but a flagged `Maybe`, above) `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
+- Layout (every variant but a flagged `Optional`, above) `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
   identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
   (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
@@ -1467,7 +1467,7 @@ routine start() -> None
 - A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a flags type
   all but Comparable, a variant each only when every branch has it), skipping what it declares itself; `@derive(...)` lists exactly what
   to derive, `@derive()` nothing. A record derives only what it lists. A variant writes the held value as that value
-  writes itself (a `Maybe[S64]` holding 4 prints `4`, an empty one `None`, diagnosed `None()`), a pointer branch its
+  writes itself (an `Optional[S64]` holding 4 prints `4`, an empty one `None`, diagnosed `None()`), a pointer branch its
   address. eq: same branch and equal values. compare: by branch in declaration order, then by value. hash: the
   branch position combined with the value's hash.
 
@@ -1495,7 +1495,7 @@ routine sum_list(list: @List[S64]) -> S64
     iter: &ListEmitter[S64] <- list.emitter()
 
     loop with total: S64 = 0
-        item: Maybe[S64] = try iter.emit()
+        item: Optional[S64] = try iter.emit()
         when item
             is S64 as value => continue with total: total + value
             is None => return total
@@ -1569,7 +1569,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   obeys `Parsable[T]`, which asks for one routine, `failable routine @[Byte].to[T]() -> T`. Numbers from standard
   input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer goes
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
-  `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
+  `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Optional[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view: `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
@@ -1587,7 +1587,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
-- `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `None()`, `[1, 2]`; a variant as the value it holds diagnoses itself (`3` for a `Maybe[S64]` holding 3). A record or
+- `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `None()`, `[1, 2]`; a variant as the value it holds diagnoses itself (`3` for an `Optional[S64]` holding 3). A record or
   record gets routines written for it with `@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `obeys` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
@@ -1624,9 +1624,9 @@ span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
 `remove`, and `remove_entry` are failable, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
-gives `Maybe[T]`. `setitem` and `swap` still crash. Each insertion and `reserve` is failable: it throws
+gives `Optional[T]`. `setitem` and `swap` still crash. Each insertion and `reserve` is failable: it throws
 `OutOfMemoryError` when the memory can't grow (a size in bytes past U64 included) and leaves the collection unchanged, so a bare call stops there and
-`check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Maybe`.
+`check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Optional`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
 `Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
 `getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
@@ -1822,7 +1822,7 @@ several tickets at once.
 form for state a program shares between threads (thread work changes shared memory only through an exclusive access
 or an Unbroken, above) (`hits: Unbroken[U64]` in a shared record, `Unbroken[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Unbroken[T]`, never copies. Routines: `peek` / `poke`,
-`swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
+`swap`, `compare_exchange` / `compare_exchange_weak` (`Optional[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
 `fetch_fsub` (B32, B64). The memory order is a type argument, a member of the choice `MemoryOrder` (`RELAXED`,
 `ACQUIRE`, `RELEASE`, `ACQ_REL`, `SEQ_CST`, bare or with the choice): `hits.fetch_add[RELAXED](1)`,
@@ -2213,8 +2213,8 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   and one whose failure the caller may handle is failable and throws a crashable (`OsFileManager.open_read`,
   `to[T]`, `Console.ask[T]`, `BorrowedSlice[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
   no `_result` names and no `_checked` twins (no `to_checked[T]` either): `try` in front of a
-  failable call gives the `Maybe`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
-  `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
+  failable call gives the `Optional`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
+  `Optional` just to say it failed. An `Optional` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
   `OsEnvironment.variable` (not set), `Bool.then_present`, and `compare_exchange` (`None` when it wrote, the value
   found when not). An emitter's `emit` is failable and throws `AbsentValueError` past the end.
 
@@ -2240,7 +2240,7 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 `.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `BorrowedSlice`, a `BorrowedCell`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
 `.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a pointer to nothing is
+numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Optional[T]` is empty as `None()`, and a pointer to nothing is
 `.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
 no `null`: writing it is a build error that asks for `.hollow()`. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
 an argument to a generic routine), name it, `PointedCell[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
@@ -2289,14 +2289,14 @@ symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `AccessManager.try_take`,
 `wait_for`). A `Bool` value in a body reads as a predicate too, but needs no prefix (`done`, `found`).
 
-**Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `NotFoundError`), with acronyms written as
+**Name case.** Types, protocols, and modules are `PascalCase` (`Optional`, `NotFoundError`), with acronyms written as
 words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice and flags members, presets, globals, and
 value generic parameters are `UPPER_SNAKE_CASE` (`FileKind.DIRECTORY`, `U64.MAX`, `NODE_KEYS`), and the build rejects a
 choice or flags member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
 decide what `[...]` after it is. Before `(` it is a routine's or type's arguments, alone it is an index, and before
 `.member` (`Items[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
 
-**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
+**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Optional[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
 PascalCase: `Dict[TKey, TValue]`, `Emitter[TItem, TEmitter]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver

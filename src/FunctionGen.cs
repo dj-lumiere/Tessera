@@ -3002,10 +3002,10 @@ public sealed partial class FunctionGen
     private string CopyVariant(VariantType from, string slot, VariantType to)
     {
         _c.EnsureTypeDefined(to);
-        // A flagged Maybe's tag is its own flag, not a type ID: it moves only into the same type.
+        // A flagged Optional's tag is its own flag, not a type ID: it moves only into the same type.
         if (from.IsFlagged || to.IsFlagged)
             return from.Equals(to) ? EmitTmp($"load {to.Llvm}, ptr {slot}")
-                : throw Err(_decl.Pos, $"{from} doesn't move into {to}: a Maybe's flag isn't another variant's tag");
+                : throw Err(_decl.Pos, $"{from} doesn't move into {to}: an Optional's flag isn't another variant's tag");
         string tag = EmitTmp($"getelementptr inbounds {from.Llvm}, ptr {slot}, i32 0, i32 0");
         string id = EmitTmp($"load {VariantType.Tag.Llvm}, ptr {tag}");
         string tagged = EmitTmp($"insertvalue {to.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
@@ -5043,7 +5043,7 @@ public sealed partial class FunctionGen
             string plain = m.Name[..^"_checked".Length];
             string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{plain}' is "
-                + $"failable: write try in front of the call for a Maybe, {example}");
+                + $"failable: write try in front of the call for an Optional, {example}");
         }
         if (m.Name == "setitem" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } spanned } ? spanned : rt, out _))
             throw Err(m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");

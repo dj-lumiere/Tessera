@@ -25,7 +25,7 @@ the lines: a value is bound once and never reassigned, a load and a store are ca
 `p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
 ```tessera
-routine two_sum(list: @[S32], target: S32) -> Maybe[(U64, U64)]
+routine two_sum(list: @[S32], target: S32) -> Optional[(U64, U64)]
     each left_idx in 0 til list.count
         each right_idx in left_idx + 1 til list.count
             left_val: S32 = list.getitem(left_idx)
@@ -36,7 +36,7 @@ routine two_sum(list: @[S32], target: S32) -> Maybe[(U64, U64)]
 ```
 
 Two `each` loops make the O(n²) search, and the numbers come as a span, `@[S32]`: the address and the count of a run
-of values, carried together, so `getitem` checks each position against the count. The answer is a `Maybe` of a
+of values, carried together, so `getitem` checks each position against the count. The answer is an `Optional` of a
 tuple: the tuple itself, built with `(...)` and typed by the return type, or `None()` when there is none.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
@@ -84,7 +84,7 @@ holds no pointer, `<- .uninit()` (nothing written until a routine fills it).
 `&[T]`, from STACK or from a memory manager) and hand out its view. A place from STACK is given back by the builder at
 every exit of its body; one from another manager is given back with `drop`, and the build checks that it is.
 
-**Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the value, and
+**Sum types are variants.** `Optional` and `Result` are variants, read with a `when` whose arms bind the value, and
 `A | B` is a variant written inline, with no declaration. Choices print, compare, and hash without being asked, and a
 variant prints, tests equality, and hashes when every branch does. Tuples of two to four values
 (`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values, and a record names the parts

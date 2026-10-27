@@ -448,7 +448,7 @@ public sealed partial class FunctionGen
 
     // ── try and check ───────────────────────────────────────────────────────
 
-    /// The type `try x` / `check x` gives, as far as it can be told before the calls are built: a `Maybe` of x's type,
+    /// The type `try x` / `check x` gives, as far as it can be told before the calls are built: an `Optional` of x's type,
     /// or a `Check` of it whose list of crashables the build fills in.
     private DType? InferRecover(UnaryExpr u)
     {
@@ -544,10 +544,10 @@ public sealed partial class FunctionGen
     }
 
     private DType MaybeOf(DType value, Pos pos) =>
-        _c.ResolveType(new TypeRef("Maybe", [new TypeArgType(new TypeRef("$value", [], pos) { Known = value })], pos)
+        _c.ResolveType(new TypeRef("Optional", [new TypeArgType(new TypeRef("$value", [], pos) { Known = value })], pos)
             { Path = Compiler.SystemModule }, _env);
 
-    /// `try x`: a `Maybe` of x's value, `None` when a call in x failed. `check x`: a `Check` of x's value, holding the
+    /// `try x`: an `Optional` of x's value, `None` when a call in x failed. `check x`: a `Check` of x's value, holding the
     /// crashable when a call in x failed. The calls run left to right, and the first failure ends x.
     private Val EvalRecover(UnaryExpr u, DType? expected)
     {
@@ -555,7 +555,7 @@ public sealed partial class FunctionGen
         DType? wanted = expected switch
         {
             VariantType c when isCheck && Crashing.IsCheck(c) => Crashing.ValueOf(c),
-            VariantType { Decl.Name: "Maybe", Args: [var m] } when !isCheck => m,
+            VariantType { Decl.Name: "Optional", Args: [var m] } when !isCheck => m,
             _ => null,
         };
         if (wanted is RecordType { Decl.Name: "None" } && wanted is RecordType none && none.Decl.Module == Compiler.SystemModule

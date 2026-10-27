@@ -9,10 +9,10 @@ Run one with `dotnet run -- run examples/<name>.te`. Every program has a `<name>
 | [hello](hello.te) | `start` (the entry point), `block entry()`, printing a line with `Out.write`, and standard output as a Writer pointer: `out: @Out = Out.writer()` |
 | [fizzbuzz](fizzbuzz.te) | A counted loop as a block that jumps to itself, `when`, and what a block can see |
 | [gcd](gcd.te) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
-| [fibonacci](fibonacci.te) | Overflow: a bare `add` stops the program, `try a + b` gives a `Maybe` |
+| [fibonacci](fibonacci.te) | Overflow: a bare `add` stops the program, `try a + b` gives an `Optional` |
 | [collatz](collatz.te) | A nested loop split into two routines, best-so-far carried in block parameters |
 | [sieve](sieve.te) | A place borrowed with `<-`, memory from a manager in a `&[Bool]` given back with `drop`, its values lent to a routine, `getitem` / `getslot`, `zeroinit`, `stride` with `peek` / `poke` |
-| [binary_search](binary_search.te) | A preset in memory (`preset SORTED: &[S64] <- [...]`), returning `Maybe[U64]`, a three-way `when` |
+| [binary_search](binary_search.te) | A preset in memory (`preset SORTED: &[S64] <- [...]`), returning `Optional[U64]`, a three-way `when` |
 | [caesar](caesar.te) | `Byte` text, a stack buffer borrowed with `<-`, `@[Byte].construct` |
 | [insertion_sort](insertion_sort.te) | `Array[T, COUNT]` copied from a preset into a place, `getitem` / `setitem`, and `List[S64].sort` from the stdlib |
 | [brackets](brackets.te) | `List[T]` as a stack, a `choice` result, a `when` over every member, one `finish` block for every exit |

@@ -1166,6 +1166,19 @@ public static partial class LanguageServer
                     if (onLine.FirstOrDefault(x => x.Text == segment && x.Pos.Col >= t.Pos.Col) is { } p)
                         _kinds.TryAdd((p.Pos.Line, p.Pos.Col), "namespace");
             if (TypeKind(t) is { } kind) Mark(t.Pos, t.Name, kind, TypeHover(t));
+            // `Optional` is the one named type whose kind follows what it holds: `Optional[Counter]` and the `?` of
+            // `Counter?` read as an entity, `S64?` as a record.
+            if (t is { Name: "Optional", Args: [TypeArgType { Type: var held }] } && TypeKind(held) is { } heldKind)
+            {
+                if (t.Question)
+                {
+                    if (tokens.FirstOrDefault(x => x.Kind == TokenKind.Question && x.Pos.Line == t.Pos.Line
+                            && x.Pos.Col > held.Pos.Col) is { } mark)
+                        _kinds[(mark.Pos.Line, mark.Pos.Col)] = heldKind;
+                }
+                else if (NameAt(t.Pos, t.Name) is { } name)
+                    _kinds[(name.Pos.Line, name.Pos.Col)] = heldKind;
+            }
             foreach (var a in t.Args)
                 switch (a)
                 {
