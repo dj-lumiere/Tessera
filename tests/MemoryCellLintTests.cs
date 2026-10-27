@@ -67,6 +67,33 @@ public class MemoryCellLintTests
         Assert.Empty(warnings);
     }
 
+    [Fact]
+    public void CharArrayPlacePointsToGetview()
+    {
+        var warnings = Lint("""
+            routine start() -> None
+                placed: &Items[Char, 2] <- "hi"
+                Console.show("{placed}")
+                return
+            """);
+        string warning = Assert.Single(warnings);
+        Assert.Contains("this shows the cell 'placed' itself (its address and manager): if you meant its value, write "
+            + "placed.load(), or placed.getview() for its text", warning);
+    }
+
+    [Fact]
+    public void CharViewsAndCharListsDontWarn()
+    {
+        var warnings = Lint("""
+            routine start() -> None
+                view: @[Char] = "hi"
+                stacked: &[Char] <- "hi"
+                Console.show("{view} {stacked} {stacked.getview()}")
+                return
+            """);
+        Assert.Empty(warnings);
+    }
+
     private static List<string> Lint(string source)
     {
         var decls = Parse("import Collections\nimport Hosted\n\n" + source);

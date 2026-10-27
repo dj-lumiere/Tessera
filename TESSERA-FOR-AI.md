@@ -1057,6 +1057,12 @@ routine start() -> None
   a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
+- A string literal is also an array literal whose count the build knows: its UTF-8 bytes where `Items[Byte, N]` or a
+  STACK `&[Byte]` goes (`"루미"` is 6), its code points where `Items[Char, N]`, a STACK `&[Char]` or `@[Char]` goes
+  (`"루미"` is 2). `@[Byte]` and `@[Char]` view the program image (no copy), `Items` and STACK `&[...]` are copies the
+  routine can change (`copy: &[Byte] <- "Lumi"`). A count that doesn't match is a build error that gives both the byte
+  and the character count. A `\x` byte above 7F is a build error where Chars go. Text processing by character in any
+  language (regular expressions and the like) goes through `@[Char]` routines.
 - String literals are a `@[Byte]` where one is expected, `CStrView` / `CWStrView` (terminated C text) where one of those
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStrView`. A `CStrView` is
   `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStrView` over `@CWChar`, so
@@ -1579,9 +1585,10 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
   global or a preset in memory has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
   build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
-  sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getslice()` for a `&[Byte]`'s text), in `check`,
-  `build`, `run`, and `lint`; it is a warning, not an error. Two exceptions: `@[Byte]` is text and writes its bytes,
-  and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
+  sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getslice()` for a `&[Byte]`'s text, `.getview()`
+  for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `lint`; it is a warning,
+  not an error. Exceptions: `@[Byte]` and `@[Char]` are text (a `@[Char]` writes each character's UTF-8 straight into
+  the Writer, no memory taken), a `&[Char]` writes its list (`['h', 'i']`, like `Items[Char, N]`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
   the entity. `{view.to[Addr]()}` writes only the address (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived
   routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,

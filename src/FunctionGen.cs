@@ -2654,7 +2654,51 @@ public sealed partial class FunctionGen
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
             return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.Count.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
         }
+        // `@[Char]`: a view of the literal's code points, kept in the program image like its bytes.
+        if (IsCharSpan(expected))
+        {
+            var st = (RecordType)expected;
+            _c.EnsureTypeDefined(st);
+            var codePoints = CharsOf(s, expected);
+            string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {_c.CharArrayGlobal(codePoints)}, 0");
+            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.Count.Llvm} {codePoints.Count}, 1"), st);
+        }
+        // `Items[Byte, N]` and `Items[Char, N]`: the literal is the array literal of its bytes or its characters.
+        if (expected is ArrayType { IsSlots: false, Elem: IntType { Kind: IntKind.Byte or IntKind.Char } } items)
+        {
+            var literal = StringAsArray(s, items.Elem, items.Count, expected);
+            return EvalElementsLit(literal, expected);
+        }
         throw Mismatch(s.Pos, expected, "a string literal");
+    }
+
+    /// Whether `t` is the standard library's `@[Char]`.
+    private static bool IsCharSpan(DType t) =>
+        t is RecordType { Decl.Name: "PointedSlice", Args: [IntType { Kind: IntKind.Char }] } span && span.Decl.Module == Compiler.SystemModule;
+
+    /// A string literal's code points for a place of Chars, `where` naming that place: a `\x` byte above 7F is no
+    /// character, so it is a build error there.
+    private List<int> CharsOf(StrLit s, DType where) =>
+        Compiler.CodePoints(s.Value) ?? throw Err(s.Pos, $"{where} holds characters, and this string has a \\x byte "
+            + "above 7F, which is no character: write the character itself or \\uXXXXXX, or keep the bytes in a @[Byte]");
+
+    /// A string literal as the array literal it also is: its UTF-8 bytes where Bytes go, its code points where Chars
+    /// go. `count`, when the place says one, must be that count: the error gives both counts, since the literal has
+    /// one of each.
+    private ArrayLit StringAsArray(StrLit s, DType elem, long? count, DType where)
+    {
+        bool chars = elem is IntType { Kind: IntKind.Char };
+        var values = chars ? CharsOf(s, where).Select(c => (long)c).ToList()
+            : SourceText.Utf8(s.Value).Select(b => (long)b).ToList();
+        if (count is { } n && n != values.Count)
+        {
+            int bytes = Compiler.Utf8Length(s.Value);
+            string sizes = Compiler.CodePoints(s.Value) is { } cps
+                ? $"{bytes} byte{(bytes == 1 ? "" : "s")} in UTF-8 and {cps.Count} character{(cps.Count == 1 ? "" : "s")}"
+                : $"{bytes} byte{(bytes == 1 ? "" : "s")} (a \\x byte above 7F is no character)";
+            throw Err(s.Pos, $"{where} holds {n} {(chars ? "Char" : "Byte")}{(n == 1 ? "" : "s")}, and this string is {sizes}");
+        }
+        return new ArrayLit(values.Select(v => (Expr)new TypedIntLit(v, chars ? 32 : 8, s.Pos)).ToList(), s.Pos);
     }
 
     /// The slots of entity values a routine was called on in the statement being emitted, ended when it is done.
@@ -3586,6 +3630,18 @@ public sealed partial class FunctionGen
         catch (CompileError) { return false; }
     }
 
+    /// Whether `t` is an array of Bytes or Chars, whose `getview()` writes as text.
+    private static bool IsTextArray(DType t) => t is ArrayType { Elem: IntType { Kind: IntKind.Byte or IntKind.Char } };
+
+    /// The `@[Char]` view of a `&[Char]` (a STACK one, or one a manager lent), or null for any other receiver.
+    private Expr? CharPlaceSlice(Expr receiver, DType rt)
+    {
+        if (receiver is ValueRef r && _stackSpans.Contains(r.Name) && IsCharSpan(rt)) return receiver;
+        return ManagedMemory(rt) is { Decl.Name: "BorrowedSlice", Args: [IntType { Kind: IntKind.Char }] }
+            ? new MethodCallExpr(receiver, "getslice", [], [], receiver.Pos)
+            : null;
+    }
+
     /// Whether t is a `@[T]` (the record PointedSlice).
     private static bool IsPointedSlice(DType? t) =>
         t is RecordType { Decl.Name: "PointedSlice", Args.Count: 1 } slice && slice.Decl.Module == Compiler.SystemModule;
@@ -3616,13 +3672,15 @@ public sealed partial class FunctionGen
                 (routine, shows, fix) = ("write_global_cell", "its address", $"{name}.peek()");
             }
             else (routine, shows, fix) = ("write_pointed_cell", "its address", $"{name}.peek()");
+            if (IsTextArray(held)) fix += $", or {name}.getview() for its text";
         }
         else if (ManagedMemory(rt) is { Decl.Name: "BorrowedCell", Args: [var inner] } && !Entities.Holds(inner))
-            (routine, shows, fix) = ("write_borrowed_cell", "its address and manager", $"{name}.load()");
+            (routine, shows, fix) = ("write_borrowed_cell", "its address and manager", $"{name}.load()"
+                + (IsTextArray(inner) ? $", or {name}.getview() for its text" : ""));
         else if (ManagedMemory(rt) is { Decl.Name: "BorrowedSlice", Args: [var element] })
         {
             (routine, shows) = ("write_borrowed_slice", "its address, count and manager");
-            fix = element.Name == "Byte"
+            fix = element is IntType { Kind: IntKind.Byte or IntKind.Char }
                 ? $"write {name}.getslice() for its text, or index it ({name}[i]) or go through it with a loop"
                 : $"index it ({name}[i]) or go through it with a loop";
             argNames[0] = "cells";
@@ -4730,7 +4788,8 @@ public sealed partial class FunctionGen
                 return pt is FloatType || (HexFloat.IsHex(fl.Text) || fl.IsWord) && HexFloat.IsB128(pt) ? null
                     : fl.IsWord ? $"{fl.Text} is a float literal, and it can't be a {pt}" : $"a float literal can't be a {pt}";
             case StrLit:
-                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStrView" or "CWStrView" } || IsByteSpan(pt)
+                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStrView" or "CWStrView" }
+                    or ArrayType { IsSlots: false, Elem: IntType { Kind: IntKind.Byte or IntKind.Char } } || IsByteSpan(pt) || IsCharSpan(pt)
                     ? null
                     : $"a string literal can't be a {pt}";
             case ArrayLit a:
@@ -4890,6 +4949,12 @@ public sealed partial class FunctionGen
                     $"nothing says this literal's type (its arguments are untyped too); name the type: {fix}");
             }
         }
+
+        // A `&[Char]` is a collection of characters: shown, it writes its list (`['h', 'i']`), as an `Items[Char, N]`
+        // does. Only a view, `@[Char]`, writes them as text.
+        if (m is { Name: "represent_into", TypeArgs.Count: 0, Args: [var listOut] } && CharPlaceSlice(m.Receiver, rt) is { } chars)
+            return PlanCall(new CallExpr("write_char_list", [], [listOut, chars], m.Pos) { ArgNames = ["out", "chars"], Path = FormatModule },
+                expected);
 
         // Receivers behind a pointer: `p.m()` finds `routine @T.m` first, then `routine PointedCell[T].m`. The more specific
         // receiver wins, and the two can't be the same routine (RejectPointerReceiverClashes).

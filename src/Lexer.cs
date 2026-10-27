@@ -705,7 +705,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     private int ReadScalar(Pos pos)
     {
         if (_i + 6 > src.Length || !src.Substring(_i, 6).All(char.IsAsciiHexDigit))
-            throw new CompileError(pos, "\\u needs six hex digits, as in \\u00E9");
+            throw new CompileError(pos, "\\u needs six hex digits, as in \\u0000E9");
         int v = Convert.ToInt32(src.Substring(_i, 6), 16);
         if (v > 0x10FFFF || v is >= 0xD800 and <= 0xDFFF)
             throw new CompileError(pos, $"\\u{v:X6} is not a Unicode scalar value (a surrogate or past 10FFFF)");

@@ -2464,6 +2464,26 @@ public sealed partial class Compiler
 
     public static int Utf8Length(string value) => SourceText.Utf8(value).Length;
 
+    /// A literal's characters as code points, for a place that holds Chars. Null when the literal has a raw byte from
+    /// a \x escape, which is no character.
+    public static List<int>? CodePoints(string value) =>
+        SourceText.HasRawByte(value) ? null : value.EnumerateRunes().Select(r => r.Value).ToList();
+
+    /// A string literal's characters as a constant array of code points, for a `@[Char]` that views it.
+    public string CharArrayGlobal(List<int> codePoints)
+    {
+        if (Prechecking) return "@precheck";
+        string key = string.Join(",", codePoints);
+        if (_charArrays.TryGetValue(key, out var name)) return name;
+        name = $"@.chars.{_charArrays.Count}";
+        _charArrays[key] = name;
+        _globals.AppendLine($"{name} = private unnamed_addr constant [{codePoints.Count} x i32] "
+            + $"[{string.Join(", ", codePoints.Select(c => $"i32 {c}"))}]");
+        return name;
+    }
+
+    private readonly Dictionary<string, string> _charArrays = [];
+
     /// A wide string literal ending in a 0 unit, for a CWStrView: UTF-16 units where `wchar_t` is 16 bits (Windows),
     /// UTF-32 code points elsewhere.
     public string WideStringGlobal(string value)

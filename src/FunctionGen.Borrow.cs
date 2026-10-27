@@ -95,9 +95,14 @@ public sealed partial class FunctionGen
                 return (new BindStmt(b.Name, slotOfHandle, new ClaimExpr(b.Pos) { Contents = value }, b.Pos) { Source = b.Source }, false);
             if (memory)
             {
+                // A string literal is also the array literal of its bytes, or of its characters for a &[Char].
+                if (value is StrLit text && Resolve(elem) is IntType { Kind: IntKind.Byte or IntKind.Char } textElem)
+                    value = StringAsArray(text, textElem, null, Resolve(written));
                 if (value is not ArrayLit { IsTuple: false })
                     throw Err(value.Pos, $"a &[{elem}] from STACK is an array literal, whose count the build knows: {b.Name}: "
-                        + $"&[{elem}] <- [0] * 64, or [0] * n from HEAP for a count known only while running");
+                        + $"&[{elem}] <- [0] * 64, or [0] * n from HEAP for a count known only while running"
+                        + (Resolve(elem) is IntType { Kind: IntKind.Byte or IntKind.Char }
+                            ? $", and a string literal is one too: {b.Name}: &[{elem}] <- \"text\"" : ""));
                 var span = new TypeRef("PointedSlice", [new TypeArgType(elem)], written.Pos);
                 if (HasReleaseDuty(Resolve(elem)))
                     throw Err(b.Pos, $"a &[{elem}] from STACK holds values with nothing to give back: values of {elem} go in "
