@@ -54,6 +54,14 @@ public static class OldSpellings
             : $"'{name}' is called '{now}' now";
     }
 
+    /// The message for a conversion that is gone, else null: an `Items`'s or a `Slots`'s view of every element is
+    /// `getview()`.
+    public static string? OldConversion(DType owner, IReadOnlyList<TypeRef> typeArgs) =>
+        owner is ArrayType && typeArgs is [{ Name: "PointedSlice" }]
+            ? $"{owner} has no to[{typeArgs[0]}]: the view of every element is getview(), and getview().to[@T]() its "
+                + "first address"
+            : null;
+
     /// The message for a name that is gone, else null.
     public static string? OldName(string name) => name switch
     {

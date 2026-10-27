@@ -78,7 +78,7 @@ crashable EndOfInputError
 ### Fills the empty buffer from the OS with one read.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 secret routine @InputBuffer.fill() -> Bool
-    got: Check[U64] = check stdin_read(buffer: me.bytes.to[@[Byte]]().to[@Byte](), count: IN_BUFFER)
+    got: Check[U64] = check stdin_read(buffer: me.bytes.getview().to[@Byte](), count: IN_BUFFER)
     n: U64 = when got
         is U64 as n => n
         is FsError => 0
@@ -93,7 +93,7 @@ secret failable routine @InputBuffer.emit() -> Byte
     if me.start.peek() < me.end.peek() or me.fill()
         at: U64 = me.start.peek()
         me.start.poke(at + 1)
-        buffered: @Byte = me.bytes.to[@[Byte]]().to[@Byte]()
+        buffered: @Byte = me.bytes.getview().to[@Byte]()
         return buffered.stride(at).peek()
     throw AbsentValueError()
 
@@ -109,7 +109,7 @@ secret routine @InputBuffer.unread() -> None
 secret routine @InputBuffer.fill_more() -> Bool
     end: U64 = me.end.peek()
 
-    free: @Byte = me.bytes.to[@[Byte]]().to[@Byte]().stride(end)
+    free: @Byte = me.bytes.getview().to[@Byte]().stride(end)
     got: Check[U64] = check stdin_read(buffer: free, count: IN_BUFFER.sub(end))
     when got
         is U64 as n =>
@@ -122,7 +122,7 @@ secret routine @InputBuffer.fill_more() -> Bool
 secret routine @InputBuffer.compact() -> None
     from: U64 = me.start.peek()
     held: U64 = me.end.peek() - from
-    buffered: @Byte = me.bytes.to[@[Byte]]().to[@Byte]()
+    buffered: @Byte = me.bytes.getview().to[@Byte]()
 
     me.start.poke(0)
     me.end.poke(held)
@@ -158,7 +158,7 @@ secret routine @InputBuffer.word(spill: @BorrowedSlice[Byte]) -> Maybe[@[Byte]]
     loop with length: U64 = 1
         at: U64 = me.start.peek() + length
         if at < me.end.peek()
-            buffered: @Byte = me.bytes.to[@[Byte]]().to[@Byte]()
+            buffered: @Byte = me.bytes.getview().to[@Byte]()
             following: Byte = buffered.stride(at).peek()
             if is_space(following)
                 return me.take_word(length)
@@ -176,7 +176,7 @@ secret routine @InputBuffer.word(spill: @BorrowedSlice[Byte]) -> Maybe[@[Byte]]
 ### :returns: The word, good until the buffer is read into again.
 secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
     from: U64 = me.start.peek()
-    buffered: @Byte = me.bytes.to[@[Byte]]().to[@Byte]()
+    buffered: @Byte = me.bytes.getview().to[@Byte]()
     word: @[Byte] = @[Byte].construct(data: buffered.stride(from), count: length)
     me.start.poke(from + length)
     return word
@@ -191,7 +191,7 @@ secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
 secret routine @InputBuffer.spill_word(length: U64, spill: @BorrowedSlice[Byte]) -> @[Byte]
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
-    text.append(chunk: me.bytes.to[@[Byte]]().to[@Byte](), n: length, manager: HEAP)
+    text.append(chunk: me.bytes.getview().to[@Byte](), n: length, manager: HEAP)
     me.start.poke(length)
     loop
         c: Maybe[Byte] = try me.emit()
@@ -237,7 +237,7 @@ failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
             return 0
     available: U64 = b.end.peek() - b.start.peek()
     n: U64 = available.min(count)
-    buffer.copy(src: b.bytes.to[@[Byte]]().to[@Byte]().stride(b.start.peek()), count: n)
+    buffer.copy(src: b.bytes.getview().to[@Byte]().stride(b.start.peek()), count: n)
     next_start: U64 = b.start.peek() + n
     next_start.poke_into(b.start)
     drop held
@@ -323,7 +323,7 @@ common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Borrowe
 common routine Console.ask_all(manager: @MemoryManager) -> BorrowedSlice[Byte]
     text: &CaptureBuffer <- CaptureBuffer.empty()
     chunk_buffer: &Items[Byte, 4096] <- .hollow()
-    chunk: @Byte = chunk_buffer.to[@[Byte]]().to[@Byte]()
+    chunk: @Byte = chunk_buffer.getview().to[@Byte]()
 
     loop
         got2: Check[U64] = check Me.input().read_into(buffer: chunk, count: 4096)
@@ -871,19 +871,19 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64
             # The bytes the held sequence still needs come first.
             need: U64 = sequence_length(pending.bytes[0]) - held
             taken: U64 = need.min(count)
-            pending.bytes.to[@[Byte]]().to[@Byte]().stride(held).copy(src: data, count: taken)
+            pending.bytes.getview().to[@Byte]().stride(held).copy(src: data, count: taken)
             if taken < need
                 pending.count.poke(held + taken)
                 return true
             pending.count.poke(0)
-            if console_text(h, data: pending.bytes.to[@[Byte]]().to[@Byte](), count: held + taken)
+            if console_text(h, data: pending.bytes.getview().to[@Byte](), count: held + taken)
                 becomes (data.stride(taken), count - taken)
             else
                 return false
 
     at, n = values2
     cut: U64 = complete_end(data: at, count: n)
-    pending.bytes.to[@[Byte]]().to[@Byte]().copy(src: at.stride(cut), count: n - cut)
+    pending.bytes.getview().to[@Byte]().copy(src: at.stride(cut), count: n - cut)
     pending.count.poke(n - cut)
     return console_text(h, data: at, count: cut)
 
@@ -897,7 +897,7 @@ secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
     written: &U32 <- 0
     iter: &BytesCharsEmitter <- @[Byte].construct(data, count).chars()
     unit_buffer: &Items[U16, 2048] <- .hollow()
-    units: @U16 = unit_buffer.to[@[U16]]().to[@U16]()
+    units: @U16 = unit_buffer.getview().to[@U16]()
 
     loop with n: U64 = 0
         if n >= 2046
@@ -972,35 +972,35 @@ secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
         start: U64 = input.start.peek()
         available: U64 = input.end.peek() - start
         n: U64 = available.min(count)
-        buffer.copy(src: input.bytes.to[@[Byte]]().to[@Byte]().stride(start), count: n)
+        buffer.copy(src: input.bytes.getview().to[@Byte]().stride(start), count: n)
         input.start.poke(start + n)
         return n
     units: &Items[U16, 4096] <- .hollow()
     got: &U32 <- 0
-    if not (c_read_console(h, units.to[@[U16]]().to[@U16](), 4096, got, .hollow()) != 0)
+    if not (c_read_console(h, units.getview().to[@U16](), 4096, got, .hollow()) != 0)
         throw IoError(code: 0)
     n: U64 = got.load().to[U64]()
     if n == 0
         return 0
     if units[0] == 0x1A
         return 0
-    units2: @U16 = units.to[@[U16]]().to[@U16]()
+    units2: @U16 = units.getview().to[@U16]()
     joined: &Items[U16, 4097] <- .hollow()
     high: U16 = input.high.peek()
     lead: U64 = when
         high == 0 => 0
         else => 1
-    joined.to[@[U16]]().to[@U16]().poke(high)
-    joined.to[@[U16]]().to[@U16]().stride(lead).copy(src: units2, count: n)
+    joined.getview().to[@U16]().poke(high)
+    joined.getview().to[@U16]().stride(lead).copy(src: units2, count: n)
     total: U64 = n + lead
-    joined_units: @U16 = joined.to[@[U16]]().to[@U16]()
+    joined_units: @U16 = joined.getview().to[@U16]()
     last: U16 = joined_units.stride(total - 1).peek()
     values: (@U16, U64, U16) = when
-        0xD800 <= last <= 0xDBFF => (joined.to[@[U16]]().to[@U16](), total - 1, last)
-        else => (joined.to[@[U16]]().to[@U16](), total, 0)
+        0xD800 <= last <= 0xDBFF => (joined.getview().to[@U16](), total - 1, last)
+        else => (joined.getview().to[@U16](), total, 0)
     joined2, units3, high2 = values
     input.high.poke(high2)
-    made: U64 = narrow(units: joined2, count: units3, out: input.bytes.to[@[Byte]]().to[@Byte]())
+    made: U64 = narrow(units: joined2, count: units3, out: input.bytes.getview().to[@Byte]())
     input.start.poke(0)
     input.end.poke(made)
     if made == 0
@@ -1009,6 +1009,6 @@ secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
     start: U64 = input.start.peek()
     available: U64 = input.end.peek() - start
     n2: U64 = available.min(count)
-    buffer.copy(src: input.bytes.to[@[Byte]]().to[@Byte]().stride(start), count: n2)
+    buffer.copy(src: input.bytes.getview().to[@Byte]().stride(start), count: n2)
     input.start.poke(start + n2)
     return n2

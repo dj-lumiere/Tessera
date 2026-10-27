@@ -2152,7 +2152,7 @@ public sealed partial class FunctionGen
                     if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; peek it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .to[@[T]]().getslot(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .getview().getslot(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -4959,6 +4959,9 @@ public sealed partial class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
         // `x.to[S64]()`: the routines are defined per type argument, and none is for these.
+        foreach (var (owner, _) in candidates)
+            if (m.Name == "to" && OldSpellings.OldConversion(owner, m.TypeArgs) is { } gone)
+                throw Err(m.Pos, gone);
         foreach (var (owner, _) in candidates)
             if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
             {

@@ -233,9 +233,9 @@ routine start() -> None
   address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `BorrowedCell[T]` has `load()`,
   `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Items[T, COUNT]` is the run of
   values whose count is in the type, a record (a value), and `Slots[T, COUNT]` the entity with the same layout for any
-  `T` (below). `to[@[T]]()` on an `@Items` or `@Slots` is the view of every element (its first address and `COUNT`),
-  the same span `getview()` gives. `getview()` gives a `@[T]` of anything else holding contiguous elements
-  (a `List`, an `Items` or a `Slots` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
+  `T` (below). `getview()` gives a `@[T]` of anything holding contiguous elements (a `List`, an `Items` or a `Slots`
+  through a pointer, its first address and `COUNT`, a `SliceWriter`, a `CStrView`), and `getview().to[@T]()` is the
+  first element's address. `@[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` / `reallocate[T](p, count,
   manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `give_back`.
   `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and `src.copy_into(dst, count)` is the same
@@ -1617,8 +1617,8 @@ says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Items[T, COUNT]` | a record, `needs T: record`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `to[@[T]]()` (the view of every element), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
-| `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `to[@[T]]()`, `getslice`, `getview`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first) | index |
+| `Items[T, COUNT]` | a record, `needs T: record`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getview()` (through a pointer, the view of every element), `getslice`, `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
+| `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `getview()`, `getslice`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
 | `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
@@ -2175,7 +2175,7 @@ routine, block, or statement it wrote: debug information and build errors then p
 
 **Naming conversions.** `to[T]` is the standard spelling of a type conversion: a routine whose job is turning a
 value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
-(each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@[T]]()`,
+(each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`,
 `p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](manager)` / `s.to[CWStr](manager)` on a `@[Byte]` (a conversion may take
 parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `BorrowedSlice` or a `@[T]`,
 `a.to[Vector[B32, 4]]()` on an `Items`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
@@ -2290,7 +2290,7 @@ the type's own).
 **`Items`, `Slots` and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `U64`, or an `S64` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Items[T, COUNT]` that is the i-th whole array, so elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
-(bounds checked), or `arr.to[@[T]]().to[@T]().stride(i).peek()` unchecked (the view's first address). An array literal is `[1, 2, 3]` (a bracketed list
+(bounds checked), or `arr.getview().to[@T]().stride(i).peek()` unchecked (the view's first address). An array literal is `[1, 2, 3]` (a bracketed list
 broken over lines, also a tuple, call arguments, parameters or a record literal, may end with a comma before its
 closing bracket, on one line that comma is a build error), and `[0] * 256`
 repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
