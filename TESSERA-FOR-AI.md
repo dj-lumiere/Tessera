@@ -337,7 +337,7 @@ routine start() -> None
 - **What thread work changes.** Work on a thread or a passable fiber (`t.put_work(work)` on a `Thread` or a
   `PassableFiber` ticket) runs on another thread, next to the routine that started it and other work. The memory it
   changes (in its own body or in the program's routines it calls) is one of three, else it is a build error: memory it
-  was handed with `steal` (its own from then on), an `Authorized[T]` handed to it, or an `Unbroken[T]` (changed with
+  was handed with `steal` (its own from then on), an `@Authorized[T]` lent to it, or an `Unbroken[T]` (changed with
   its routines), so the work routine's parameters show what it changes (`routine collect_dues(book:
   Authorized[Ledger], rate: U64)`). The routine borrows the access in a name first, hands it to the work, retrieves,
   and then gives it back (an access borrowed right in the work's arguments is a build error, since no name gives it
@@ -355,13 +355,17 @@ routine start() -> None
 
   Between `put_work` and the retrieve the handing routine neither uses nor gives back the access (`'held' is handed to
   the work put on 't' on line N, which changes it until it is waited for`), and it hands one access to one piece of
-  work at a time. A run of values goes to the work as its run's access (`routine double_all(part:
-  AuthorizedSlice[S64])`, `held: AuthorizedSlice[S64] <- view.getslice(start: 0, count: 4).get_exclusive_access()`).
-  Work whose ticket goes into a list (`ts.add_last(t)`) works through the access until the list waits for it
+  work at a time. The work's parameter is the access's address (`routine double(value: @Authorized[U64])`), so the
+  work is lent the access and reaches it through its place: moving it out of that place before the work is waited
+  for is a build error (`'held' is lent to the work put on 't' on line N, which reaches it through its place, and it
+  leaves that place here (...)`). A run of values goes to the work as its run's access (`routine double_all(part:
+  @AuthorizedSlice[S64])`, `held: AuthorizedSlice[S64] <- view.getslice(start: 0, count: 4).get_exclusive_access()`).
+  Work whose ticket goes into a list (`ts.add_last(steal t)`) works through the access until the list waits for it
   (`ts.retrieve_all()`, `ts.give_back_all()`, `drop ts`). Accesses taken in a loop body go into a list of their own
-  (`halves.add_last(held)`, a `List[AuthorizedSlice[S64]]`), which gives each one back when it is dropped, after the
-  tickets' list: `'halves' holds the access to '...' handed to the work put on 'ts' on line N, which works through it
-  until it is waited for: give it back after ts.retrieve_all()`. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
+  first (`halves.add_last(steal held)`, a `List[AuthorizedSlice[S64]]`), and each piece of work is lent its element
+  in a second loop (`part: halves.getslot(i)`), so the list doesn't grow while work reaches it. The list gives each
+  access back when it is dropped, after the tickets' list: `'halves' is handed to the work put on 'ts' on line N,
+  which works through it until it is waited for: give the access back after ts.retrieve_all()`. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
   Work that takes an exclusive access itself (`counter: Authorized[U64] <- COUNTER.get_exclusive_access()`, the change
   through `counter.getview()`, `drop counter`, for many threads changing one value in turn) changes through that
   access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
@@ -372,7 +376,7 @@ routine start() -> None
   (line N: ...) without an exclusive access, while other threads reach it too: ...` and `t.put_work(work) hands 'xs'
   to 'f', which changes it on another thread without an exclusive access, and it isn't handed over with steal, so
   other threads may reach it too: hand it over with steal, or ...`, both ending with the fix "hand the work an
-  exclusive access to it (its parameter an Authorized[T]), borrowed in a name first, held: Authorized[T] <-
+  exclusive access to it (its parameter an @Authorized[T]), borrowed in a name first, held: Authorized[T] <-
   p.get_exclusive_access(), and dropped after the ticket's retrieve; or make it an Unbroken[T] and change it with its
   routines". A `@[T]` the work changes names the run's access instead: "hand the work the run's exclusive access (its
   parameter an AuthorizedSlice[S64]), borrowed in a name first, held: AuthorizedSlice[S64] <- s.get_exclusive_access(),
@@ -998,8 +1002,8 @@ routine start() -> None
   exactly. A named argument fits only an overload with that parameter in that place, settled before a literal takes
   its type: `price.round(places: 2)` on a `Decimal` is `round(places: U64)`, never `round(rule: RoundingRule)`. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
-  one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_callable`) beats the
-  generic receiver type's (`Thread[T].put_callable`) for that receiver, as one with a value named (`routine
+  one, and a routine on a receiver type with its type arguments named (`routine @Thread[None].put_callable`) beats the
+  generic receiver type's (`@Thread[T].put_callable`) for that receiver, as one with a value named (`routine
   Box[2].get`) beats `Box[L].get` for a `Box[2]`, and one with a choice member named (`routine Cell[RELAXED].load`
   or `Cell[MemoryOrder.RELAXED].load`) beats `Cell[O].load` for a `Cell[RELAXED]`; two that each name a different argument (`Pair[2, B].get` and
   `Pair[A, 3].get` on a `Pair[2, 3]`) are ambiguous. A receiver type argument may nest the routine's type parameter:
@@ -1371,7 +1375,9 @@ routine start() -> None
   from still holds it.
 - In the standard library, these are entities: `BorrowedSlice[T]`, `BorrowedCell[T]`, every collection (`List`, `Set`, `Dict`, the
   sorted ones, `RotatableList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `CoroutineManager`,
-  `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
+  `CStr` / `CWStr`, `ProcessOutput`, `File` / `Directory` (each holds the memory of a path it made), `FileStorage[T]`,
+  the tickets (`Thread[T]`, `Fiber[T]`, `PassableFiber[T]`), and the accesses (`Authorized[T]`, `ReadAuthorized[T]`,
+  `AuthorizedSlice[T]`, `ReadAuthorizedSlice[T]`). A
   `MemoryManager`, a `@[T]`, a `@T`, and an emitter stay records.
 - An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no place of its
   own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed place that ends when
@@ -1745,9 +1751,11 @@ right in the work's arguments is a build error ("the access for 'book' is borrow
 nothing would give it back: ..."). A `Callable` value (no parameter names) goes on a ticket with `t.put_callable(entry:
 f, args: (a, b))` (`args` nothing, one value, or a tuple of two to four). A pointer argument must outlive the work, so
 retrieve before releasing what it points to (the build checks it: the escape check's ticket rules). One piece of work
-at a time: `put_work` / `put_callable` or `drop t` while the work runs crashes with `TicketBusyError`, a copy of a
-ticket used after the ticket was given back with `TicketGivenBackError`, and `retrieve` with no work with
-`NoWorkError`. `drop` of a ticket given back already, or of a copy of one, gives nothing back. `cancel()` asks the
+at a time: `put_work` / `put_callable` or `drop t` while the work runs crashes with `TicketBusyError`, and `retrieve`
+with no work with `NoWorkError`. A ticket is an entity: the `<-` name is the place that holds it, `drop t` gives it
+back, a list takes it with `steal` (`ts.add_last(steal t)`), a `Slots` gives one up with `steal xs.getslot(i) as t
+inject .hollow()`, and `waitfor` gives the ticket's address (`@Thread[T]`), so `t.waitfor(5ms).retrieve()` reads it
+in place. `cancel()` asks the
 work to stop: the work asks `cancel_requested()` where stopping is safe and returns. `retrieve()` of cancelled work
 throws `CancelRequested` (a `Thread[None]` / `Fiber[None]` / `PassableFiber[None]` one too), so a bare call stops there
 and `check t.retrieve()` tells them apart. Before each piece of work a thread puts every `@threadlocal` global back to
@@ -1842,7 +1850,9 @@ memory: `held: Authorized[T] <- p.get_exclusive_access()` (this flow alone reads
 ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `BorrowedCell[T]`
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
 (`held.getview().poke(v)`, `reading.getview().peek()`), and the view of a `ReadAuthorized[T]` reads only. `drop held`
-gives the access back, and the program writes it. An access is bound with `<-` from the call that borrows it: `=` is a
+gives the access back, and the program writes it. An access is an entity: a routine that works through one and
+leaves it held takes its address (`held: @Authorized[T]`, as `SignalCaster.wait(access: held)` does), and one that
+gives it back takes it over (`close(steal held)`). An access is bound with `<-` from the call that borrows it: `=` is a
 build error ("a Authorized[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that
 borrows it: held: Authorized[S64] <- ..."), so is a second name (`again: Authorized[T] <- held`: "a second name for
 one borrowed Authorized[S64] would give it back twice"), and so is a STACK place of one (`held: &Authorized[S64] <-

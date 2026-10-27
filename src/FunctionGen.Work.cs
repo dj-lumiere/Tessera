@@ -193,10 +193,9 @@ public sealed partial class FunctionGen
         for (int i = 0; i < n; i++)
         {
             var arg = args[i];
-            if (IsBorrowedType(ct.Params[i]) && ct.Params[i] is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" or "AuthorizedSlice" or "ReadAuthorizedSlice" }
-                && arg is CallExpr or NsCallExpr or MethodCallExpr)
+            if (IsAccessType(ct.Params[i]) && arg is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(arg) is not PtrType)
                 throw Err(arg.Pos, $"the access for '{routine.Params[i].Name}' is borrowed right in the work's arguments, and "
-                    + $"nothing would give it back: borrow it in a name first, held: {ct.Params[i]} <- ..., hand the work "
+                    + $"nothing would give it back: borrow it in a name first, held: {(ct.Params[i] is PtrType { Pointee: { } lent } ? lent : ct.Params[i])} <- ..., hand the work "
                     + "that name, and drop it after the ticket's retrieve");
             ctorArgs.Add(arg);
             ctorNames.Add(fields[i]);

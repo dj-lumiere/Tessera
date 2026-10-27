@@ -70,11 +70,19 @@ secret entity PassableFiberSlot
 ### A ticket for a passable fiber of a ThreadPoolManager, from {ThreadPoolManager.get_passable_fiber}: it runs one piece
 ### of work at a time, whose result is a `T` (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
-record PassableFiber[T]
+entity PassableFiber[T]
 needs T: typename
     passable: @PassableFiberSlot
     ### The ticket's number: the passable fiber's until the ticket is given back.
     issued: U64
+
+### Makes a `PassableFiber` from its fields.
+### :param passable: Its `passable`.
+### :param issued: Its `issued`.
+### :returns: The new value.
+common routine PassableFiber[T].construct(passable: @PassableFiberSlot, issued: U64) -> Me
+needs T: typename
+    return Me(passable, issued)
 
 ### Makes a `PassableFiberSlot` from its fields.
 ### :param slot: Its `slot`.
@@ -118,7 +126,7 @@ routine @ThreadPoolManager.destruct() -> None
     wake_all(me.epoch)
 
     each i in 0 til started
-        t: Thread[None] <- steal threads.getslot(i)
+        steal threads.getslot(i) as t inject .hollow()
         t.work_slot().wait()
         drop t
 
@@ -366,10 +374,10 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
 ### :throws: Crashes with `TicketGivenBackError` for a ticket given back.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].work_slot() -> @WorkSlot
+routine @PassableFiber[T].work_slot() -> @WorkSlot
 needs T: typename
-    passable: @PassableFiberSlot = me.passable
-    passable.slot.check_ticket(me.issued)
+    passable: @PassableFiberSlot = me.passable.peek()
+    passable.slot.check_ticket(me.issued.peek())
     return passable.slot
 
 ### Starts the work in `work`, run by `runner`: it waits in the pool's queue for a free thread.
@@ -378,10 +386,10 @@ needs T: typename
 ### :param work: Its block.
 @target(os: not "none")
 @track_caller
-secret routine PassableFiber[T].start(runner: Callable[(Addr,), None],
+secret routine @PassableFiber[T].start(runner: Callable[(Addr,), None],
     discard: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
-    passable: @PassableFiberSlot = me.passable
+    passable: @PassableFiberSlot = me.passable.peek()
     me.work_slot().put(runner, discard, work)
     passable.pool.peek().queue(passable)
     return
@@ -395,7 +403,7 @@ needs T: typename
 ###     back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_work(work: Work[T]) -> None
+routine @PassableFiber[T].put_work(work: Work[T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -408,7 +416,7 @@ needs T: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_callable(entry: Callable[(), T]) -> None
+routine @PassableFiber[T].put_callable(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -423,7 +431,7 @@ needs T: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
+routine @PassableFiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -438,7 +446,7 @@ needs T: typename, A: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+routine @PassableFiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -453,7 +461,7 @@ needs T: typename, A: typename, B: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T],
+routine @PassableFiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T],
     args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
@@ -469,7 +477,7 @@ needs T: typename, A: typename, B: typename, C: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+routine @PassableFiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -484,7 +492,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[None].put_callable(entry: Callable[(), None]) -> None
+routine @PassableFiber[None].put_callable(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, discard, work = make_voidwork0(entry, manager: slot.manager.peek())
@@ -498,7 +506,7 @@ routine PassableFiber[None].put_callable(entry: Callable[(), None]) -> None
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
+routine @PassableFiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -513,7 +521,7 @@ needs A: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+routine @PassableFiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -528,7 +536,7 @@ needs A: typename, B: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None],
+routine @PassableFiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None],
     args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
@@ -544,7 +552,7 @@ needs A: typename, B: typename, C: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
+routine @PassableFiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -557,7 +565,7 @@ needs A: typename, B: typename, C: typename, D: typename
 ### :returns: True unless the work runs or waits for a thread.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].check_finished() -> Bool
+routine @PassableFiber[T].check_finished() -> Bool
 needs T: typename
     return me.work_slot().is_finished()
 
@@ -567,7 +575,7 @@ needs T: typename
 ### :returns: The ticket, for its `retrieve()`.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].waitfor(timeout: Duration) -> Me
+routine @PassableFiber[T].waitfor(timeout: Duration) -> @Me
 needs T: typename
     me.work_slot().set_deadline(timeout)
     return me
@@ -579,7 +587,7 @@ needs T: typename
 ###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-failable routine PassableFiber[None].retrieve() -> None
+failable routine @PassableFiber[None].retrieve() -> None
     slot: @WorkSlot = me.work_slot()
     waited: U32 = slot.wait_to_retrieve()
     if waited == WAITED_TIMED_OUT
@@ -599,7 +607,7 @@ failable routine PassableFiber[None].retrieve() -> None
 ###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-failable routine PassableFiber[T].retrieve() -> T
+failable routine @PassableFiber[T].retrieve() -> T
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     waited: U32 = slot.wait_to_retrieve()
@@ -617,7 +625,7 @@ needs T: typename
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
 @track_caller
-routine PassableFiber[T].cancel() -> None
+routine @PassableFiber[T].cancel() -> None
 needs T: typename
     me.work_slot().request_cancel()
     return

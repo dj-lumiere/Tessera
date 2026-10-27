@@ -1782,9 +1782,12 @@ public sealed partial class FunctionGen
                 else BindAtoms(b.Name, b.Value, t);
                 NoteBoundViews(b, t);
                 if (b.Value is not ClaimExpr) NoteAccessBinding(b.Name, b.Value, t, b.Pos);
+                // An access bound with `<-` is the place that holds it: the access check follows it by that name.
+                bool accessPlace = b.Value is ClaimExpr { Contents: { } accessCall } && t is PtrType { Pointee: { } accessType }
+                    && IsAccessType(accessType) && b.Ticket is false && accessCall is not ImplicitCallExpr;
                 if ((b.Value is ClaimExpr { Contents: { } madeFrom } ? madeFrom : b.Value) is { } made3 && Tracked(t))
                     NoteManagedThrough(b.Name, made3, b.Pos);
-                if (MemOn && b.Ticket && !Tracked(t))
+                if (MemOn && b.Ticket && (!Tracked(t) || IsWorkTicket(t)))
                 {
                     // A ticket, a piece of work, or a mapped file's storage: given back with drop, once, on every path.
                     _memTracked.Add(b.Name);
@@ -1792,7 +1795,7 @@ public sealed partial class FunctionGen
                     Mem(new MemoryRules.Acquire(b.Name, "borrowed here", b.Pos)
                         { Entity = (t is PtrType { Pointee: { } held } ? held : t).Name });
                 }
-                else if (MemOn && Tracked(t) && !_workBlocks.Contains(b.Name))
+                else if (MemOn && Tracked(t) && !_workBlocks.Contains(b.Name) && !accessPlace)
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);
@@ -1832,6 +1835,8 @@ public sealed partial class FunctionGen
                     {
                         _claimContents = outerClaim;
                     }
+                    // The access the call took is the place's from here on (the take is noted by the call).
+                    if (accessPlace) NoteAccessBinding(b.Name, contents, ((PtrType)t).Pointee!, b.Pos);
                 }
                 break;
             }
@@ -1926,11 +1931,11 @@ public sealed partial class FunctionGen
                 NoteAccessDrop(d.Value, d.Pos);
                 // Giving a ticket back ends its work (a ticket whose work runs crashes instead): it counts as waited for.
                 if (MemOn && d.Value is ValueRef givenTicket
-                    && InferQuiet(d.Value) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
+                    && IsWorkTicket(InferQuiet(d.Value)))
                     Mem(new MemoryRules.WorkWaited(givenTicket.Name, d.Pos));
                 // A ticket bound by value goes into a slot of its own for its destruct: its name ends there.
                 string? endsTicket = MemOn && d.Value is ValueRef droppedTicket && _ticketNames.Contains(droppedTicket.Name)
-                    && InferQuiet(d.Value) is not PtrType ? droppedTicket.Name : null;
+                    ? droppedTicket.Name : null;
                 // The access a drop gives back isn't read by it: a second drop says so itself.
                 _givingBack = d.Value is ValueRef givenBack && _accessViews.Contains(givenBack.Name) ? d.Value : null;
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
@@ -5481,6 +5486,9 @@ public sealed partial class FunctionGen
         }
         if (sig.IsTemplate)
         {
+            // A ticket put in a place of this routine (`threads.getslot(i).poke(steal t)`) is that place's from here on.
+            if (sig.Decl.Name is "poke" && plan.Args is [StealExpr { Value: ValueRef } placedTicket] && IsWorkTicket(InferQuiet(placedTicket)))
+                NoteTicketCall(plan, sig);
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
             _c.EnsureTypeDefined(sig.Ret);

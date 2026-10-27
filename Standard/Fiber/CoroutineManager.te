@@ -88,11 +88,19 @@ entity FiberState
 ### A ticket for a fiber, from {CoroutineManager.get_fiber}: it runs one piece of work at a time, whose result is a `T`
 ### (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
-record Fiber[T]
+entity Fiber[T]
 needs T: typename
     fiber: @FiberState
     ### The ticket's number: the fiber's until the ticket is given back.
     issued: U64
+
+### Makes a `Fiber` from its fields.
+### :param fiber: Its `fiber`.
+### :param issued: Its `issued`.
+### :returns: The new value.
+common routine Fiber[T].construct(fiber: @FiberState, issued: U64) -> Me
+needs T: typename
+    return Me(fiber, issued)
 
 ### When a fiber waiting with a deadline is due, its priority among the timers: earliest first, and in the order they
 ### started waiting when they are due together.
@@ -504,10 +512,10 @@ needs T: typename
 ### :throws: Crashes with `TicketGivenBackError` for a ticket given back.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].work_slot() -> @WorkSlot
+routine @Fiber[T].work_slot() -> @WorkSlot
 needs T: typename
-    fiber: @FiberState = me.fiber
-    fiber.slot.check_ticket(me.issued)
+    fiber: @FiberState = me.fiber.peek()
+    fiber.slot.check_ticket(me.issued.peek())
     return fiber.slot
 
 ### Starts the work in `work`, run by `runner`, and queues the fiber.
@@ -516,10 +524,10 @@ needs T: typename
 ### :param work: Its block.
 @target(os: not "none")
 @track_caller
-secret routine Fiber[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
+secret routine @Fiber[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
     work: Addr) -> None
 needs T: typename
-    fiber: @FiberState = me.fiber
+    fiber: @FiberState = me.fiber.peek()
     manager: @CoroutineManager = fiber.manager.peek()
     me.work_slot().put(runner, discard, work)
     manager.busy.fetch_add_unbroken(1)
@@ -535,7 +543,7 @@ needs T: typename
 ###     back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work(work: Work[T]) -> None
+routine @Fiber[T].put_work(work: Work[T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -548,7 +556,7 @@ needs T: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_callable(entry: Callable[(), T]) -> None
+routine @Fiber[T].put_callable(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -563,7 +571,7 @@ needs T: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
+routine @Fiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -578,7 +586,7 @@ needs T: typename, A: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+routine @Fiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -593,7 +601,7 @@ needs T: typename, A: typename, B: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+routine @Fiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -608,7 +616,7 @@ needs T: typename, A: typename, B: typename, C: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+routine @Fiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -623,7 +631,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_callable(entry: Callable[(), None]) -> None
+routine @Fiber[None].put_callable(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, discard, work = make_voidwork0(entry, manager: slot.manager.peek())
@@ -637,7 +645,7 @@ routine Fiber[None].put_callable(entry: Callable[(), None]) -> None
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
+routine @Fiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -652,7 +660,7 @@ needs A: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+routine @Fiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -667,7 +675,7 @@ needs A: typename, B: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
+routine @Fiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -682,7 +690,7 @@ needs A: typename, B: typename, C: typename
 ###     given back, and with `OutOfMemoryError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
+routine @Fiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -695,7 +703,7 @@ needs A: typename, B: typename, C: typename, D: typename
 ### :returns: True unless the work runs.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].check_finished() -> Bool
+routine @Fiber[T].check_finished() -> Bool
 needs T: typename
     return me.work_slot().is_finished()
 
@@ -705,7 +713,7 @@ needs T: typename
 ### :returns: The ticket, for its `retrieve()`.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].waitfor(timeout: Duration) -> Me
+routine @Fiber[T].waitfor(timeout: Duration) -> @Me
 needs T: typename
     me.work_slot().set_deadline(timeout)
     return me
@@ -715,10 +723,10 @@ needs T: typename
 ### :returns: `WAITED_FINISHED`, `WAITED_TIMED_OUT` or `WAITED_CANCELLED`.
 @target(os: not "none")
 @track_caller
-secret routine Fiber[T].wait_to_retrieve() -> U32
+secret routine @Fiber[T].wait_to_retrieve() -> U32
 needs T: typename
     slot: @WorkSlot = me.work_slot()
-    fiber: @FiberState = me.fiber
+    fiber: @FiberState = me.fiber.peek()
     manager: @CoroutineManager = fiber.manager.peek()
 
     if not manager.drives_here()
@@ -734,10 +742,10 @@ needs T: typename
 ### drives the manager, outside a fiber, the manager runs its fibers until the work is done, elsewhere the slot's wait.
 @target(os: not "none")
 @track_caller
-secret routine Fiber[T].wait_finished() -> None
+secret routine @Fiber[T].wait_finished() -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
-    fiber: @FiberState = me.fiber
+    fiber: @FiberState = me.fiber.peek()
     manager: @CoroutineManager = fiber.manager.peek()
 
     if slot.is_finished()
@@ -756,7 +764,7 @@ needs T: typename
 ###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-failable routine Fiber[None].retrieve() -> None
+failable routine @Fiber[None].retrieve() -> None
     waited: U32 = me.wait_to_retrieve()
     slot: @WorkSlot = me.work_slot()
     if waited == WAITED_TIMED_OUT
@@ -777,7 +785,7 @@ failable routine Fiber[None].retrieve() -> None
 ###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-failable routine Fiber[T].retrieve() -> T
+failable routine @Fiber[T].retrieve() -> T
 needs T: typename
     waited: U32 = me.wait_to_retrieve()
     slot: @WorkSlot = me.work_slot()
@@ -795,7 +803,7 @@ needs T: typename
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].cancel() -> None
+routine @Fiber[T].cancel() -> None
 needs T: typename
     me.work_slot().request_cancel()
     return

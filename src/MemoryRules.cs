@@ -148,7 +148,11 @@ public static class MemoryRules
 
     /// Work put on the ticket `Ticket` was handed `Name`, the view of an access this routine holds: the routine neither
     /// uses nor gives it back until the work is waited for.
-    public sealed record WorkHolds(string Ticket, string Name, Pos Pos) : Event(Pos);
+    public sealed record WorkHolds(string Ticket, string Name, Pos Pos) : Event(Pos)
+    {
+        /// One element of `Name` (`reads.getslot(i)` of a list of accesses): other elements go to other work.
+        public bool Element { get; init; }
+    }
 
     /// The work on the ticket `Ticket` is over (waited for, retrieved, given back), or the ticket was handed on.
     public sealed record WorkWaited(string Ticket, Pos Pos) : Event(Pos);
@@ -437,11 +441,12 @@ public static class MemoryRules
                         if (state.Lent.TryGetValue(id, out var endedWhileLent) && end.How != "returned")
                         {
                             // Handed into a value of this routine (a list of accesses): that value holds it for the work now.
+                            // The work reads it through the place it was lent from, so it doesn't move while the work runs.
                             if (end.Into is { } into && state.Names.TryGetValue(into, out var intoId) && intoId != id)
-                            {
-                                state.Lent.Remove(id);
-                                state.Lent[intoId] = endedWhileLent with { Kept = endedWhileLent.Kept ?? g.Origin };
-                            }
+                                Report(end.Pos, $"'{end.Name}' is lent to the work put on '{endedWhileLent.Ticket}' on line "
+                                    + $"{endedWhileLent.Pos.Line}, which reaches it through its place, and it leaves that place here ({end.How}): "
+                                    + $"keep it there until {endedWhileLent.Wait}, or put it in its last place first and "
+                                    + "lend the work that place (xs.getslot(i))");
                             else
                             {
                                 Report(end.Pos, endedWhileLent.Kept is { } kept
@@ -561,7 +566,8 @@ public static class MemoryRules
                     case WorkHolds wh:
                         if (state.Names.TryGetValue(wh.Name, out var lentId))
                         {
-                            if (state.Lent.TryGetValue(lentId, out var already))
+                            if (state.Lent.TryGetValue(lentId, out var already) && wh.Element) { }
+                            else if (state.Lent.TryGetValue(lentId, out already))
                                 Report(wh.Pos, $"'{wh.Name}' is handed to the work put on '{already.Ticket}' on line {already.Pos.Line} already, "
                                     + "and two pieces of work would change it at once: wait for the first one before handing it on");
                             else state.Lent[lentId] = (wh.Ticket, wh.Pos, $"{wh.Ticket}.retrieve()", null);

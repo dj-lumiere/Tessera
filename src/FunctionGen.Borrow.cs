@@ -55,6 +55,10 @@ public sealed partial class FunctionGen
         (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.IsLibrary: true } r
         && r.Decl.Name is "Thread" or "Fiber" or "PassableFiber" or "FileStorage";
 
+    /// Whether `t` (or the place of one) is a thread, fiber, or passable fiber ticket, which work runs on.
+    private static bool IsWorkTicket(DType? t) =>
+        (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "PassableFiber" };
+
     /// Whether `t` is the standard library's `BorrowedCell[T]` (`&T`) or `BorrowedSlice[T]` (`&[T]`), not a type of the program that
     /// is named so.
     private bool IsPlaceType(TypeRef t)
@@ -119,16 +123,14 @@ public sealed partial class FunctionGen
         if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr))
             throw Err(value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
                 + $"{new Printer().Expr(value, 0)}: a second name for one borrowed {type.Name} would give it back twice");
-        // A mapped file's storage is an entity: the name is a place that holds it.
-        if (type is RecordType { Decl.Name: "FileStorage" })
-        {
-            return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
-                { Source = b.Source, Ticket = true }, false);
-        }
-        // A ticket made again from its fields (`Thread[Byte](worker: lent, ...)`) is a view of one lent elsewhere, which
-        // is given back there.
-        bool remade = value is CallExpr remaking && type is RecordType { Decl.Name: var typeName } && remaking.Name == typeName;
-        return (new BindStmt(b.Name, written, value, b.Pos) { Source = b.Source, Lowered = true, Ticket = IsTicketLike(type) && !remade }, false);
+        // A ticket made again from its fields (`Thread[Byte].construct(worker: lent, ...)`) is a view of one lent
+        // elsewhere, which is given back there.
+        bool remade = value is NsCallExpr { Name: "construct", Owner: var remadeOwner } && type is RecordType { Decl.Name: var typeName }
+            && remadeOwner.Name == typeName;
+        // Each borrowed thing is an entity (an access, a ticket, a mapped file's storage): the name is a place that
+        // holds it, given back with drop.
+        return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
+            { Source = b.Source, Ticket = IsTicketLike(type) && !remade }, false);
     }
 
     /// The error for a `=` binding of something borrowed, which `<-` binds, or null.

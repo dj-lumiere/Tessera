@@ -130,14 +130,14 @@ routine pass_open(gate: @Gate) -> None
 
 ### Waits, with exclusive access to the gate held, until `count` gate threads have reached the gate. Each holds
 ### exclusive access to the gate from arriving until its wait gives it back, so all of them are waiting by then.
-routine await_waiting(gate: @Gate, held: Authorized[Gate], count: U64) -> None
+routine await_waiting(gate: @Gate, held: @Authorized[Gate], count: U64) -> None
     until gate.waiting.peek() >= count
         gate.progress.wait(held)
     then
         return
 
 ### Waits, with exclusive access to the gate held, until `count` gate threads are through.
-routine await_passed(gate: @Gate, held: Authorized[Gate], count: U64) -> None
+routine await_passed(gate: @Gate, held: @Authorized[Gate], count: U64) -> None
     until gate.passed.peek() >= count
         gate.progress.wait(held)
     then
@@ -263,7 +263,7 @@ routine make_ready(timed: @Timed) -> None
 ### A run of slots in a thread array: `count` of them from `first` on.
 record ThreadSlots
     ### The array the threads go into.
-    threads: @Items[Thread[None], 8]
+    threads: @Slots[Thread[None], 8]
     ### The first slot of the run.
     first: U64
     ### How many slots the run has.
@@ -272,27 +272,27 @@ record ThreadSlots
 ### Starts a thread in each of `slots`, each running `body` on `state`.
 routine spawn_many[T](body: Callable[(@T,), None], state: @T, slots: ThreadSlots) -> None
 needs T: typename
-    threads: @Items[Thread[None], 8] = slots.threads
+    threads: @Slots[Thread[None], 8] = slots.threads
     end: U64 = slots.first + slots.count
 
     each i in slots.first til end
         t: Thread[None] <- get_thread[None]()
         t.put_callable(entry: body, args: state)
-        threads[i] = t
+        threads.getslot(i).poke(steal t)
     then
         return
 
 ### Joins the threads in `threads` below `count`.
-routine join_many(threads: @Items[Thread[None], 8], count: U64) -> None
+routine join_many(threads: @Slots[Thread[None], 8], count: U64) -> None
     each i in 0 til count
-        t: Thread[None] <- steal threads.getslot(i)
+        steal threads.getslot(i) as t inject .hollow()
         t.retrieve()
         drop t
     then
         return
 
 routine start() -> None
-    threads: &Items[Thread[None], 8] <- .hollow()
+    threads: &Slots[Thread[None], 8] <- .hollow()
     box: &Mailbox <- Mailbox(not_full: .construct(), not_empty: .construct(), full: false, value: 0)
 
     producer: Thread[None] <- get_thread[None]()

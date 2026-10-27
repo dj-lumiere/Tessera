@@ -490,7 +490,7 @@ public sealed class EscapeCheck
                         + $"{at.Pos.Line}), which the thread that waits for the work reads: " + ThreadLocalFix(local) + Note));
                     break;
                 }
-                const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]), borrowed in a name "
+                const string fix = "hand the work an exclusive access to it (its parameter an @Authorized[T]), borrowed in a name "
                     + "first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's retrieve; "
                     + "or make it an Unbroken[T] and change it with its routines";
                 foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
@@ -510,7 +510,7 @@ public sealed class EscapeCheck
                     // A run of values (a @[T] parameter) is taken at once, with the access of the whole run.
                     var paramType = all.GetValueOrDefault(routine)?.Inst.Params.ElementAtOrDefault(param);
                     string handFix = paramType is not null && Compiler.IsCoreSpan(paramType, out var element)
-                        ? $"hand the work the run's exclusive access (its parameter an AuthorizedSlice[{element.Name}]), borrowed in a "
+                        ? $"hand the work the run's exclusive access (its parameter an @AuthorizedSlice[{element.Name}]), borrowed in a "
                           + $"name first, held: AuthorizedSlice[{element.Name}] <- s.get_exclusive_access(), and dropped after the "
                           + "ticket's retrieve"
                         : fix;

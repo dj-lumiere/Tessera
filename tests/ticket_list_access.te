@@ -1,5 +1,5 @@
-# Tickets whose work was handed a run's shared read access go in a List[Thread[S64]] and are retrieved
-# together. The accesses go in a list too, given back once the tickets' work is over.
+# Tickets whose work was lent a run's shared read access go in a List[Thread[S64]] and are retrieved together. The
+# accesses are put in their list first, and each work is lent its element: they are given back once the work is over.
 
 import Collections
 import Hosted
@@ -7,7 +7,7 @@ import Hosted
 ### The sum of the values the access covers.
 ### :param part: The shared read access to the values.
 ### :returns: Their sum.
-routine total(part: ReadAuthorizedSlice[S64]) -> S64
+routine total(part: @ReadAuthorizedSlice[S64]) -> S64
     view: @[S64] = part.getview()
 
     each i in 0 til view.count() with sum: S64 = 0
@@ -25,11 +25,14 @@ routine start() -> None
     each half: U64 in 0 til 2
         held: ReadAuthorizedSlice[S64] <- view.getslice(start: half * 2,
             count: 2).get_shared_read_access()
+        reads.add_last(steal held)
+
+    # The accesses are in their places before any work is handed one: the list doesn't grow while work reads them.
+    each half: U64 in 0 til 2
         t: Thread[S64] <- get_thread[S64]()
-        work: Work[S64] = total.to[Work](part: held)
+        work: Work[S64] = total.to[Work](part: reads.getslot(half))
         t.put_work(steal work)
-        ts.add_last(t)
-        reads.add_last(held)
+        ts.add_last(steal t)
     sums: &List[S64] <- ts.retrieve_all()
     ts.give_back_all()
     drop reads

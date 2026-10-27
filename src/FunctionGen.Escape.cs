@@ -440,7 +440,7 @@ public sealed partial class FunctionGen
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
         // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
-        if (value is ValueRef ticket && InferQuiet(value) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
+        if ((value is StealExpr { Value: ValueRef stolenTicket } ? stolenTicket : value) is ValueRef ticket && IsWorkTicket(InferQuiet(ticket)))
             Mem(new MemoryRules.WorkStored(ResolveRoot(ticket.Name), plan.Pos));
     }
 
@@ -535,6 +535,11 @@ public sealed partial class FunctionGen
                     if (part is ValueRef view && _accessViews.Contains(view.Name)) Mem(new MemoryRules.WorkHolds(ticket, view.Name, part.Pos));
                     else if (AccessKey(part) is { } key && _accessGroups.TryGetValue(key, out var group))
                         Mem(new MemoryRules.WorkHolds(ticket, group, part.Pos));
+                    // An access lent from a value of this routine that holds it (`reads.getslot(i)` of a list of
+                    // accesses): the value is the work's until the work is waited for.
+                    else if (part is not ValueRef && IsAccessType(InferQuiet(part)) && InferQuiet(part) is PtrType
+                             && RootName(part) is { } lender && !_routineParams.ContainsKey(lender) && BoundInRoutine(lender))
+                        Mem(new MemoryRules.WorkHolds(ticket, ResolveRoot(lender), part.Pos) { Element = true });
                 // FrameView names a frame slot or span itself "the frame ...", and memory a slot holds "the memory ...".
                 if (parts.Select(FrameView).FirstOrDefault(v => v is not null) is { } sees)
                     Mem(new MemoryRules.WorkStarted(ticket, sees, sees.StartsWith("the frame ", StringComparison.Ordinal), plan.Pos));
@@ -554,7 +559,7 @@ public sealed partial class FunctionGen
         // that work was handed stay the list's work's until then. A ticket handed to another routine is followed no further.
         foreach (var arg in plan.Args)
             if ((arg is StealExpr { Value: ValueRef stolen } ? stolen : arg) is ValueRef handed
-                && InferQuiet(handed) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
+                && IsWorkTicket(InferQuiet(handed)))
                 Mem(holder is not null
                     ? new MemoryRules.WorkKept(handed.Name, holder, $"{holder}.retrieve_all()", arg.Pos)
                     : new MemoryRules.WorkWaited(handed.Name, arg.Pos));
