@@ -6,8 +6,10 @@ namespace Tessera;
 /// any instantiation. It is a type of its own: two parameters are never the same type, even when they share a name.
 /// A value of it has the routines the constraints in force give it and the routines on every type (`T.name`), nothing
 /// else. It lowers like a pointer, which only the throwaway IR of the check ever sees.
-public sealed class ArchetypeType(string name, int id) : DType
+public sealed class ArchetypeType(string name, int id, bool isRecord = false) : DType
 {
+    /// Whether the parameter is declared `T: record`: its values hold nothing with a release duty.
+    public bool IsRecord { get; } = isRecord;
     public override string Name => name;
     public override string Key => $"{name}#{id}";
     public override string Llvm => "ptr";
@@ -114,6 +116,14 @@ public sealed partial class Compiler
                     && BareMember(choice, bare.Name, new TypeEnv(r.File), bare.Pos) is { } member)
                     env.Bind(bare.Name, member);
         }
+        // An owner's parameter declared `T: record` is one in every routine on it, whatever the routine's needs say.
+        if (r.Owner is { Args.Count: > 0 } kindOwner && ownerDecl is RecordDecl or VariantDecl)
+        {
+            var (ownerParams, ownerClauses) = ownerDecl is RecordDecl krd ? (krd.TypeParams, krd.Clauses) : (((VariantDecl)ownerDecl).TypeParams, ((VariantDecl)ownerDecl).Clauses);
+            for (int i = 0; i < kindOwner.Args.Count && i < ownerParams.Count; i++)
+                if (kindOwner.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null } bare } && DeclaresRecordKind(ownerClauses, ownerParams[i]))
+                    kinds[bare.Name] = TypeRef.Simple("record", bare.Pos);
+        }
         foreach (var name in OwnerTypeParams(r).Concat(r.TypeParams).Distinct().Where(n => !env.Has(n)))
             BindPrecheckParam(env, name, kinds, r.File, r.Pos);
         // The owner's constraints hold in every routine on it, wherever the routine is declared.
@@ -181,7 +191,8 @@ public sealed partial class Compiler
         var kinds = new Dictionary<string, TypeRef>();
         foreach (var c in clauses)
             foreach (var (name, kind, _) in c.Params)
-                kinds.TryAdd(name, kind);
+                // `T: record` on any line holds on all of them: a type's own needs line says it for every routine.
+                if (!kinds.TryAdd(name, kind) && IsRecordKind(kind)) kinds[name] = kind;
         return kinds;
     }
 
@@ -196,7 +207,7 @@ public sealed partial class Compiler
         {
             // A choice parameter stands for every member: its first is the value the body is checked with, and a
             // stand-in never folds a when or an if on it, so every arm is checked.
-            env.Bind(name, kind is { Name: "typename", Args.Count: 0 } ? new ArchetypeType(name, ++_archetypes)
+            env.Bind(name, IsTypeKind(kind) ? new ArchetypeType(name, ++_archetypes, IsRecordKind(kind))
                 : ResolveTypeQuiet(kind, new TypeEnv(file)) is ChoiceType { Decl.IsFlags: false, Decl.Members: [{ Value: IntLit first }, ..] } choice
                     ? new ConstArg(first.Value, choice) { StandIn = true }
                     : new ConstArg(PrecheckCount, ResolveTypeQuiet(kind, new TypeEnv(file)) as IntType) { StandIn = true });

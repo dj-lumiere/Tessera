@@ -151,7 +151,7 @@ public sealed partial class Compiler
                 if (!_sizing.Add(v.Key)) throw new CompileError(pos, $"{v} contains itself");
                 try
                 {
-                    var (tagSize, tagAlign) = Layout(pos).Int(VariantType.Tag.Bits);
+                    var (tagSize, tagAlign) = v.IsFlagged ? (1L, 1L) : Layout(pos).Int(VariantType.Tag.Bits);
                     var (_, size, align) = VariantStorage(v);
                     long offset = RoundUp(tagSize, align);
                     long whole = Math.Max(tagAlign, align);

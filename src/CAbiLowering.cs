@@ -143,6 +143,14 @@ public sealed partial class Compiler
                 for (long k = 0; k < v.Count; k++) AddLeaves(v.Elem, at + k * step, acc, pos);
                 break;
             }
+            case VariantType { IsFlagged: true } flagged:
+            {
+                // The present flag is a C bool, then the value at its own alignment.
+                acc.Add(new Leaf(at, 1, 'i', "i8"));
+                var (_, valueAlign) = SizeAlign(flagged.Leaves[0], pos);
+                AddLeaves(flagged.Leaves[0], at + RoundUp(1, valueAlign), acc, pos);
+                break;
+            }
             case VariantType v:
             {
                 var (tagSize, _) = SizeAlign(VariantType.Tag, pos);

@@ -397,16 +397,16 @@ secret record StatFs
     blocks_available: U64
     files: U64
     files_free: U64
-    fsid: Array[S32, 2]
+    fsid: Items[S32, 2]
     owner: U32
     fs_type: U32
     flags: U32
     fs_subtype: U32
-    type_name: Array[Byte, 16]
-    mounted_on: Array[Byte, 1024]
-    mounted_from: Array[Byte, 1024]
+    type_name: Items[Byte, 16]
+    mounted_on: Items[Byte, 1024]
+    mounted_from: Items[Byte, 1024]
     flags_ext: U32
-    reserved: Array[U32, 7]
+    reserved: Items[U32, 7]
 
 ### Binds the C `statfs` function with 64-bit inodes, which describes the file system a path is on.
 ### :param path: The NUL-terminated path.
@@ -476,14 +476,14 @@ secret routine disk_of(name: @[Byte]) -> @[Byte]
 @target(os: "macos")
 @track_caller
 secret routine mac_partition(st: @StatFs, manager: @MemoryManager) -> PartitionManager
-    from: @[Byte] = c_text(field: st.mounted_from.to[@Byte]())
+    from: @[Byte] = c_text(field: st.mounted_from.to[@[Byte]]().to[@Byte]())
     name: @[Byte] = when
         from.has_prefix("/dev/") => from.slice(start: 5, end: from.count())
         else => from
     size: U64 = st.blocks.peek() *% st.block_size.peek().to[U64]()
     facts: PartitionFacts = PartitionFacts(name, device: disk_of(name),
-        mounted_at: c_text(field: st.mounted_on.to[@Byte]()),
-        file_system: c_text(field: st.type_name.to[@Byte]()), size)
+        mounted_at: c_text(field: st.mounted_on.to[@[Byte]]().to[@Byte]()),
+        file_system: c_text(field: st.type_name.to[@[Byte]]().to[@Byte]()), size)
     return partition_from(facts, manager)
 
 ### Every mounted file system, as getfsstat reports them.
@@ -544,12 +544,12 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "macos")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Items[Byte, PATH_CAPACITY] <- .hollow()
     st: &StatFs <- .hollow()
 
-    if not c_path(path, out: cpath.to[@Byte]())
+    if not c_path(path, out: cpath.to[@[Byte]]().to[@Byte]())
         throw path_error(path)
-    if c_statfs(cpath.to[@Byte](), st) != 0
+    if c_statfs(cpath.to[@[Byte]]().to[@Byte](), st) != 0
         throw last_error()
     return mac_partition(st, manager)
 
@@ -614,16 +614,16 @@ secret routine c_get_volume_path_name(path: @U16, out: @U16, size: U32) -> CInt
 @target(os: "windows")
 @track_caller
 secret routine windows_partition(root: @U16, manager: @MemoryManager) -> PartitionManager
-    fs: &Array[U16, 64] <- .hollow()
+    fs: &Items[U16, 64] <- .hollow()
     total: &U64 <- 0
 
     n: U64 = wide_length(root)
     at: &[Byte] <- copied_wide(units: root, count: n, manager)
     fs_name: &[Byte] <- copied(text: "", manager)
 
-    if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@U16](),
+    if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@[U16]]().to[@U16](),
         64) != 0
-        fs_name.replace(value: copied_wide(units: fs.to[@U16](), count: wide_length(fs.to[@U16]()),
+        fs_name.replace(value: copied_wide(units: fs.to[@[U16]]().to[@U16](), count: wide_length(fs.to[@[U16]]().to[@U16]()),
             manager))
         c_get_disk_free_space(root, .hollow(), total, .hollow())
     path: @[Byte] = at.getslice()
@@ -647,13 +647,13 @@ secret routine windows_partition(root: @U16, manager: @MemoryManager) -> Partiti
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
     list: &List[PartitionManager] <- .construct(manager)
-    roots: &Array[U16, 512] <- .hollow()
+    roots: &Items[U16, 512] <- .hollow()
 
-    got: U32 = c_get_logical_drive_strings(512, roots.to[@U16]())
+    got: U32 = c_get_logical_drive_strings(512, roots.to[@[U16]]().to[@U16]())
     if got == 0 or got >= 512
         return list
     loop with at: U64 = 0
-        root: @U16 = roots.to[@U16]().stride(at)
+        root: @U16 = roots.to[@[U16]]().to[@U16]().stride(at)
         n: U64 = wide_length(root)
         if n == 0
             break
@@ -677,11 +677,11 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "windows")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
-    root: &Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Items[U16, PATH_CAPACITY] <- .hollow()
+    root: &Items[U16, PATH_CAPACITY] <- .hollow()
 
-    if not wide_path(path, out: wpath.to[@U16]())
+    if not wide_path(path, out: wpath.to[@[U16]]().to[@U16]())
         throw path_error(path)
-    if c_get_volume_path_name(wpath.to[@U16](), root.to[@U16](), PATH_CAPACITY.to[U32]()) == 0
+    if c_get_volume_path_name(wpath.to[@[U16]]().to[@U16](), root.to[@[U16]]().to[@U16](), PATH_CAPACITY.to[U32]()) == 0
         throw last_error()
-    return windows_partition(root: root.to[@U16](), manager)
+    return windows_partition(root: root.to[@[U16]]().to[@U16](), manager)

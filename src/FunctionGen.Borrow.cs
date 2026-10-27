@@ -168,8 +168,9 @@ public sealed partial class FunctionGen
     }
 
     /// Whether the builder's drop of a STACK place holding `held` runs a destruct: the value has something to give back.
-    /// A variant or an array is ended by the program.
-    private bool GivenBackAtExit(DType held) => HasReleaseDuty(held) && held is not (VariantType or ArrayType);
+    /// A variant is ended by the program. A Slots is an entity, which the builder ends element by element, the last
+    /// first.
+    private bool GivenBackAtExit(DType held) => HasReleaseDuty(held) && held is not (VariantType or ArrayType { IsSlots: false });
 
     /// The flags' first values, written in the start block: no STACK place is borrowed yet.
     private readonly List<string> _flagInits = [];

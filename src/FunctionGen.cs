@@ -2152,7 +2152,7 @@ public sealed partial class FunctionGen
                     if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; peek it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .to[@T]().stride(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .to[@[T]]().getslot(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -2794,7 +2794,7 @@ public sealed partial class FunctionGen
                 "a &[T] from STACK has a count the build knows; for a count known only while running, "
                 + "borrow the memory from a manager: xs: &[T] <- [0] * n from manager");
         }
-        var array = new ArrayType(elem, count);
+        var array = new ArrayType(elem, count, isSlots: Entities.Holds(elem));
         _c.EnsureTypeDefined(array);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {array.Llvm}, align {_c.SizeAlign(array, lit.Pos).Align}");
@@ -2927,9 +2927,9 @@ public sealed partial class FunctionGen
     {
         _c.EnsureTypeDefined(vt);
         if (value.Type is VariantType { Decl.IsAnonymous: true } sub && vt.LeafIndex(sub) < 0) return WidenVariant(value, sub, vt);
-        uint id = VariantType.TypeId(value.Type);
+        uint id = vt.LeafId(value.Type);
         string tag = FailureTag(value.Type, vt, id, made ?? _decl.Pos);
-        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {tag}, 0");
+        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {vt.TagLlvm} {tag}, 0");
         if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(value.Type, default).Size == 0) return new Val(tagged, vt);
         string slot = NewSlot(vt);
         Line($"store {vt.Llvm} {tagged}, ptr {slot}");
@@ -2981,6 +2981,10 @@ public sealed partial class FunctionGen
     private string CopyVariant(VariantType from, string slot, VariantType to)
     {
         _c.EnsureTypeDefined(to);
+        // A flagged Maybe's tag is its own flag, not a type ID: it moves only into the same type.
+        if (from.IsFlagged || to.IsFlagged)
+            return from.Equals(to) ? EmitTmp($"load {to.Llvm}, ptr {slot}")
+                : throw Err(_decl.Pos, $"{from} doesn't move into {to}: a Maybe's flag isn't another variant's tag");
         string tag = EmitTmp($"getelementptr inbounds {from.Llvm}, ptr {slot}, i32 0, i32 0");
         string id = EmitTmp($"load {VariantType.Tag.Llvm}, ptr {tag}");
         string tagged = EmitTmp($"insertvalue {to.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
@@ -3252,7 +3256,7 @@ public sealed partial class FunctionGen
         List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
         string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
-        string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
+        string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
         bool failures = Crashing.IsCheck(vt) || Crashing.IsUnion(vt);
@@ -3293,7 +3297,7 @@ public sealed partial class FunctionGen
             foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
                 if (!seen.Add(index)) throw Err(arm.Pos, $"two arms observe {vt.Leaves[index]}");
-                cases.Add($"i32 {VariantType.TypeId(vt.Leaves[index])}, label %{label}");
+                cases.Add($"i32 {vt.LeafId(vt.Leaves[index])}, label %{label}");
             }
         }
         var missing = vt.Leaves.Where((_, i) => !seen.Contains(i)).ToList();
@@ -3326,13 +3330,13 @@ public sealed partial class FunctionGen
             }
             else label = armBlock(elseArm, null);
             // The leaves else takes are listed, so a value holding none of them still crashes below.
-            foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
+            foreach (var m in missing) cases.Add($"i32 {vt.LeafId(m)}, label %{label}");
         }
         else if (missing.Count > 0 && failures)
         {
             // The failures no arm observes go on to the caller, or stop the program here.
             string passOn = PassOnFailures(w, vt, missing, slot!);
-            foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{passOn}");
+            foreach (var m in missing) cases.Add($"i32 {vt.LeafId(m)}, label %{passOn}");
         }
         else if (missing.Count > 0)
             throw Err(w.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
@@ -3698,16 +3702,16 @@ public sealed partial class FunctionGen
                 ? EvalTupleLit(lit, tuple)
                 : throw Err(lit.Pos, $"a tuple is written in parentheses: ({string.Join(", ", tuple.Args.Select(_ => "..."))})");
         if (lit.IsTuple && t is ArrayType or VectorType)
-            throw Err(lit.Pos, $"an {(t is ArrayType ? "Array" : "Vector")} is written in brackets: [a, b, ...]");
+            throw Err(lit.Pos, $"{(t is ArrayType at ? "an " + at.Kind : "a Vector")} is written in brackets: [a, b, ...]");
         var (elem, count, insert) = t switch
         {
             ArrayType a => (a.Elem, a.Count, "insertvalue"),
             VectorType v => (v.Elem, v.Count, "insertelement"),
             _ => throw Err(lit.Pos, lit.IsTuple
                 ? $"(a, b) is a tuple, and a {t} isn't one"
-                : $"only an Array or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
+                : $"only an Items, a Slots or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
         };
-        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Array does: [a] * n");
+        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Items does: [a] * n");
         var elements = _c.Elements(lit, _env);
         if (elements.Count != count)
             throw Err(lit.Pos, $"{t} needs {count} element(s), got {elements.Count}");
@@ -4571,6 +4575,8 @@ public sealed partial class FunctionGen
                 if (t.Name != s.Decl.Name) return t.Args.Count == 0;
                 if (t.Args.Count != s.Args.Count) return false;
                 return t.Args.Select((a, i) => a is not TypeArgType ta || CouldMatch(ta.Type, s.Args[i], unbound)).All(x => x);
+            case ArrayType arr:
+                return t.Name == arr.Kind && (t.Args.FirstOrDefault() is not TypeArgType elem || CouldMatch(elem.Type, arr.Elem, unbound));
             default:
                 return true;
         }
@@ -4708,7 +4714,7 @@ public sealed partial class FunctionGen
             case ArrayLit a:
                 return pt switch
                 {
-                    ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => ElementsMisfit(a, at.Elem),
+                    ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => ArrayLitMisfit(a, at, ref preferred),
                     VectorType vt when !a.IsTuple && vt.Count == a.Elements.Count => null,
                     RecordType { IsTuple: true } tu when a.IsTuple && tu.Args.Count == a.Elements.Count => null,
                     // An argument borrows a literal in the frame where a PointedSlice is expected.
@@ -4739,6 +4745,18 @@ public sealed partial class FunctionGen
             default:
                 return null;
         }
+    }
+
+    /// An array literal where an `Items` or a `Slots` goes. The literal is an `Items` when its elements hold nothing
+    /// with a release duty and a `Slots` when one holds an entity, so the other kind is not preferred where overloads
+    /// take both (`of(values: Items[T, COUNT])` and `of(values: Slots[T, COUNT])`), and an `Items` takes no entity.
+    private string? ArrayLitMisfit(ArrayLit a, ArrayType at, ref bool preferred)
+    {
+        if (ElementsMisfit(a, at.Elem) is { } why) return why;
+        bool holdsEntity = Entities.Holds(at.Elem) || a.Elements.Any(e => Entities.Holds(InferQuiet(e)));
+        if (!at.IsSlots && holdsEntity) return $"an Items holds no entity, and these elements do: a Slots takes them";
+        if (at.IsSlots != holdsEntity) preferred = false;
+        return null;
     }
 
     /// The type a unit literal makes: `Duration` for a time unit, `ByteSize` for a size unit.
@@ -4841,7 +4859,7 @@ public sealed partial class FunctionGen
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"[{string.Join(", ", m.TypeArgs)}]");
                 string fix = m.Receiver switch
                 {
-                    ArrayLit => $"a: Array[T, COUNT] = [...], then a.{call}(...)",
+                    ArrayLit => $"a: Items[T, COUNT] = [...], then a.{call}(...)",
                     RecordLit => "Type(...)",
                     FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
@@ -5068,7 +5086,7 @@ public sealed partial class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "None" or "PointedCell" or "Addr" or "Array" or "Vector"
+        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "None" or "PointedCell" or "Addr" or "Items" or "Slots" or "Vector"
         || _c.DeclaresType(name);
 
     /// Whether a routine defined for type arguments (`S32.to[S64]`, `PointedCell[T].to[@U]`) is the one these name.
@@ -5161,7 +5179,7 @@ public sealed partial class FunctionGen
     /// `values: Array[T, COUNT]` binds COUNT to 3, so `List[S64].of(values: [3, 1, 2], manager: HEAP)` needn't name it.
     private void UnifyArrayCount(TypeRef t, Expr arg, Compiler.TypeEnv env, HashSet<string> unbound)
     {
-        if (arg is not ArrayLit { IsTuple: false } lit || t is not { Name: "Array", Args: [_, TypeArgType { Type: { Args.Count: 0 } n }] }
+        if (arg is not ArrayLit { IsTuple: false } lit || t is not { Name: "Items" or "Slots", Args: [_, TypeArgType { Type: { Args.Count: 0 } n }] }
             || !unbound.Contains(n.Name) || env.Has(n.Name))
             return;
         try { env.Bind(n.Name, new ConstArg(_c.Elements(lit, _env).Count)); }
@@ -5192,7 +5210,7 @@ public sealed partial class FunctionGen
                 for (int i = 0; i < v.Args.Count; i++)
                     if (t.Args[i] is TypeArgType ta) Unify(ta.Type, v.Args[i], env, unbound);
                 break;
-            case ArrayType a when t.Name == "Array" && t.Args.Count == 2:
+            case ArrayType a when t.Name == a.Kind && t.Args.Count == 2:
                 if (t.Args[0] is TypeArgType e) Unify(e.Type, a.Elem, env, unbound);
                 if (t.Args[1] is TypeArgType { Type: { Args.Count: 0 } n } && unbound.Contains(n.Name) && !env.Has(n.Name))
                     env.Bind(n.Name, new ConstArg(a.Count));

@@ -1,46 +1,51 @@
-# Tessera stdlib collection: Array[T, COUNT] — fixed-size inline array
+# Tessera stdlib collection: Items[T, COUNT], COUNT values in a row
 #
-# Maps to LLVM IR [N x T].  Stored entirely inline — no heap allocation,
-# no pointer indirection.  N is a buildtime constant U64.
+# Maps to LLVM IR [COUNT x T], stored in place: no memory from a manager and no
+# address to follow. COUNT is a buildtime constant U64. An Items is a record, so
+# its elements hold nothing with a release duty. Slots[T, COUNT] (Slots.te) is the
+# entity with the same layout, which takes any T.
 #
-# The helpers below also operate on Array[T, COUNT] fields inside larger
+# The helpers below also operate on Items[T, COUNT] fields inside larger
 # structures. The range convention is half-open: [start, end).
 
 module System
 
-### A fixed-size array stored inline as the LLVM type `[COUNT x T]`: no heap allocation and no pointer indirection. `COUNT` is a buildtime constant and every index is bounds-checked.
-### :typeparam T: The element type.
+### `COUNT` values of `T` in a row, stored in place as the LLVM type `[COUNT x T]`: no memory from a manager and no
+### address to follow. `COUNT` is a buildtime constant and every index is bounds-checked. An `Items` is a record, so it
+### is a value (copied with `=`, a preset), and its elements hold nothing with a release duty: entities go in a
+### {Slots[T, COUNT]}.
+### :typeparam T: The element type, a type whose values hold nothing with a release duty.
 ### :typeparam COUNT: The number of elements, fixed at build time.
 @llvm("[{COUNT} x {T}]")
-record Array[T, COUNT]
-obeys Equatable[Array[T, COUNT]] when T: typename, COUNT: U64, Equatable[T]
-needs T: typename, COUNT: U64
-obeys ViewingIndexable[Array[T, COUNT], T], ModifyingIndexable[Array[T, COUNT], T]
+record Items[T, COUNT]
+obeys Equatable[Items[T, COUNT]] when T: record, COUNT: U64, Equatable[T]
+needs T: record, COUNT: U64
+obeys ViewingIndexable[Items[T, COUNT], T], ModifyingIndexable[Items[T, COUNT], T]
     nothing
 
 # -- metadata ------------------------------------------------------------------
 
 ### The number of elements, which is the buildtime constant `COUNT`.
 ### :returns: `COUNT`.
-common routine Array[T, COUNT].count() -> U64
-needs T: typename, COUNT: U64
+common routine Items[T, COUNT].count() -> U64
+needs T: record, COUNT: U64
     return COUNT
 
 # -- construction --------------------------------------------------------------
 
-# An array literal `[a, b, ...]` where an `Array[T, COUNT]` is expected makes an array value, built into the builder like a record literal.
-# COUNT values already in memory are read through a pointer of the array type: `first.to[@Array[T, COUNT]]().peek()`.
+# An array literal `[a, b, ...]` where an `Items[T, COUNT]` is expected makes an Items value, built into the builder like a record literal.
+# COUNT values already in memory are read through a pointer of the Items type: `first.to[@Items[T, COUNT]]().peek()`.
 
 # -- element access ------------------------------------------------------------
 
-### Reads the element at `index` of an array value: `primes.getitem(i)` where `primes: Array[U64, 3] = [2, 3, 5]`. The
+### Reads the element at `index` of an array value: `primes.getitem(i)` where `primes: Items[U64, 3] = [2, 3, 5]`. The
 ### index is a runtime value, so the array goes in a slot and the pointer form reads it.
 ### :param index: The zero-based position to read.
 ### :returns: A copy of the element at `index`.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
 @track_caller
-routine Array[T, COUNT].getitem(index: U64) -> T
-needs T: typename, COUNT: U64
+routine Items[T, COUNT].getitem(index: U64) -> T
+needs T: record, COUNT: U64
     slot: &Me <- me
 
     value: T = slot[index]
@@ -51,8 +56,8 @@ needs T: typename, COUNT: U64
 ### :returns: A copy of the element at `index`.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
 @track_caller
-routine @Array[T, COUNT].getitem(index: U64) -> T
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].getitem(index: U64) -> T
+needs T: record, COUNT: U64
     if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         value: T = base.stride(index).peek()
@@ -64,8 +69,8 @@ needs T: typename, COUNT: U64
 ### :param value: The value to store.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
 @track_caller
-routine @Array[T, COUNT].setitem(index: U64, value: T) -> None
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].setitem(index: U64, value: T) -> None
+needs T: record, COUNT: U64
     if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         base.stride(index).poke(value)
@@ -77,23 +82,22 @@ needs T: typename, COUNT: U64
 ### :returns: The element's address.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
 @track_caller
-routine @Array[T, COUNT].getslot(index: U64) -> @T
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].getslot(index: U64) -> @T
+needs T: record, COUNT: U64
     if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         element: @T = base.stride(index)
         return element
     throw IndexOutOfBoundsError(index, count: COUNT)
 
-### Exchanges the elements at `first` and `second` in place. Each element is moved, never copied, so entity elements
-### swap too, and neither place is left hollow. The same index twice changes nothing.
+### Exchanges the elements at `first` and `second` in place. The same index twice changes nothing.
 ### :param first: The zero-based position of one element.
 ### :param second: The zero-based position of the other element.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `first >= COUNT` or `second >= COUNT`.
 @track_caller
-routine @Array[T, COUNT].swap(first: U64, second: U64) -> None
-needs T: typename, COUNT: U64
-    me.getview().swap(first, second)
+routine @Items[T, COUNT].swap(first: U64, second: U64) -> None
+needs T: record, COUNT: U64
+    me.to[@[T]]().swap(first, second)
     return
 
 # -- equality ------------------------------------------------------------------
@@ -101,8 +105,8 @@ needs T: typename, COUNT: U64
 ### Whether two arrays are equal: every pair of elements at the same index compares equal.
 ### :param other: The array to compare with.
 ### :returns: `true` when all `COUNT` element pairs are equal.
-routine Array[T, COUNT].eq(other: Me) -> Bool
-needs T: typename, COUNT: U64, Equatable[T]
+routine Items[T, COUNT].eq(other: Me) -> Bool
+needs T: record, COUNT: U64, Equatable[T]
     a: &Me <- me
     b: &Me <- other
 
@@ -111,8 +115,8 @@ needs T: typename, COUNT: U64, Equatable[T]
 ### `eq`, through pointers to the two arrays.
 ### :param other: The array to compare with.
 ### :returns: True when all `COUNT` element pairs are equal.
-secret routine @Array[T, COUNT].eq_at(other: @Me) -> Bool
-needs T: typename, COUNT: U64, Equatable[T]
+secret routine @Items[T, COUNT].eq_at(other: @Me) -> Bool
+needs T: record, COUNT: U64, Equatable[T]
     pa: @T = bitcast[@Me, @T](me)
     pb: @T = bitcast[@Me, @T](other)
 
@@ -125,38 +129,22 @@ needs T: typename, COUNT: U64, Equatable[T]
     then
         return true
 
-# -- pointer to first element --------------------------------------------------
+# -- a view of every element --------------------------------------------------
 
-### Reinterprets the array as a pointer to its first element, so its elements can be walked with `stride`.
-### :returns: A pointer to element `0`, valid as long as the array itself is.
-routine @Array[T, COUNT].to[@T]() -> @T
-needs T: typename, COUNT: U64
-    base: @T = bitcast[@Me, @T](me)
-    return base
-
-# -- releasing elements --------------------------------------------------------
-
-# An array acquires nothing (its elements live inside it), so it has no destruct().
-
-### Destructs every element: for elements that own something, such as lists. The array itself has nothing to release.
-### Elements that only point at memory kept elsewhere (a `PointedCell`) must not be destructed this way.
-@track_caller
-routine @Array[T, COUNT].destruct_all() -> None
-needs T: typename, COUNT: U64, Destructible[T]
+### A view of every element: their first address and `COUNT`, valid as long as the Items is.
+### :returns: A span of all `COUNT` elements.
+routine @Items[T, COUNT].to[@[T]]() -> @[T]
+needs T: record, COUNT: U64
     first: @T = bitcast[@Me, @T](me)
+    return @[T].construct(data: first, count: COUNT)
 
-    each i in 0 til COUNT
-        drop first.stride(i)
-    then
-        return
-
-### Moves elements [`start`, `end`) one slot right, to [`start` + 1, `end` + 1), opening a hole at `start` (hollow, for
-### an element that holds an entity). Writes index `end`.
+### Moves elements [`start`, `end`) one slot right, to [`start` + 1, `end` + 1), leaving the element at `start` for
+### the caller to write. Writes index `end`.
 ### :param start: The first index to move.
 ### :param end: The index past the last one to move.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `end >= COUNT` and `end > start`.
-routine @Array[T, COUNT].shift_right(start: U64, end: U64) -> None
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].shift_right(start: U64, end: U64) -> None
+needs T: record, COUNT: U64
     # The places are walked as raw memory: the caller's count says which hold a value, and the place at `start` is
     # left for it to fill.
     base: @T = bitcast[@Me, @T](me)
@@ -171,8 +159,8 @@ needs T: typename, COUNT: U64
 ### :param start: The index of the hole.
 ### :param end: The index past the last element to move.
 ### :throws: Crashes with `IntegerOverflowError` when `end` is 0, and with `IndexOutOfBoundsError` when `end > COUNT`.
-routine @Array[T, COUNT].shift_left(start: U64, end: U64) -> None
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].shift_left(start: U64, end: U64) -> None
+needs T: record, COUNT: U64
     if end > COUNT
         throw IndexOutOfBoundsError(index: end - 1, count: COUNT)
     # The places are walked as raw memory: the caller's count says which hold a value, and the place at `end` - 1 is
@@ -193,8 +181,8 @@ needs T: typename, COUNT: U64
 ### :returns: The element that was at `index`.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= end` or `end > COUNT`.
 @track_caller
-routine @Array[T, COUNT].take_at(index: U64, end: U64) -> T
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].take_at(index: U64, end: U64) -> T
+needs T: record, COUNT: U64
     if index < end
         from: @T = me.getslot(index)
         taken: &T <- steal from.stride(0)
@@ -202,15 +190,15 @@ needs T: typename, COUNT: U64
         return steal taken
     throw IndexOutOfBoundsError(index, count: end)
 
-### Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front. An element that holds an entity moves instead, and its old place is left hollow.
+### Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front.
 ### :param dst_start: The first index written in this array.
 ### :param src: The array to read from.
 ### :param src_start: The first index read in `src`.
 ### :param count: The number of elements to copy.
 ### :throws: Crashes with `IndexOutOfBoundsError` when either range runs past `COUNT`.
 ### :note: Overlapping ranges within one array are only safe when `dst_start` is below `src_start`.
-routine @Array[T, COUNT].copy(dst_start: U64, src: @Me, src_start: U64, count: U64) -> None
-needs T: typename, COUNT: U64
+routine @Items[T, COUNT].copy(dst_start: U64, src: @Me, src_start: U64, count: U64) -> None
+needs T: record, COUNT: U64
     # The source places are walked as raw memory once getslot has checked them: the caller's count says which hold a
     # value.
     each i in 0 til count

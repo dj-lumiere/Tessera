@@ -1,0 +1,169 @@
+# Tessera stdlib collection: Slots[T, COUNT], COUNT places in a row
+#
+# The entity with the layout of Items[T, COUNT] (Items.te), LLVM IR [COUNT x T]
+# in place, for any T, entities included. It is never copied: it lives in a
+# place, its routines take it by its address, and drop ends every element, the
+# last first. The range convention is half-open: [start, end).
+
+module System
+
+### `COUNT` places of `T` in a row, stored in place as the LLVM type `[COUNT x T]`, like {Items[T, COUNT]}, for any `T`:
+### an element may be an entity. A `Slots` is an entity: it lives in a place (`s: &Slots[Counter, 2] <- [a, b]`), is
+### handed over with `steal`, and `drop` ends each element, the last first. An element is reached through `getslot`,
+### taken out with `steal s.getslot(i) as old inject new`, and two trade places with `swap`.
+### :typeparam T: The element type.
+### :typeparam COUNT: The number of elements, fixed at build time.
+@llvm("[{COUNT} x {T}]")
+entity Slots[T, COUNT]
+obeys ViewingIndexable[Slots[T, COUNT], T]
+needs T: typename, COUNT: U64
+    nothing
+
+# -- metadata ------------------------------------------------------------------
+
+### The number of elements, which is the buildtime constant `COUNT`.
+### :returns: `COUNT`.
+common routine Slots[T, COUNT].count() -> U64
+needs T: typename, COUNT: U64
+    return COUNT
+
+# -- construction --------------------------------------------------------------
+
+# An array literal `[a, b, ...]` where a `Slots[T, COUNT]` is expected makes one, the elements handed over to it:
+# `s: &Slots[Counter, 2] <- [Counter.construct(n: 1), Counter.construct(n: 2)]`.
+
+# -- element access ------------------------------------------------------------
+
+### Reads the element at `index`, a copy: for elements that hold nothing with a release duty (an entity element is
+### reached through `getslot`).
+### :param index: The zero-based position to read.
+### :returns: A copy of the element at `index`.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine @Slots[T, COUNT].getitem(index: U64) -> T
+needs T: typename, COUNT: U64
+    if index < COUNT
+        base: @T = bitcast[@Me, @T](me)
+        value: T = base.stride(index).peek()
+        return value
+    throw IndexOutOfBoundsError(index, count: COUNT)
+
+### The address of element index, checked like getitem: a place to read or write in place (`a.getslot(i).poke(v)`).
+### :param index: The element's index.
+### :returns: The element's address.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine @Slots[T, COUNT].getslot(index: U64) -> @T
+needs T: typename, COUNT: U64
+    if index < COUNT
+        base: @T = bitcast[@Me, @T](me)
+        element: @T = base.stride(index)
+        return element
+    throw IndexOutOfBoundsError(index, count: COUNT)
+
+### Exchanges the elements at `first` and `second` in place. Each element is moved, never copied, so entity elements
+### swap too, and neither place is left hollow. The same index twice changes nothing.
+### :param first: The zero-based position of one element.
+### :param second: The zero-based position of the other element.
+### :throws: Crashes with `IndexOutOfBoundsError` when `first >= COUNT` or `second >= COUNT`.
+@track_caller
+routine @Slots[T, COUNT].swap(first: U64, second: U64) -> None
+needs T: typename, COUNT: U64
+    me.to[@[T]]().swap(first, second)
+    return
+
+# -- a view of every element --------------------------------------------------
+
+### A view of every element: their first address and `COUNT`, valid as long as the Slots is.
+### :returns: A span of all `COUNT` elements.
+routine @Slots[T, COUNT].to[@[T]]() -> @[T]
+needs T: typename, COUNT: U64
+    first: @T = bitcast[@Me, @T](me)
+    return @[T].construct(data: first, count: COUNT)
+
+# -- releasing elements --------------------------------------------------------
+
+# A Slots has no destruct() of its own: drop of one drops each element, the last first.
+
+### Destructs every element, the first first, for code that ends the elements and keeps the places. The Slots itself has
+### nothing more to release.
+@track_caller
+routine @Slots[T, COUNT].destruct_all() -> None
+needs T: typename, COUNT: U64, Destructible[T]
+    first: @T = bitcast[@Me, @T](me)
+
+    each i in 0 til COUNT
+        drop first.stride(i)
+    then
+        return
+
+### Moves elements [`start`, `end`) one slot right, to [`start` + 1, `end` + 1), opening a hole at `start` (hollow, for
+### an element that holds an entity). Writes index `end`.
+### :param start: The first index to move.
+### :param end: The index past the last one to move.
+### :throws: Crashes with `IndexOutOfBoundsError` when `end >= COUNT` and `end > start`.
+routine @Slots[T, COUNT].shift_right(start: U64, end: U64) -> None
+needs T: typename, COUNT: U64
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `start` is
+    # left for it to fill.
+    base: @T = bitcast[@Me, @T](me)
+    until i <= start with i: U64 = end
+        from: U64 = i - 1
+        me.getslot(i).poke(steal base.stride(from))
+        continue with i: from
+    then
+        return
+
+### Closes the hole at `start`: moves elements [`start` + 1, `end`) one slot left, to [`start`, `end` - 1).
+### :param start: The index of the hole.
+### :param end: The index past the last element to move.
+### :throws: Crashes with `IntegerOverflowError` when `end` is 0, and with `IndexOutOfBoundsError` when `end > COUNT`.
+routine @Slots[T, COUNT].shift_left(start: U64, end: U64) -> None
+needs T: typename, COUNT: U64
+    if end > COUNT
+        throw IndexOutOfBoundsError(index: end - 1, count: COUNT)
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `end` - 1 is
+    # left out of it.
+    base: @T = bitcast[@Me, @T](me)
+    until i >= end - 1 with i: U64 = start
+        from: U64 = i + 1
+        me.getslot(i).poke(steal base.stride(from))
+        continue with i: from
+    then
+        return
+
+### Takes the element at `index` out and moves elements [`index` + 1, `end`) one slot left, to [`index`, `end` - 1), so the
+### elements in use stay in a row. The place at `end` - 1 is left out of them: for a Slots whose count of used places
+### is kept beside it, which becomes `end` - 1.
+### :param index: The index of the element to take out.
+### :param end: The index past the last element in use.
+### :returns: The element that was at `index`.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= end` or `end > COUNT`.
+@track_caller
+routine @Slots[T, COUNT].take_at(index: U64, end: U64) -> T
+needs T: typename, COUNT: U64
+    if index < end
+        from: @T = me.getslot(index)
+        taken: &T <- steal from.stride(0)
+        me.shift_left(start: index, end)
+        return steal taken
+    throw IndexOutOfBoundsError(index, count: end)
+
+### Copies `count` elements from `src` starting at `src_start` into this Slots starting at `dst_start`, one element at a time from the front. An element that holds an entity moves instead, and its old place is left hollow.
+### :param dst_start: The first index written in this Slots.
+### :param src: The Slots to read from.
+### :param src_start: The first index read in `src`.
+### :param count: The number of elements to copy.
+### :throws: Crashes with `IndexOutOfBoundsError` when either range runs past `COUNT`.
+### :note: Overlapping ranges within one Slots are only safe when `dst_start` is below `src_start`.
+routine @Slots[T, COUNT].copy(dst_start: U64, src: @Me, src_start: U64, count: U64) -> None
+needs T: typename, COUNT: U64
+    # The source places are walked as raw memory once getslot has checked them: the caller's count says which hold a
+    # value.
+    each i in 0 til count
+        src_index: U64 = src_start + i
+        dst_index: U64 = dst_start + i
+        from: @T = src.getslot(src_index)
+        me.getslot(dst_index).poke(steal from.stride(0))
+    then
+        return

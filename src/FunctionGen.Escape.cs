@@ -477,8 +477,8 @@ public sealed partial class FunctionGen
         }
     }
 
-    /// Whether a routine is a List's of the standard library: on a list of tickets, `retrieve_all`, `give_back_all` and
-    /// its destruct wait for (or end) the tickets' work.
+    /// Whether a routine is a List's of the standard library: on a list of tickets, `retrieve_all`, `wait_all_finished`,
+    /// `give_back_all` and its destruct wait for (or end) the tickets' work.
     private static bool IsTicketListRoutine(RoutineDecl d) => d.IsLibrary && d.Owner is { Name: "List" };
 
     /// Whether a routine is a ticket's (`Thread[T]`, `Fiber[T]`, `PassableFiber[T]` of the standard library).
@@ -546,8 +546,8 @@ public sealed partial class FunctionGen
         if (!MemOn) return;
         if (IsTicketRoutine(plan.Decl) && ticket is not null && plan.Decl.Name is "retrieve" or "destruct")
             Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
-        // A list of tickets waits for its tickets' work when it takes their results or gives them back.
-        if (ticket is not null && IsTicketListRoutine(plan.Decl) && plan.Decl.Name is "retrieve_all" or "give_back_all" or "destruct")
+        // A list of tickets waits for its tickets' work when it takes their results, waits for all of them, or gives them back.
+        if (ticket is not null && IsTicketListRoutine(plan.Decl) && plan.Decl.Name is "retrieve_all" or "wait_all_finished" or "give_back_all" or "destruct")
             Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
         string? holder = plan.Decl.IsLibrary && ticket is not null && !_routineParams.ContainsKey(ticket) && BoundInRoutine(ticket) ? ticket : null;
         // A ticket handed into a list of this routine (`ts.add_last(t)`): the list waits for its work, and the accesses

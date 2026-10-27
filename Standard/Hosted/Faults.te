@@ -94,13 +94,13 @@ secret routine c_backtrace_symbols_fd(buffer: @Addr, size: CInt, fd: CInt) -> No
 ### The signals the report covers: SIGSEGV, SIGBUS, SIGFPE, SIGILL, and SIGABRT.
 ### :returns: Their numbers on this system.
 @target(os: "linux")
-secret routine fault_signals() -> Array[CInt, 5]
+secret routine fault_signals() -> Items[CInt, 5]
     return [11, 7, 8, 4, 6]
 
 ### The signals the report covers: SIGSEGV, SIGBUS, SIGFPE, SIGILL, and SIGABRT.
 ### :returns: Their numbers on this system.
 @target(os: "macos")
-secret routine fault_signals() -> Array[CInt, 5]
+secret routine fault_signals() -> Items[CInt, 5]
     return [11, 10, 8, 4, 6]
 
 ### The signal of a memory fault, by its place in fault_signals.
@@ -155,7 +155,7 @@ secret routine stack_ran_out(at: Addr) -> Bool
 ### :param context: The interrupted context: its frame pointer and instruction start the trace read from the stack.
 @target(os: ("linux", "macos"))
 secret routine on_fault(sig: CInt, info: Addr, context: Addr) -> None
-    signals: Array[CInt, 5] = fault_signals()
+    signals: Items[CInt, 5] = fault_signals()
 
     # The trace a report reads from the stack starts at the frame the fault interrupted.
     note_fault_context(context)
@@ -191,11 +191,11 @@ routine CpuEvent.ran_out_of_stack() -> Bool
 ### Writes the platform's stack: the return addresses with the symbols the system knows.
 @target(os: ("linux", "macos"))
 secret routine write_platform_stack() -> None
-    frames: &Array[Addr, FAULT_FRAMES] <- .hollow()
+    frames: &Items[Addr, FAULT_FRAMES] <- .hollow()
 
     Console.alert("Platform stack:")
-    n: CInt = c_backtrace(frames.to[@Addr](), FAULT_FRAMES.to[CInt]())
-    c_backtrace_symbols_fd(frames.to[@Addr](), n, 2)
+    n: CInt = c_backtrace(frames.to[@[Addr]]().to[@Addr](), FAULT_FRAMES.to[CInt]())
+    c_backtrace_symbols_fd(frames.to[@[Addr]]().to[@Addr](), n, 2)
     return
 
 ### Writes `struct sigaction`. Linux keeps the handler, a 128-byte mask, the flags, then a restorer.
@@ -227,12 +227,12 @@ secret routine fill_action(act: @Byte, handler: Callable[(CInt, Addr, Addr), Non
 ### and CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.
 @target(os: ("linux", "macos"))
 routine install_fault_handlers() -> None
-    act: &Array[Byte, 160] <- .hollow()
-    signals: Array[CInt, 5] = fault_signals()
+    act: &Items[Byte, 160] <- .hollow()
+    signals: Items[CInt, 5] = fault_signals()
 
     if FAULTS_INSTALLED.swap_unbroken(1) == 1
         return
-    fill_action(act: act.to[@Byte](), handler: on_fault.to[Callable](), flags: FAULT_FLAGS)
+    fill_action(act: act.to[@[Byte]]().to[@Byte](), handler: on_fault.to[Callable](), flags: FAULT_FLAGS)
     dropped: Addr = give_fault_stack()
 
     each i: U64 in 0 til 5
@@ -245,12 +245,12 @@ routine install_fault_handlers() -> None
 ### :returns: The stack's memory, for release_fault_stack when the thread ends, or null.
 @target(os: ("linux", "macos"))
 routine give_fault_stack() -> Addr
-    stack: &Array[Byte, 32] <- .hollow()
+    stack: &Items[Byte, 32] <- .hollow()
 
     memory: Addr = HEAP.borrow(size: FAULT_STACK.bytes(), align: 16)
     if memory.is_hollow()
         return .hollow()
-    fill_stack(stack: stack.to[@Byte](), memory, flags: 0)
+    fill_stack(stack: stack.to[@[Byte]]().to[@Byte](), memory, flags: 0)
     c_sigaltstack(stack.to[Addr](), .hollow())
     return memory
 
@@ -258,11 +258,11 @@ routine give_fault_stack() -> Addr
 ### :param memory: The stack's memory, from give_fault_stack, or null (then it does nothing).
 @target(os: ("linux", "macos"))
 routine release_fault_stack(memory: Addr) -> None
-    stack: &Array[Byte, 32] <- .hollow()
+    stack: &Items[Byte, 32] <- .hollow()
 
     if memory.is_hollow()
         return
-    fill_stack(stack: stack.to[@Byte](), memory, flags: SS_DISABLE)
+    fill_stack(stack: stack.to[@[Byte]]().to[@Byte](), memory, flags: SS_DISABLE)
     c_sigaltstack(stack.to[Addr](), .hollow())
     HEAP.give_back(memory)
     return
@@ -336,7 +336,7 @@ secret routine exception_name(code: U32) -> @[Byte]
 @target(os: "windows")
 @callconv("stdcall")
 secret routine on_exception(pointers: Addr) -> CLong
-    frames: &Array[Addr, FAULT_FRAMES] <- .hollow()
+    frames: &Items[Addr, FAULT_FRAMES] <- .hollow()
     err: @ConsoleErrors = Console.errors()
 
     info: Addr = pointers.to[@Addr]().peek()
@@ -350,7 +350,7 @@ secret routine on_exception(pointers: Addr) -> CLong
     err.write(")\n")
     write_trace()
     Console.alert("Platform stack:")
-    taken: U16 = c_capture_stack(0, FAULT_FRAMES.to[U32](), frames.to[@Addr](), .hollow())
+    taken: U16 = c_capture_stack(0, FAULT_FRAMES.to[U32](), frames.to[@[Addr]]().to[@Addr](), .hollow())
 
     n: U64 = taken.to[U64]()
 

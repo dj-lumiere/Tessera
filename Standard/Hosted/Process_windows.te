@@ -658,8 +658,8 @@ secret common routine Handles.empty() -> Me
 @reshaping(r)
 secret routine read_pipe(r: @PipeReader) -> None
     n: &U32 <- 0
-    chunk_buffer: &Array[Byte, 4096] <- .hollow()
-    chunk: @Byte = chunk_buffer.to[@Byte]()
+    chunk_buffer: &Items[Byte, 4096] <- .hollow()
+    chunk: @Byte = chunk_buffer.to[@[Byte]]().to[@Byte]()
 
     until c_read_file(r.pipe.peek(), chunk, 4096, n, .hollow()) == 0 or n.load() == 0
         r.buffer.append(chunk, n: n.load().to[U64](), manager: HEAP)
@@ -711,9 +711,9 @@ secret routine @Handles.make(options: ProcessOptions, sa: @SecurityAttributes) -
     me.poke(Me.empty())
     null_in: Bool = options.stdin == InputMode.NULL
     if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
-        name: &Array[U16, 4] <- [78, 85, 76, 0]
+        name: &Items[U16, 4] <- [78, 85, 76, 0]
         # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
-        device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0, .hollow())
+        device: Addr = c_create_file(name.to[@[U16]]().to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0, .hollow())
         if is_invalid(device)
             return false
         me.device.poke(device)
@@ -777,7 +777,7 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
     h: &Handles <- Handles.empty()
     pi: &ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
         process_id: 0, thread_id: 0)
-    directory: &Array[U16, PATH_CAPACITY] <- .hollow()
+    directory: &Items[U16, PATH_CAPACITY] <- .hollow()
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
@@ -787,7 +787,7 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
         throw OutOfMemoryError()
     directory_units: @U16 = when options.directory
         is @[Byte] as d =>
-            units: @U16 = directory.to[@U16]()
+            units: @U16 = directory.to[@[U16]]().to[@U16]()
             n: Maybe[U64] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
             if not n.is_present()
                 free_texts(line, env: .hollow(), manager)
@@ -940,8 +940,8 @@ secret routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 @reshaping(buffer)
 secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, manager: @MemoryManager) -> None
     n: &U32 <- 0
-    chunk_buffer: &Array[Byte, 4096] <- .hollow()
-    chunk: @Byte = chunk_buffer.to[@Byte]()
+    chunk_buffer: &Items[Byte, 4096] <- .hollow()
+    chunk: @Byte = chunk_buffer.to[@[Byte]]().to[@Byte]()
 
     until c_read_file(pipe, chunk, 4096, n, .hollow()) == 0 or n.load() == 0
         buffer.append(chunk, n: n.load().to[U64](), manager)
@@ -974,14 +974,14 @@ secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffe
 ###     read or allocated.
 @target(os: "windows")
 @expensive("allocates a copy of the variable")
-secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
+secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     units: &@U16 <- .hollow()
-    key: &Array[U16, 256] <- .hollow()
+    key: &Items[U16, 256] <- .hollow()
 
-    n: Maybe[U64] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
+    n: Maybe[U64] = encode_utf16(text: name, out: key.to[@[U16]]().to[@U16](), capacity: 256)
     if not n.is_present()
         return None()
-    value: &Maybe[BorrowedSlice[Byte]] <- env_value(key: key.to[@U16](), units, manager)
+    value: &Optional[BorrowedSlice[Byte]] <- env_value(key: key.to[@[U16]]().to[@U16](), units, manager)
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
     held: @U16 = units.load()
@@ -999,7 +999,7 @@ secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Borrowed
 ### :absent: When the variable isn't set, or the value can't be read or allocated.
 @target(os: "windows")
 secret routine env_value(key: @U16, units: @@U16,
-    manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
+    manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     c_set_last_error(0)
     need: U32 = c_get_environment_variable(key, .hollow(), 0)
     # ERROR_ENVVAR_NOT_FOUND

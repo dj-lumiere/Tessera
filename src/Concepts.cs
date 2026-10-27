@@ -78,6 +78,7 @@ public sealed partial class Compiler
     /// call at `at`.
     public void CheckRoutineRequirements(RoutineDecl r, TypeEnv env, Pos at)
     {
+        if (RecordKindMisfit(r.Clauses, env, $"'{r.DisplayName}'") is { } misfit) throw new CompileError(at, misfit);
         var constraints = r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
         if (constraints.Count == 0) return;
         string key = r.Pos + "|" + string.Join(",", env.All.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value.Key}"));
@@ -95,14 +96,57 @@ public sealed partial class Compiler
         List<DType> args, Pos at, string shown)
     {
         var constraints = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
-        if (constraints.Count == 0) return;
+        bool recordKinds = clauses.Any(c => c.Kind == "require" && c.Params.Any(p => IsRecordKind(p.Kind)));
+        if (constraints.Count == 0 && !recordKinds) return;
         string key = declared + "|" + string.Join(",", args.Select(a => a.Key));
         if (!_checkedRequirements.Add(key)) return;
         var env = new TypeEnv(file);
         for (int i = 0; i < typeParams.Count && i < args.Count; i++) env.Bind(typeParams[i], args[i]);
+        if (RecordKindMisfit(clauses, env, shown) is { } misfit) throw new CompileError(at, misfit);
         foreach (var c in constraints)
             RequireConformance(c, env, at, shown);
     }
+
+    /// The reason a type argument doesn't meet its parameter's `record` kind (`needs T: record`), or null: the type's
+    /// values may hold something with a release duty (an entity, a BorrowedCell or BorrowedSlice, a value holding one,
+    /// or a type parameter declared `typename`, which may be one).
+    public string? RecordKindMisfit(List<Clause> clauses, TypeEnv env, string neededBy)
+    {
+        foreach (var c in clauses.Where(c => c.Kind == "require"))
+            foreach (var (name, kind, _) in c.Params)
+            {
+                if (!IsRecordKind(kind) || env.Get(name) is not { } t || !MayHoldReleaseDuty(t)) continue;
+                if (_precheck is { } scope && MentionsArchetype(t))
+                    return $"{scope.What} gives {t.Name} to {name} of {neededBy}, which is declared {name}: record (a type whose "
+                        + $"values hold nothing with a release duty), and {t.Name} may be an entity: declare {RecordKindFix(t)}: record "
+                        + $"in {scope.Fix}";
+                return $"{neededBy} takes a record for {name} ({name}: record, a type whose values hold nothing with a release "
+                    + $"duty), and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, which ends with drop: "
+                    + "keep it in an entity instead";
+            }
+        return null;
+    }
+
+    /// The type parameter to declare `record` where a check found one that may hold an entity.
+    private static string RecordKindFix(DType t) => t switch
+    {
+        ArchetypeType a => a.Name,
+        ArrayType arr => RecordKindFix(arr.Elem),
+        VariantType v => v.Leaves.Where(MayHoldReleaseDuty).Select(RecordKindFix).FirstOrDefault() ?? t.Name,
+        RecordType r => r.Args.Where(MayHoldReleaseDuty).Select(RecordKindFix).FirstOrDefault() ?? t.Name,
+        _ => t.Name,
+    };
+
+    /// Whether a value of `t` may hold something with a release duty: it holds an entity, or a type parameter not
+    /// declared `record` may be one.
+    public static bool MayHoldReleaseDuty(DType t) => Entities.Holds(t) || t switch
+    {
+        ArchetypeType a => !a.IsRecord,
+        ArrayType arr => MayHoldReleaseDuty(arr.Elem),
+        VariantType v => v.Leaves.Any(MayHoldReleaseDuty),
+        RecordType { IsTuple: true } tu => tu.Args.Any(MayHoldReleaseDuty),
+        _ => false,
+    };
 
     private void RequireConformance(TypeRef constraint, TypeEnv env, Pos at, string neededBy)
     {
@@ -466,7 +510,7 @@ public sealed partial class Compiler
             case RecordType rt when NamesDecl(pattern, rt.Decl, binding.File): actualArgs = rt.Args; break;
             case VariantType vt when NamesDecl(pattern, vt.Decl, binding.File): actualArgs = vt.Args; break;
             case PtrType pt when pattern.Name == "PointedCell" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
-            case ArrayType at when pattern.Name == "Array": actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
+            case ArrayType at when pattern.Name == at.Kind: actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
             case VectorType vt when pattern.Name == "Vector": actualArgs = [vt.Elem, new ConstArg(vt.Count)]; break;
             default: return false;
         }

@@ -418,6 +418,7 @@ public sealed partial class Compiler
     /// call's check, it records nothing, so a candidate that doesn't fit leaves no trace.
     public string? RequirementsFailure(RoutineDecl r, TypeEnv env)
     {
+        if (RecordKindMisfit(r.Clauses, env, $"'{r.DisplayName}'") is { } misfit) return misfit;
         foreach (var c in r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts))
         {
             var decl = FindConcept(c, env.File);

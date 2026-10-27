@@ -178,7 +178,7 @@ public sealed partial class Compiler
                 case VariantType v: return Declared(v.Decl, v.Decl.Name, v.Args, t);
                 case ChoiceType ch: return Declared(ch.Decl, ch.Decl.Name, [], t);
                 case PtrType { Pointee: { } p }: return Core("PointedCell", [p], t);
-                case ArrayType a: return Core("Array", [a.Elem, new ConstArg(a.Count)], t);
+                case ArrayType a: return Core(a.Kind, [a.Elem, new ConstArg(a.Count)], t);
                 case VectorType v: return Core("Vector", [v.Elem, new ConstArg(v.Count)], t);
                 default: return Core(t.OwnerName, [], t);   // S64, Bool, B32, CSize, Addr, ...
             }
@@ -328,7 +328,7 @@ public sealed partial class Compiler
             // A generic type applied to arguments that mention the routine's parameters.
             List<Step> steps;
             string qualified;
-            if (t.Path is null or SystemModule && t.Name is "PointedCell" or "Array" or "Vector" or "Check")
+            if (t.Path is null or SystemModule && t.Name is "PointedCell" or "Items" or "Slots" or "Vector" or "Check")
             {
                 steps = ModuleSteps(SystemModule);
                 qualified = SystemModule + "/" + t.Name;

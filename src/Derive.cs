@@ -227,7 +227,7 @@ public static class Derive
         var parameters = requires.SelectMany(c => c.Params).ToList();
         string partConcept = Qualified(concept == "Representable" && !sameConcept ? "Diagnosable" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
-            .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}[{p.Name}]"))
+            .Concat(parameters.Where(p => Compiler.IsTypeKind(p.Kind)).Select(p => $"{partConcept}[{p.Name}]"))
             .Distinct()
             .ToList();
     }
@@ -241,7 +241,7 @@ public static class Derive
     private static string WriterParam(List<string> typeParams, List<Clause> clauses)
     {
         var typeNames = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params)
-            .Where(p => p.Kind.Name == "typename").Select(p => p.Name).ToHashSet();
+            .Where(p => Compiler.IsTypeKind(p.Kind)).Select(p => p.Name).ToHashSet();
         string name = typeParams.Any(typeNames.Contains) ? "TWriter" : "T";
         while (typeParams.Contains(name)) name = "T" + name;
         return name;

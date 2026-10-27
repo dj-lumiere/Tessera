@@ -19,18 +19,22 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
     /// nothing. A type parameter counts as holding something: `d` is checked as written, for every instance.
     public string? Why(Decl d) => d switch
     {
-        RecordDecl r => DeclWhy(r, r.TypeParams.ToDictionary(p => p, _ => true)),
-        VariantDecl v => DeclWhy(v, v.TypeParams.ToDictionary(p => p, _ => true)),
+        RecordDecl r => DeclWhy(r, ParamArgs(r.TypeParams, r.Clauses)),
+        VariantDecl v => DeclWhy(v, ParamArgs(v.TypeParams, v.Clauses)),
         _ => null,
     };
+
+    /// Each type parameter holding something, except one declared `T: record`, whose values hold nothing to release.
+    private static Dictionary<string, bool> ParamArgs(List<string> typeParams, List<Clause> clauses) =>
+        typeParams.ToDictionary(p => p, p => !Compiler.DeclaresRecordKind(clauses, p));
 
     /// Whether a value of `t`, a field's type (a branch's, for a variant) as `owner` writes it, holds something to
     /// release, each of the owner's type parameters counting as holding something: the fields the builder's `destruct`
     /// walks.
     public bool Holds(Decl owner, TypeRef t) => owner switch
     {
-        RecordDecl r => Holds(t, r.TypeParams.ToDictionary(p => p, _ => true), r.File),
-        VariantDecl v => Holds(t, v.TypeParams.ToDictionary(p => p, _ => true), v.File),
+        RecordDecl r => Holds(t, ParamArgs(r.TypeParams, r.Clauses), r.File),
+        VariantDecl v => Holds(t, ParamArgs(v.TypeParams, v.Clauses), v.File),
         _ => false,
     };
 
@@ -87,7 +91,10 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
                 return false;
             case "Callable":
                 return false;
-            case "Array" or "Vector":
+            // A Slots is an entity, whose life ends with drop, whatever it holds.
+            case "Slots" when t.Path is null:
+                return true;
+            case "Items" or "Vector":
                 return t.Args.FirstOrDefault() is TypeArgType element && Holds(element.Type, args, file);
             case TypeRef.UnionName:
                 return t.Args.OfType<TypeArgType>().Any(a => Holds(a.Type, args, file));

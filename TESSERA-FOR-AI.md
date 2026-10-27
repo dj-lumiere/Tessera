@@ -55,7 +55,7 @@ Collections/Dict` names a type.
 
 The standard library's modules:
 
-- `System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Array`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
+- `System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Items`, `Slots`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
   `Maybe`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
   crash trace, and hashing.
 - `System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
@@ -129,7 +129,7 @@ routine start() -> None
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
   `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
   check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `PointedCell[T]` is
-  written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
+  written (`@@Byte`, `@Items[@S32, 3]`); it keeps its name only where routines are declared on it or called through
   it (`routine PointedCell[T].peek`). An annotation is a `@name` line of its own
   above the declaration, one per line: `@target(os: "windows")`, then `@external("c")`, then `@noreturn`. `@T` is
   also the pointer type: an annotation only starts a line (or sits inside a `Callable` type, below).
@@ -197,10 +197,10 @@ routine start() -> None
   start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill
   (`--uninit-fill` / `[debug] uninit-fill = true` fills such places with 0xAA bytes to make an early read stand out).
   `.uninit()` elsewhere, or on a type holding a pointer, is a build error. An array value comes from `[1, 2, x]` or a
-  load (COUNT values at `first: @T` are `first.to[@Array[T, COUNT]]().peek()`);
+  load (COUNT values at `first: @T` are `first.to[@Items[T, COUNT]]().peek()`);
   a bare `[1, 2]` isn't a value. `[a, b] * 3` repeats the elements (`a, b, a, b, a, b`). A bracket literal followed by `*` is always that repeat, so a Vector literal is bound to a name before it is multiplied. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
-  `preset SORTED: &Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
+  `preset SORTED: &Items[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line. A receiver gives it no type: `[1, 2].eq(...)` is an error.
 - **Where values are: four types.** `@T` (a `PointedCell`) is the address of one value (a place's value, a field, an element,
   memory from C). `@[T]` (Core, `Types/PointedSlice.te`) is `{data, count}`, a run of values it views. Both only VIEW
@@ -231,13 +231,15 @@ routine start() -> None
   copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
   empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), `to[@T]()` (the first value's
   address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `BorrowedCell[T]` has `load()`,
-  `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Array[T, COUNT]` is the run of
-  values whose count is in the type, a value. `getview()` gives a `@[T]` of anything else holding contiguous elements
-  (a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
+  `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Items[T, COUNT]` is the run of
+  values whose count is in the type, a record (a value), and `Slots[T, COUNT]` the entity with the same layout for any
+  `T` (below). `to[@[T]]()` on an `@Items` or `@Slots` is the view of every element (its first address and `COUNT`),
+  the same span `getview()` gives. `getview()` gives a `@[T]` of anything else holding contiguous elements
+  (a `List`, an `Items` or a `Slots` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` / `reallocate[T](p, count,
   manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `give_back`.
   `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and `src.copy_into(dst, count)` is the same
-  copy from the source's side. On a `@Array[T, COUNT]` (or any type with its own `copy`) the type's routine wins, so
+  copy from the source's side. On a `@Items[T, COUNT]` or `@Slots[T, COUNT]` (or any type with its own `copy`) the type's routine wins, so
   generic code over `@T` uses `src.copy_into(dst, count)`.
 - **Giving back twice.** The build catches a second `drop`, a use after it, a missing one, a view used after its
   memory is given back, and a routine that gives back memory its caller holds (the group check below). Raw code the
@@ -258,7 +260,7 @@ routine start() -> None
   `global` can't take a string literal: it is read-only). `global NAME: &[T] <- [0] * 26` is mutable static memory (the
   literal gives the count). `xs: &[T] <- [0] * 64` puts the values in the routine's frame (STACK), with a count the
   build knows (a literal count or a preset). An array literal passed as an argument where a span is expected is a
-  frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine. `preset NAME: &Array[T, N] <-
+  frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine. `preset NAME: &Items[T, N] <-
   [...]` is an array in memory.
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
@@ -523,18 +525,18 @@ routine start() -> None
   is a build error that says the target has none, and the program passes a manager of its own.
 - **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
   if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), `preset NAME: &T <- value`
-  (read-only), and the span forms above: `preset TABLE: &Array[U32, 4] <- [...]`, `preset NAMES: &[@[Byte]] <- [...]`,
+  (read-only), and the span forms above: `preset TABLE: &Items[U32, 4] <- [...]`, `preset NAMES: &[@[Byte]] <- [...]`,
   `global COUNT: &U64 <- 0`. `global COUNT: &U64 = 5` is a build error ("a global is a place, filled with '<-':
   global COUNT: &U64 <- value"), so are `global COUNT: @U64 <- 5` ("a global is a place, written &T or &[T] (@T and
   @[T] only view)") and `preset BOUND: &U64 = 20`. `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type
-  argument where a count goes: `Array[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
+  argument where a count goes: `Items[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
   address, and a global holding a pointer is `&@T`: `global HEAD: &@Node <- .hollow()`). A global or preset place's
   name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`, `K.getitem(i)`, `TABLE[2]`.
   Writing a `&T` preset's memory is a build error. Neither kind is a buildtime
-  constant: a preset value is (`Array[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
+  constant: a preset value is (`Items[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
 - One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
   differ are a build error ("'abs' is declared at f.te:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
   routine has one signature"). Declare it once, with the types its C declaration has.
@@ -791,6 +793,11 @@ routine start() -> None
   `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain).
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target, and so is a count
   parameter (`COUNT: U64`).
+- **Type kinds.** `needs T: typename` takes any type. `needs T: record` takes a type whose values hold nothing with
+  a release duty (no entity, `&T`, `&[T]`, or value holding one): what a record holds by value (Records, below), and
+  what an `Items` holds. An entity argument is a build error at the type or the call. In a generic body a
+  `typename` parameter given where a `record` one is needed is a build error that names `T: record` and where to add
+  it. A routine on a type takes the type's `record` kinds without restating them.
 - **Value type parameters.** `needs P: U256` declares a parameter that takes a value, of any integer type up to
   `U256` / `S256`. The argument keeps every bit of that type (`Field[18446744073709551557]`, `Offset[-5]` with
   `needs D: S64`, and `Field[1]` and `Field[18446744073709551617]` are two types), and a value the type doesn't hold
@@ -1091,7 +1098,7 @@ routine start() -> None
   service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
   and stops (status 82 with an OS). `throw` in a failable routine only gives the failure back to the caller. This
   holds inside a failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
-- **`try` and `check` take the failure as a value.** `try f(x)` gives `Maybe[T]` (`None` on failure), `check f(x)`
+- **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Maybe[T]`, or `Optional[T]` for an entity, `None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
   calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
   and the failures: `is NotFoundError as e` one crashable, `is FsError as e` a variant of crashables (the ones the
@@ -1304,7 +1311,7 @@ routine start() -> None
 - `q, r = div_rem(a, b)` takes a tuple apart, every item, no types. It's the only destructuring: a record's
   fields are read by name. Nested tuples come apart one level at a time.
 - A tuple value takes its type from where it goes (`t: (S64, S64) = (1, 2)`); with nowhere to take it from, it's
-  an error. An Array is `[1, 2]`, never `(1, 2)`, and a tuple never `[1, 2]`.
+  an error. An `Items` or a `Slots` is `[1, 2]`, never `(1, 2)`, and a tuple never `[1, 2]`.
 - Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(a)` is `a`
   and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
@@ -1347,12 +1354,19 @@ routine start() -> None
   build error, as a statement or as an argument ("steal would leave an element at the index i, which is not a
   constant, ...: steal a.getslot(i) as taken inject <new value>, or trade two elements with swap(first, second)").
   Places reached with `stride` (or `p[i]` on a pointer) are raw memory: `steal p.stride(i)` leaves the place hollow and
-  the program's count says which places hold a value, as the collections do inside (`Array.shift_left`, `copy`,
+  the program's count says which places hold a value, as the collections do inside (`Slots.shift_left`, `copy`,
   `take_at`).
 - What copies an entity is a build error that says what to do instead: a load out of memory (`p.peek()`, `m[i]`), or a
   field read out of a record value.
-- A record can't hold an entity by value (it would copy it), a generic one included (`nodes: BorrowedSlice[T]`): declare the
-  holder `entity` too, or hold a pointer. A tuple item can't be an entity either. A record or tuple item that is a
+- A record can be a value: it is bound once and read, it can be a preset, and it is copied when passed. So it holds
+  nothing with a release duty: numbers, `Bool`, choices, records, and addresses (`@T`, `@[T]`, `Addr`). An entity, a
+  `BorrowedCell` / `BorrowedSlice` (`&T`, `&[T]`, entities too), or a value holding one in a record is a build error
+  that says to declare the holder `entity` (or hold a pointer). A release duty sits with the place (`&T`), and a value
+  carries one only when it holds a place. A generic record that holds a type parameter by value declares it `needs T:
+  record` (the parameter takes only a type whose values hold nothing with a release duty): `record Weighted[T]` with
+  `value: T` and `needs T: typename` is a build error that names `T: record`, and `Weighted[List[S64]]` is a build
+  error at the type. A generic routine that forms such a record from its own `T` declares `T: record` too. A tuple
+  item can't be an entity either, and a variant follows its branches. A record or tuple item that is a
   pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the place it came
   from still holds it.
 - In the standard library, these are entities: `BorrowedSlice[T]`, `BorrowedCell[T]`, every collection (`List`, `Set`, `Dict`, the
@@ -1363,8 +1377,8 @@ routine start() -> None
   own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed place that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
-- A variant may have an entity branch: `Maybe[Counter]`, `variant Opened / Counter / Closed`. Such a variant value holds an entity,
-  so it follows the same rules: it lives in a place (`r: &Maybe[Counter] <- open()`, which the program ends: a STACK
+- A variant may have an entity branch: `Counter?` (`Optional[Counter]`), `variant Opened / Counter / Closed`. Such a variant value holds an entity,
+  so it follows the same rules: it lives in a place (`r: &Optional[Counter] <- open()`, which the program ends: a STACK
   place of a variant isn't given back by the builder, and a value binding is a build error), a parameter of that type
   is a place, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
   result (`when open()`) or out of its place (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
@@ -1391,6 +1405,14 @@ routine start() -> None
   each a type (`record BinaryExpr / left: S64 / right: S64`, `record Empty`). A value of the variant is a value of one
   of its branch types. Several values go in a record of their own. `Maybe[T]` has branches `T` and `None`,
   `Check[T]` has `T` and the crashables its check can give.
+- **`T?` is `Maybe[T]` or `Optional[T]`**, picked by `T`'s kind. For a `T` whose values hold nothing with a release
+  duty it is `Maybe[T]`, a value laid out as `{ i1, T }` (the present flag, then the value; `{ i1, [0 x T], T }` in
+  the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it is copied, a preset, a field of a record. For
+  an entity `T` (or one holding an entity) it is `Optional[T]`: it holds the entity or nothing, lives in a place, and
+  is handed over with `steal`. Its layout is the same `{ i1, T }`, the entity in place after the flag. Both are read and made as a variant (`m: S64? =
+  5`, `return None()`, `when`, `is None`, `try`). Writing `Maybe[Counter]` with an entity is a build error that names
+  `Optional[Counter]` or `Counter?`, and `Optional[S64]` one that names `Maybe[S64]` or `S64?`. A `Maybe` of a variant
+  written inline (`Maybe[Circle | Square]`) keeps the tagged layout, since its flag can't say which branch.
 - Two branches of the same type are a build error (a `variant` listing `S64` twice, `Maybe[None]`), and so is a branch that is a
   variant holding another branch's type (`Maybe[Maybe[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).
@@ -1419,7 +1441,7 @@ routine start() -> None
   value of `A | B` goes into `A | B | C` (or any variant whose branches include A and B) by copying tag and storage.
   Overlap rules apply to the flattened branches (`S64 | Maybe[S64]` is an error, `S64` on both levels), reported
   where the type is written. They derive the five protocols like any variant, each when every branch has it.
-- Layout `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
+- Layout (every variant but a flagged `Maybe`, above) `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
   identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
   (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
@@ -1447,7 +1469,7 @@ routine sum_to(n: U64) -> U64
 
 Walking a collection: `each x in xs.emitter()` for the whole walk, and an emitter in a named place when the items are
 read by hand (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
-there and `each x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ArrayEmitter`, `RotatableListEmitter`,
+there and `each x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ItemsEmitter`, `SlotsEmitter`, `RotatableListEmitter`,
 `SortedListEmitter`, `SortedSetEmitter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
 
@@ -1489,7 +1511,7 @@ the builder gives it back at the end of the body (from STACK). Tessera presets f
   (`any_number_of(none_of("<", manager))`).
 - `either_longer([...])` / `either_shorter([...])` (the rule is in the name, the first written wins a tie),
   `capture("name", p)`, `ignoring_case(p)`, `TextPattern.of(pieces, ignore_case: true, manager)`.
-- Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, manager) -> Maybe[TextMatch]`,
+- Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, manager) -> TextMatch?`,
   `find_all(text, manager) -> List[TextMatch]`, `replace(text, with:, manager) -> BorrowedSlice[Byte]`, `split(text, manager) ->
   List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
   `group(name)` (failable: `CaptureNameError` for no capture of that name, `AbsentValueError` for one that took no part,
@@ -1515,7 +1537,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   (below). Standard input:
   `Console.ask[T]()`, `Console.ask_line(manager)`, `ask_word(manager)`, `ask_bytes(n, manager)`, `ask_all(manager)`, all
   through one buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
-  input, so `try Console.ask_line(HEAP)` gives `Maybe[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
+  input, so `try Console.ask_line(HEAP)` gives `Optional[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
   uses that. Text comes back as a `BorrowedSlice[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
   `Err` types and no `print`.
 - Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
@@ -1567,14 +1589,18 @@ All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.
 storage in a `BorrowedSlice[T]`: a `List` is `storage` (a BorrowedSlice whose count is the capacity) and `count`. `construct(manager)` keeps
 the memory manager (always named, `construct(HEAP)` for the default heap), and `drop list` gives the storage back and
 keeps the memory manager, so the collection can be used again. Every collection is also made from an array value with
-`of(values: Array[T, N], manager: @MemoryManager)`, the manager always named (there is no default-heap `of`): `xs:
+`of(values: Items[T, N], manager: @MemoryManager)`, the manager always named (there is no default-heap `of`): `xs:
 &List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, RotatableList, SortedList, Set, SortedSet,
-PriorityQueue (`Array[(TPriority, TElement), N]`), BitList (`Array[Bool, N]`), Dict and SortedDict (`Array[(TKey,
-TValue), N]`) have it. The array is taken over, so entity values go in themselves, not copies
-(`List[List[S64]].of(values: [List[S64].of(values: [7], manager: HEAP), List[S64].construct(HEAP)], manager: HEAP)`). Element access is
+PriorityQueue (`Items[(TPriority, TElement), N]`), BitList (`Items[Bool, N]`), Dict and SortedDict (`Items[(TKey,
+TValue), N]`) have it, the `Items` one for elements with nothing to give back (`needs T: record`). List,
+RotatableList, SortedList, Set and SortedSet also have `of(values: Slots[T, N], manager:)` for any element: the Slots is
+taken over, so entity values go in themselves, not copies (`List[List[S64]].of(values: [List[S64].of(values: [7],
+manager: HEAP), List[S64].construct(HEAP)], manager: HEAP)`). A literal argument is an `Items` when its elements hold
+nothing to give back and a `Slots` when they are entities, which picks the overload. A tuple holds no entity, so the
+pair collections take only `Items`. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
-and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Array` through its pointer, `@[T]`, and
+and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Items` and `Slots` through their pointer, `@[T]`, and
 `BorrowedSlice`), and `getview()` /
 `getslice(start, count)` a `@[T]` of the elements (a `BorrowedSlice` has its own element routines, above, and no `setitem`) (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
@@ -1591,7 +1617,8 @@ says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap), `destruct_all` (no `destruct`: `drop` of an array drops each element, the last first) | index |
+| `Items[T, COUNT]` | a record, `needs T: record`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `to[@[T]]()` (the view of every element), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
+| `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `to[@[T]]()`, `getslice`, `getview`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
 | `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
@@ -1602,8 +1629,8 @@ says `@reshaping(name)`.
 | `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` (the element moves out) / `first` (a copy), `first_slot` / `priority_slot` (the top's places), `remove_entry` / `first_entry` (a `PriorityEntry` record with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
 Every collection represents and diagnoses the same way, in Tessera source form with each element diagnosed (strings
-quoted): `Console.show("{xs}")` and `xs.diagnose_into(out)` write `[1, 2, 3]` for `Array`, `List`, `RotatableList`,
-`SortedList`, `BitList` and `BitArray`, `{1, 2}` for the sets, `{1: 10, 2: 20}` for the maps, `{}` for an empty set and
+quoted): `Console.show("{xs}")` and `xs.diagnose_into(out)` write `[1, 2, 3]` for `Items`, `Slots`, `List`, `RotatableList`,
+`SortedList`, `BitList` and `Bits`, `{1, 2}` for the sets, `{1: 10, 2: 20}` for the maps, `{}` for an empty set and
 `{:}` for an empty map, in the iteration order of the table above, whether the collection is held as a `&T` place
 or an `@T` pointer. A `PriorityQueue` writes its `priority: element` pairs in the order they come out, the next
 one first (`[1: "a", 2: "b", 4: "d"]`), from a sorted copy of its places that it takes from its own memory
@@ -1725,7 +1752,8 @@ several tickets at once.
   nothing cancels them.
 - **Lists of tickets**: `List[Thread[T]]` (Hosted), `List[Fiber[T]]` and `List[PassableFiber[T]]` (Fiber)
   have `retrieve_all()` / `retrieve_all(manager)` (waits for each, results in list order, stops on a failure as a bare
-  `retrieve` does), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
+  `retrieve` does), `wait_all_finished()` (waits until every ticket's work has finished and takes no results, which stay
+  in the tickets until `give_back_all()` or `drop` ends them, the same for a `List[Thread[None]]`), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Hosted/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
@@ -1950,7 +1978,7 @@ there yet.
 **The environment.** `OsEnvironment` (Hosted) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
-`Maybe[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
+`Optional[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
 a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(manager)`,
 `temp_directory(manager)`, `home_directory(manager)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
@@ -2065,7 +2093,7 @@ import Unhosted
 
 global GIC: &InterruptManagerByGic <- .hollow()
 global THREADS: &ThreadManagerByRoundRobin <- .hollow()
-global STACKS: &Array[U64, 8192]   # 64 KiB for the threads' slots
+global STACKS: &Items[U64, 8192]   # 64 KiB for the threads' slots
 
 routine start() -> None
     GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
@@ -2147,10 +2175,10 @@ routine, block, or statement it wrote: debug information and build errors then p
 
 **Naming conversions.** `to[T]` is the standard spelling of a type conversion: a routine whose job is turning a
 value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
-(each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@T]()`,
+(each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@[T]]()`,
 `p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](manager)` / `s.to[CWStr](manager)` on a `@[Byte]` (a conversion may take
 parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `BorrowedSlice` or a `@[T]`,
-`a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
+`a.to[Vector[B32, 4]]()` on an `Items`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_unchecked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
 type argument (`p.read_le[U64](off)` on a `@Byte`). Text to a value is a conversion too: `text.to[S32]()`, and a
@@ -2245,7 +2273,7 @@ words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice and
 value generic parameters are `UPPER_SNAKE_CASE` (`FileKind.DIRECTORY`, `U64.MAX`, `NODE_KEYS`), and the build rejects a
 choice or flags member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
 decide what `[...]` after it is. Before `(` it is a routine's or type's arguments, alone it is an index, and before
-`.member` (`Array[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
+`.member` (`Items[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
@@ -2253,20 +2281,20 @@ PascalCase: `Dict[TKey, TValue]`, `Emitter[TItem, TEmitter]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver
 type's, and the receiver type's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `PointedCell[T].to[@TPointee]`. A value (const) parameter is named like a
-preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
+preset, UPPER_SNAKE for what it counts: `Items[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
 parameter can't be told from a real type by its case (both PascalCase), so the leading `T` marks "a type slot", and
 the upper case marks a build-time value like a preset. That's not Hungarian notation: it marks what kind of name it
 is, not the type of a value. `@derive` follows the rule (`T` for the Writer of a non-generic type, `TWriter` next to
 the type's own).
 
-**Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
+**`Items`, `Slots` and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `U64`, or an `S64` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
-(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]` (a bracketed list
+`@Items[T, COUNT]` that is the i-th whole array, so elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
+(bounds checked), or `arr.to[@[T]]().to[@T]().stride(i).peek()` unchecked (the view's first address). An array literal is `[1, 2, 3]` (a bracketed list
 broken over lines, also a tuple, call arguments, parameters or a record literal, may end with a comma before its
 closing bracket, on one line that comma is a build error), and `[0] * 256`
 repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
-array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and for span presets and globals
+array presets (`K.getitem(i)`, with `preset K: &Items[T, COUNT] <- [...]`), and for span presets and globals
 (`preset K: @[T] <- [...]`, `K.getitem(i)`, `K.count()`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
@@ -2279,7 +2307,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
   and leaves the value empty. The statement `drop x` calls it, and nothing runs it for you. A program's own line
   `x.destruct()` is a build error: only a `destruct` body calls a member's `destruct` by name. A collection owns its
   elements, and its `destruct` ends each one before giving its memory back. Elements that are borrowed pointers are
-  yours to release. `Array[T, COUNT]` acquires nothing, so it has no `destruct()`.
+  yours to release. An `Items[T, COUNT]` holds nothing to give back, and a `Slots[T, COUNT]` has no `destruct()` of its own: `drop` of one drops each element, the last first.
 - Other ways to make a value are named for what they make: `Console.output()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
 - `deallocate(p, manager)` (the raw layer) is not a destructor: it hands a block of memory back to its memory manager.

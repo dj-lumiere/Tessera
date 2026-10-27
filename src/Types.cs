@@ -200,15 +200,20 @@ public sealed class PtrType(DType? pointee) : DType
     public override string OwnerName => Pointee is null ? "Addr" : "PointedCell";
 }
 
-/// `Array[T, COUNT]`: COUNT elements of T, stored inline.
-public sealed class ArrayType(DType elem, long count) : DType
+/// `Items[T, COUNT]` or `Slots[T, COUNT]`: COUNT elements of T, stored inline as `[COUNT x T]`. `Items` is a record,
+/// so its elements hold nothing with a release duty. `Slots` is an entity with the same layout, which takes any T.
+public sealed class ArrayType(DType elem, long count, bool isSlots = false) : DType
 {
     public DType Elem { get; } = elem;
     public long Count { get; } = count;
-    public override string Name => $"Array[{Elem.Name}, {Count}]";
-    public override string Key => $"Array[{Elem.Key}, {Count}]";
+
+    /// Whether this is a `Slots` (an entity) rather than an `Items` (a record).
+    public bool IsSlots { get; } = isSlots;
+    public string Kind => IsSlots ? "Slots" : "Items";
+    public override string Name => $"{Kind}[{Elem.Name}, {Count}]";
+    public override string Key => $"{Kind}[{Elem.Key}, {Count}]";
     public override string Llvm => $"[{Count} x {Elem.Llvm}]";
-    public override string OwnerName => "Array";
+    public override string OwnerName => Kind;
 }
 
 /// `Vector[T, LANES]`: LANES lanes of T as one SIMD value, LLVM's `<LANES x T>`. `Vector[Bool, LANES]` is a lane mask.
@@ -288,6 +293,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Crashing.IsCheck(this) ? $"Check[{Args[0].Name}]"
+        : IsMaybe && Entities.Holds(Args[0]) ? $"Optional[{Args[0].Name}]"
         : Decl.IsAnonymous
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
@@ -300,6 +306,20 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
 
     /// The tag: the branch type's ID in the low 32 bits.
     public static IntType Tag => IntType.U(64);
+
+    /// Whether this is the standard library's `Maybe[T]` (`T?`), written `Optional[T]` when T holds an entity.
+    public bool IsMaybe => Decl is { Name: "Maybe", IsAnonymous: false } && Decl.Module == Compiler.SystemModule;
+
+    /// Whether the variant is laid out as a present flag and the value, `{ i1, [0 x T], T }` (the bytes of `{ i1, T }`):
+    /// a `Maybe[T]` whose `T` isn't a variant written inline. Its tag is 1 when it holds the T and 0 for None, so the
+    /// all-zero value, `.hollow()`, is None.
+    public bool IsFlagged => IsMaybe && Leaves.Count == 2;
+
+    /// The tag's LLVM type: `i1` for a flagged Maybe, else `i64`.
+    public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;
+
+    /// The tag of a value of `leaf`: 1 for a flagged Maybe's T and 0 for its None, else the leaf type's ID.
+    public uint LeafId(DType leaf) => IsFlagged ? (LeafIndex(leaf) == 0 ? 1u : 0u) : TypeId(leaf);
 
     private List<DType>? _leaves;
 
@@ -515,7 +535,7 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
 public static class Entities
 {
     /// Whether `t` is an entity value (not a pointer to one).
-    public static bool IsEntity(DType? t) => t is RecordType { Decl.IsEntity: true };
+    public static bool IsEntity(DType? t) => t is RecordType { Decl.IsEntity: true } or ArrayType { IsSlots: true };
 
     /// The entity `t` is, or a slot of one holds, or null.
     public static RecordType? EntityOf(DType? t) =>
@@ -530,6 +550,7 @@ public static class Entities
     private static bool Holds(DType? t, HashSet<string>? seen) => t switch
     {
         RecordType { Decl.IsEntity: true } => true,
+        ArrayType { IsSlots: true } => true,
         ArrayType a => Holds(a.Elem, seen),
         VariantType v when (seen ??= []).Add(v.Key) => v.Leaves.Any(l => Holds(l, seen)),
         _ => false,

@@ -1191,11 +1191,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// or a B).
     private TypeRef ParseType()
     {
-        var first = ParseTypeAtom();
+        var first = ParseOptionalAtom();
         if (!Is(TokenKind.Pipe)) return first;
         var branches = new List<TypeArg> { new TypeArgType(first) };
-        while (Accept(TokenKind.Pipe)) branches.Add(new TypeArgType(ParseTypeAtom()));
+        while (Accept(TokenKind.Pipe)) branches.Add(new TypeArgType(ParseOptionalAtom()));
         return new TypeRef(TypeRef.UnionName, branches, first.Pos);
+    }
+
+    /// A type atom with any `?` after it: `S64?` is `Maybe[S64]`, `Counter?` (an entity) `Optional[Counter]`, and
+    /// `@S64?` a Maybe of the pointer.
+    private TypeRef ParseOptionalAtom()
+    {
+        var atom = ParseTypeAtom();
+        while (Is(TokenKind.Question))
+        {
+            Next();
+            atom = new TypeRef("Maybe", [new TypeArgType(atom)], atom.Pos) { Path = Compiler.SystemModule, Question = true };
+        }
+        return atom;
     }
 
     private TypeRef ParseTypeAtom()

@@ -13,7 +13,7 @@
 # represent_into(out) are the routines that write, which a type defines.
 #
 # Numbers and Bool read the same both ways. Char diagnoses as 'A', Byte as b'A'
-# (b'\x7f' when it isn't printable ASCII), and an Array as [1, 2, 3]. Pointers
+# (b'\x7f' when it isn't printable ASCII), and an Items as [1, 2, 3]. Pointers
 # diagnose as their address.
 #
 # A record, choice, or variant gets a diagnose from the builder with
@@ -38,7 +38,8 @@ obeys Diagnosable[CSize], Diagnosable[CSSize]
 obeys Diagnosable[B16], Diagnosable[BF16], Diagnosable[B32], Diagnosable[B64], Diagnosable[B128]
 obeys Diagnosable[Bool], Diagnosable[Char], Diagnosable[Byte], Diagnosable[@[Byte]], Diagnosable[None], Diagnosable[Addr]
 obeys Diagnosable[Duration], Diagnosable[Moment], Diagnosable[ByteSize]
-obeys Diagnosable[Array[T, COUNT]] when T: typename, COUNT: U64, Diagnosable[T]
+obeys Diagnosable[Items[T, COUNT]] when T: record, COUNT: U64, Diagnosable[T]
+obeys Diagnosable[Slots[T, COUNT]] when T: typename, COUNT: U64, Diagnosable[T]
 
 # -- text ----------------------------------------------------------------------
 
@@ -236,8 +237,8 @@ needs T: typename, Writer[T]
 ### :typeparam COUNT: The number of elements.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
-routine Array[T, COUNT].diagnose_into[TWriter](out: @TWriter) -> None
-needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
+routine Items[T, COUNT].diagnose_into[TWriter](out: @TWriter) -> None
+needs T: record, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
     slot: &Me <- me
 
     write_str(out, text: "[")
@@ -247,6 +248,19 @@ needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter
             write_str(out, text: ", ")
         value: T = slot[at]
         value.diagnose_into(out)
+    write_str(out, text: "]")
+    return
+
+### Writes the Slots as `[a, b, c]`, diagnosing each of the `COUNT` elements in order through its place.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+routine @Slots[T, COUNT].diagnose_into[TWriter](out: @TWriter) -> None
+needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    write_str(out, text: "[")
+    each at in 0 til COUNT
+        if at != 0
+            write_str(out, text: ", ")
+        me.getslot(at).diagnose_into(out)
     write_str(out, text: "]")
     return
 
@@ -411,14 +425,16 @@ needs T: typename, Writer[T]
 
 ### x, to be written by its diagnose_into: what x.diagnose() hands back.
 secret record Diagnosed[T]
+needs T: record
     value: T
 
 ### x, to be written by its represent_into: what x.represent() hands back.
 secret record Represented[T]
+needs T: record
     value: T
 
-obeys Representable[Diagnosed[T]] when T: typename, Diagnosable[T]
-obeys Representable[Represented[T]] when T: typename, Representable[T]
+obeys Representable[Diagnosed[T]] when T: record, Diagnosable[T]
+obeys Representable[Represented[T]] when T: record, Representable[T]
 
 ### Makes a `Diagnosed` from its fields.
 ### :param value: Its `value`.
@@ -443,13 +459,13 @@ routine @Represented[T].destruct() -> None
 ### `me`, to be written as Tessera source: Console.show("{x.diagnose()}", end: "").
 ### :returns: `me` in a `Diagnosed` adapter.
 routine T.diagnose() -> Diagnosed[T]
-needs T: typename, Diagnosable[T]
+needs T: record, Diagnosable[T]
     return Diagnosed[Me](value: me)
 
 ### `me`, to be written as the program's output (what a plain hole already does): Console.show("{x.represent()}", end: "").
 ### :returns: `me` in a `Represented` adapter.
 routine T.represent() -> Represented[T]
-needs T: typename, Representable[T]
+needs T: record, Representable[T]
     return Represented[Me](value: me)
 
 ### Writes the wrapped value with its `diagnose_into`, so a template hole holding `x.diagnose()` prints the source form.

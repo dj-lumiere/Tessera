@@ -249,6 +249,20 @@ public sealed partial class Compiler
                         && EntityNamed(f.Type, plain.File) is not null)
                         throw new CompileError(f.Pos, $"record '{plain.Name}' holds {f.Type} in '{f.Name}', and an entity is never copied, "
                             + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{f.Type}");
+            // A record can be a value (bound once, a preset, copied when passed), so it holds nothing with a release
+            // duty: a type parameter it holds by value is declared `record`, and a tuple follows its items.
+            if (d is RecordDecl { IsEntity: false } valueRecord && !RecordType.IsTupleDecl(valueRecord))
+                foreach (var f in valueRecord.Fields)
+                    if (needs.Holds(valueRecord, f.Type))
+                    {
+                        var loose = NamesInType(f.Type).Where(n => valueRecord.TypeParams.Contains(n)
+                            && !DeclaresRecordKind(valueRecord.Clauses, n) && !DeclaresValue(valueRecord.Clauses, n)).Distinct().ToList();
+                        string what = loose.Count > 0 ? string.Join(" and ", loose) : f.Type.ToString();
+                        throw new CompileError(f.Pos, $"record '{valueRecord.Name}' holds {f.Type} in '{f.Name}', and a record "
+                            + $"holds nothing with a release duty, while {what} may be an entity or hold one: "
+                            + (loose.Count > 0 ? $"declare needs {string.Join(", ", loose.Select(n => n + ": record"))}, or " : "")
+                            + $"declare it entity {valueRecord.Name}");
+                    }
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
             bool destruct = has.Contains((d, "destruct"));
             if (construct && destruct) continue;
@@ -326,6 +340,10 @@ public sealed partial class Compiler
             _ => null,
         };
     }
+
+    /// Every name a type is written with: `Items`, `T` and `COUNT` in `Items[T, COUNT]`.
+    private static IEnumerable<string> NamesInType(TypeRef t) =>
+        new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesInType(a.Type)));
 
     /// Which of the program's types hold something to release (LifecycleNeeds.cs), by the declarations this build has.
     public LifecycleNeeds LifecycleNeeds() => new((t, file) =>
@@ -441,7 +459,7 @@ public sealed partial class Compiler
         foreach (var c in clauses.Where(c => c.Kind == "require"))
             for (int i = 0; i + 2 < c.Tokens.Count; i++)
                 if (c.Tokens[i].Kind == TokenKind.Ident && c.Tokens[i + 1].Kind == TokenKind.Colon
-                    && c.Tokens[i + 2].Text == "typename")
+                    && c.Tokens[i + 2].Text is "typename" or "record")
                     names.Add(c.Tokens[i].Text);
         return names;
     }
@@ -1354,10 +1372,22 @@ public sealed partial class Compiler
                     [TypeArgType inner] => new PtrType(ResolveType(inner.Type, env)),
                     _ => throw new CompileError(t.Pos, "PointedCell takes one type argument"),
                 };
-            case "Array":
+            case "Items" or "Slots":
+            {
                 if (t.Args is not [TypeArgType elem, var count])
-                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array[T, COUNT]");
-                return new ArrayType(ResolveType(elem.Type, env), ConstInt(count, env, t.Pos));
+                    throw new CompileError(t.Pos, $"{t.Name} takes an element type and an element count: {t.Name}[T, COUNT]");
+                var elemType = ResolveType(elem.Type, env);
+                // An Items is a record: a value, copied with '=', so its elements hold nothing with a release duty.
+                if (t.Name == "Items" && Entities.Holds(elemType))
+                    throw new CompileError(t.Pos, $"an Items is a record, which holds nothing with a release duty, and "
+                        + $"{elemType.Name} {(Entities.IsEntity(elemType) ? "is an entity" : "holds an entity")}: keep the "
+                        + $"elements in a Slots[{elemType.Name}, ...], an entity with the same layout");
+                if (t.Name == "Items" && MayHoldReleaseDuty(elemType))
+                    throw new CompileError(t.Pos, $"an Items is a record, which holds nothing with a release duty, and its "
+                        + $"elements are {elemType.Name}, which may be an entity: declare {RecordKindFix(elemType)}: record, or "
+                        + $"keep them in a Slots[{elemType.Name}, ...]");
+                return new ArrayType(elemType, ConstInt(count, env, t.Pos), isSlots: t.Name == "Slots");
+            }
             case "Vector":
             {
                 if (t.Args is not [TypeArgType lane, var lanes])
@@ -1377,6 +1407,18 @@ public sealed partial class Compiler
                 if (t.Args is not [TypeArgType value])
                     throw new CompileError(t.Pos, "Check takes the value's type: Check[T]");
                 return Crashing.Check(ResolveType(value.Type, env), []);
+            // `Optional[T]`, a `T?` whose T holds an entity, is the standard library's Maybe under the name that says so.
+            case "Optional" when t.Path is null or SystemModule && FindVariant(t.Name, env.File, t.Pos, t.Path) is null
+                                 && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
+            {
+                if (t.Args is not [TypeArgType held])
+                    throw new CompileError(t.Pos, "Optional takes the type it may hold: Optional[T], or T?");
+                var maybe = ResolveType(new TypeRef("Maybe", t.Args, t.Pos) { Path = SystemModule, Question = true }, env);
+                if (maybe is VariantType { Args: [var inner] } && !Entities.Holds(inner) && inner is not ArchetypeType)
+                    throw new CompileError(t.Pos, $"Optional[{inner.Name}] holds an entity or nothing, and {inner.Name} is a value: "
+                        + $"write Maybe[{inner.Name}], or {inner.Name}?");
+                return maybe;
+            }
             case "Crashables" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
                 throw new CompileError(t.Pos, "Crashables is what a check caught, named in a when arm: is Crashables as e");
         }
@@ -1417,6 +1459,12 @@ public sealed partial class Compiler
             var args = GenericArgs(v.TypeParams, v.Clauses, v.File, t.Args, env, $"variant '{v.Name}'", v.Name, t.Pos);
             // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
+            // `Maybe[E]` written with an entity E is `Optional[E]`: the name says the value holds an entity (or nothing).
+            if (v is { Name: "Maybe" } && v.Module == SystemModule && !t.Question && args is [var held] && Entities.Holds(held)
+                && t.Args is [TypeArgType { Type: var heldRef }] && heldRef.Known is null
+                && !(heldRef is { Args.Count: 0, Path: null } && env.Has(heldRef.Name)))
+                throw new CompileError(t.Pos, $"{held.Name} {(Entities.IsEntity(held) ? "is an entity" : "holds an entity")}, so a "
+                    + $"{held.Name} or nothing is an Optional: write Optional[{held.Name}], or {held.Name}?");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
 
@@ -1626,7 +1674,7 @@ public sealed partial class Compiler
             foreach (var (n, kind, at) in c.Params)
             {
                 if (n != name) continue;
-                if (kind is { Name: "typename", Args.Count: 0 }) return null;
+                if (IsTypeKind(kind)) return null;
                 DType resolved;
                 try { resolved = ResolveType(kind, new TypeEnv(file)); }
                 catch (CompileError) { return null; }
@@ -1645,11 +1693,22 @@ public sealed partial class Compiler
 
     /// Whether a `needs` line declares `name` a type parameter (`T: typename`).
     public static bool DeclaresTypename(List<Clause> clauses, string name) =>
-        clauses.Any(c => c.Params.Any(p => p.Name == name && p.Kind is { Name: "typename", Args.Count: 0 }));
+        clauses.Any(c => c.Params.Any(p => p.Name == name && IsTypeKind(p.Kind)));
+
+    /// Whether a kind declares a type parameter: `typename` takes any type, `record` one whose values hold nothing with
+    /// a release duty (no entity, no BorrowedCell or BorrowedSlice, nothing holding one), which a record may hold.
+    public static bool IsTypeKind(TypeRef kind) => kind is { Name: "typename" or "record", Args.Count: 0, Path: null };
+
+    /// Whether a kind is `record`: the parameter takes a type with no release duty.
+    public static bool IsRecordKind(TypeRef kind) => kind is { Name: "record", Args.Count: 0, Path: null };
+
+    /// Whether a `needs` line declares `name` with the kind `record` (`T: record`).
+    public static bool DeclaresRecordKind(List<Clause> clauses, string name) =>
+        clauses.Any(c => c.Kind == "require" && c.Params.Any(p => p.Name == name && IsRecordKind(p.Kind)));
 
     /// Whether a `needs` line declares `name` a value parameter, of any kind (`N: U64`, `O: MemoryOrder`).
     public static bool DeclaresValue(List<Clause> clauses, string name) =>
-        clauses.Any(c => c.Params.Any(p => p.Name == name && p.Kind is not { Name: "typename", Args.Count: 0 }));
+        clauses.Any(c => c.Params.Any(p => p.Name == name && !IsTypeKind(p.Kind)));
 
     /// The default a needs line gives `name` (`= SEQ_CST`), or null.
     public static TypeArg? DefaultOf(List<Clause> clauses, string name) =>
@@ -2088,8 +2147,10 @@ public sealed partial class Compiler
                 // The storage is words as wide as its alignment, so an optimized copy moves words, not bytes.
                 var (aligner, size, align) = VariantStorage(v);
                 long words = (size + align - 1) / align;
+                // A flagged Maybe is the flag and then the value itself: `{ i1, T }`, the storage field being the T.
                 string body = aligner is null
-                    ? VariantType.Tag.Llvm
+                    ? v.TagLlvm
+                    : v.IsFlagged ? $"i1, [0 x {v.Leaves[0].Llvm}], {v.Leaves[0].Llvm}"
                     : $"{VariantType.Tag.Llvm}, [0 x {aligner.Llvm}], [{words} x i{align * 8}]";
                 _typeDefs.AppendLine($"{v.Llvm} = type {{ {body} }}");
                 break;
@@ -2198,7 +2259,7 @@ public sealed partial class Compiler
         if (c.Value is not ArrayLit { IsTuple: false } lit)
             throw new CompileError(c.Value!.Pos,
                 $"a span (@[T]) in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] * 26");
-        return new ArrayType(elem, Elements(lit, env).Count);
+        return new ArrayType(elem, Elements(lit, env).Count, isSlots: Entities.Holds(elem));
     }
 
     /// Whether `t` is the core `PointedSlice[T]`, and its element type.

@@ -20,6 +20,9 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// `&T` or `&[T]`, the short form of the standard library's `BorrowedCell[T]` / `BorrowedSlice[T]`, as written.
     public bool Amp { get; init; }
 
+    /// `T?`, as written: the standard library's `Maybe[T]`, which is named `Optional[T]` when T holds an entity.
+    public bool Question { get; init; }
+
     /// `failable Callable[(T,), U]`: a routine value that may fail, written as a parameter's type. The call that hands a
     /// failable routine value to such a parameter fails the way the value does.
     public bool Failable { get; init; }
@@ -29,6 +32,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     public string? Member { get; init; }
 
     public override string ToString() =>
+        Question && Args is [TypeArgType maybe] ? $"{maybe}?" :
         Member is not null ? (Path is null ? "" : Path + "/") + Name + "." + Member :
         Amp && Name == "BorrowedCell" && Args is [TypeArgType boxed] ? $"&{boxed}"
         : Amp && Name == "BorrowedSlice" && Args is [TypeArgType elems] ? $"&[{elems}]"
