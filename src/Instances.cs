@@ -38,6 +38,10 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     /// `@track_caller`: its last parameter is the place it was called from, which the routine doesn't declare.
     public bool IsTrackCaller => Compiler.IsTrackCaller(Decl);
+
+    /// Whether the routine returns an `Optional[E]` and takes the place for the E as its last, hidden parameter: the
+    /// caller's place, which the routine fills when it returns an E.
+    public bool HasOptionalPlace => Ret is VariantType { IsAddressed: true } && Params.Count > Decl.Params.Count + (IsTrackCaller ? 1 : 0);
     public bool NoReturn => Decl.AnnotationNamed("noreturn") is not null;
     public bool Variadic => Decl.AnnotationNamed("variadic") is not null;
     /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
@@ -182,6 +186,10 @@ public sealed partial class Compiler
             ps.Add(new PtrType(null));
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
+        // A routine that returns an `Optional[E]` (an `E?` of an entity) is given the place for the E by its caller, as
+        // a last, hidden parameter: the Optional it returns is that place's address, or null for None.
+        if (ret is VariantType { IsAddressed: true } optional && r.Blocks is not null && !IsAsm(r) && r.AnnotationNamed("template") is null)
+            ps.Add(new PtrType(optional.Leaves[0]));
         // A concept's required routine, called on a type parameter in a generic body being checked, stands for the
         // routine each instance will call: it has a signature and no body.
         bool required = _requirementOf.ContainsKey(r);

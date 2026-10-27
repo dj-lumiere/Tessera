@@ -1377,7 +1377,7 @@ routine start() -> None
   own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed place that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
-- A variant may have an entity branch: `Counter?` (`Optional[Counter]`), `variant Opened / Counter / Closed`. Such a variant value holds an entity,
+- A variant may have an entity branch: `Counter?` (`Optional[Counter]`, the address of the place it lives in), `variant Opened / Counter / Closed`. Such a variant value holds an entity,
   so it follows the same rules: it lives in a place (`r: &Optional[Counter] <- open()`, which the program ends: a STACK
   place of a variant isn't given back by the builder, and a value binding is a build error), a parameter of that type
   is a place, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
@@ -1408,11 +1408,22 @@ routine start() -> None
 - **`T?` is `Maybe[T]` or `Optional[T]`**, picked by `T`'s kind. For a `T` whose values hold nothing with a release
   duty it is `Maybe[T]`, a value laid out as `{ i1, T }` (the present flag, then the value; `{ i1, [0 x T], T }` in
   the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it is copied, a preset, a field of a record. For
-  an entity `T` (or one holding an entity) it is `Optional[T]`: it holds the entity or nothing, lives in a place, and
-  is handed over with `steal`. Its layout is the same `{ i1, T }`, the entity in place after the flag. Both are read and made as a variant (`m: S64? =
-  5`, `return None()`, `when`, `is None`, `try`). Writing `Maybe[Counter]` with an entity is a build error that names
+  an entity `T` (or one holding an entity) it is `Optional[T]`: one address (`ptr`) of the place the `T` lives in,
+  null for None, handed over with `steal`. Both are read and made as a variant (`m: S64? = 5`, `return None()`,
+  `when`, `is None`, `try`). Writing `Maybe[Counter]` with an entity is a build error that names
   `Optional[Counter]` or `Counter?`, and `Optional[S64]` one that names `Maybe[S64]` or `S64?`. A `Maybe` of a variant
   written inline (`Maybe[Circle | Square]`) keeps the tagged layout, since its flag can't say which branch.
+- **Where an Optional's entity lives.** In the frame of the routine whose call made the Optional, so no memory comes
+  from a manager the code doesn't name. A routine that returns `T?` is given the place for the `T` by its caller as a
+  hidden last parameter: `return x` moves the `T` there, `return None()` is null. `try f()` of a routine that returns
+  a `T` puts the `T` in a place of the caller's frame. `try Console.ask_line(HEAP)` gives a `BorrowedSlice[Byte]` in
+  that place whose bytes come from `HEAP`, the manager the call was given. So an Optional stays in that routine: in a
+  STACK place (`r: &Optional[Counter] <- f()`), a parameter (which takes the entity over), or a return. `drop r` ends
+  the entity it holds. These are build errors that say what to write: a field of type `T?` (hold the `T` itself in an
+  entity's field, or its address `@T`), a type argument (`List[Counter?]`: `List[Counter]`), a variant branch,
+  memory from a manager (`<- f() from HEAP`), a `Callable` that returns one (and taking such a routine as a value),
+  and storing one into a place again (`poke`, `store`: take the `T` out with `when` and keep it in a place of its
+  own). A link that may be absent is an address, `next: @Node` (hollow when there is none) or `@Node?`.
 - Two branches of the same type are a build error (a `variant` listing `S64` twice, `Maybe[None]`), and so is a branch that is a
   variant holding another branch's type (`Maybe[Maybe[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).

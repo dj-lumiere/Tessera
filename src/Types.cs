@@ -298,7 +298,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
-    public override string Llvm => $"%\"{Key}\"";
+    public override string Llvm => IsAddressed ? "ptr" : $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
     /// Each branch's type, in the declaration's order.
@@ -314,6 +314,10 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     /// a `Maybe[T]` whose `T` isn't a variant written inline. Its tag is 1 when it holds the T and 0 for None, so the
     /// all-zero value, `.hollow()`, is None.
     public bool IsFlagged => IsMaybe && Leaves.Count == 2;
+
+    /// Whether this is an `Optional[E]`, a flagged Maybe whose `T` holds an entity: one address, `ptr`, of the place the
+    /// E lives in, null for None. The place is the frame of the routine whose call made the Optional.
+    public bool IsAddressed => IsFlagged && Entities.Holds(Leaves[0]);
 
     /// The tag's LLVM type: `i1` for a flagged Maybe, else `i64`.
     public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;

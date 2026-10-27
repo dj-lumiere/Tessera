@@ -383,6 +383,7 @@ public sealed partial class FunctionGen
     /// A routine's value as a Callable: a failable routine's carries what it can throw.
     private CallableType OwnCallable(Instance inst)
     {
+        if (inst.Ret is VariantType { IsAddressed: true } optional) throw new CompileError(inst.Decl.Pos, Compiler.NoOptionalCallable(optional));
         if (!inst.IsFailable) return new CallableType(inst.CallConv, inst.Params, inst.Ret);
         if (Emitting) _c.EnsureThrowsKnown(inst);
         return new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true, Emitting ? _c.ThrowsOf(inst, _inst) : []);
@@ -654,6 +655,7 @@ public sealed partial class FunctionGen
             }
             v = Eval(returned, _inst.Ret);
             if (_cur.Terminated) return;
+            if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
             if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
             RecordReturn(returned, r.Pos);
         }

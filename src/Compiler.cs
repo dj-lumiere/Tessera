@@ -1451,6 +1451,12 @@ public sealed partial class Compiler
                 throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
             CheckResultCode(s, args, t.Pos);
+            // A BorrowedCell of an Optional is the STACK place a routine keeps one in: anything else would keep the
+            // address after the frame its E lives in has ended.
+            if (args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType kept
+                && !(s is { Name: "BorrowedCell", Module: SystemModule }))
+                throw new CompileError(t.Pos, OptionalStaysInFrame(kept, $"{s.Name}[...]")
+                    + $": hold the {kept.Leaves[0].Name} itself, {s.Name}[{kept.Leaves[0].Name}]");
             return new RecordType(s, args, TransparentField);
         }
 
@@ -1465,6 +1471,9 @@ public sealed partial class Compiler
                 && !(heldRef is { Args.Count: 0, Path: null } && env.Has(heldRef.Name)))
                 throw new CompileError(t.Pos, $"{held.Name} {(Entities.IsEntity(held) ? "is an entity" : "holds an entity")}, so a "
                     + $"{held.Name} or nothing is an Optional: write Optional[{held.Name}], or {held.Name}?");
+            if (!(v is { Name: "Maybe" } && v.Module == SystemModule) && args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType branch)
+                throw new CompileError(t.Pos, OptionalStaysInFrame(branch, $"{v.Name}[...]")
+                    + $": take the {branch.Leaves[0].Name} out with when first (is {branch.Leaves[0].Name} as x)");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
 
@@ -1502,6 +1511,18 @@ public sealed partial class Compiler
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }
 
+    /// Why `where` can't hold the Optional `optional`: it is the address of an E in the frame of the routine whose call
+    /// made it, so it stays in that routine.
+    public static string OptionalStaysInFrame(VariantType optional, string where) =>
+        $"{where} can't hold {optional.Name}: an Optional is the address of a {optional.Leaves[0].Name} in the frame of the "
+        + "routine whose call made it, so it stays in that routine (a STACK place, a parameter, or what it returns)";
+
+    /// Why a Callable can't return the Optional `optional`.
+    public static string NoOptionalCallable(VariantType optional) =>
+        $"a Callable can't return {optional.Name}: a routine that returns one is given the place for its "
+        + $"{optional.Leaves[0].Name} by each call, which a call through a Callable doesn't pass. Return the "
+        + $"{optional.Leaves[0].Name} from a failable routine, and call it with try";
+
     /// `Result[T, TErrorCode]` is for the C boundary, where its code is an integer C reads: TErrorCode is a choice (a
     /// type parameter in a generic body, checked again at each instance).
     private static void CheckResultCode(RecordDecl s, List<DType> args, Pos pos)
@@ -1526,6 +1547,8 @@ public sealed partial class Compiler
         // `Callable[(S,), T]` with `T` the None record (a generic argument) returns nothing, like `-> None` written out.
         var returned = ResolveType(ret.Type, env, allowVoid: true);
         if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == SystemModule) returned = VoidType.Instance;
+        if (returned is VariantType { IsAddressed: true } optional)
+            throw new CompileError(t.Pos, NoOptionalCallable(optional));
         // `failable Callable[...]`: open to a failable value, whose list the instance takes from the value it is given.
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned, failable: t.Failable);
     }
@@ -2131,6 +2154,10 @@ public sealed partial class Compiler
             case RecordType { TransparentField: { } field }:
                 EnsureTypeDefined(field);
                 break;
+            case VariantType { IsAddressed: true } optional:
+                // An Optional is an address: the E it points at is defined where its place is.
+                if (_definedTypes.Add(optional.Key)) EnsureTypeDefined(optional.Leaves[0]);
+                break;
             case VariantType v:
             {
                 if (_definingTypes.Contains(v.Key)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");
@@ -2162,7 +2189,15 @@ public sealed partial class Compiler
                 _definingTypes.Add(s.Key);
                 try
                 {
-                    foreach (var (_, ft) in Fields(s)) EnsureTypeDefined(ft);
+                    foreach (var (fieldName, ft) in Fields(s))
+                    {
+                        if (ft is VariantType { IsAddressed: true } optional)
+                            throw new CompileError(s.Decl.Fields.FirstOrDefault(f => f.Name == fieldName)?.Pos ?? s.Decl.Pos,
+                                OptionalStaysInFrame(optional, $"field '{fieldName}' of {s.Name}")
+                                + $": hold the {optional.Leaves[0].Name} itself in an entity's field (.hollow() when there is "
+                                + $"none), or its address, @{optional.Leaves[0].Name}");
+                        EnsureTypeDefined(ft);
+                    }
                 }
                 finally
                 {

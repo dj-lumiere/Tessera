@@ -146,6 +146,8 @@ public sealed partial class Compiler
             }
             case RecordType { TransparentField: { } field }:
                 return SizeAlign(field, pos);
+            case VariantType { IsAddressed: true }:
+                return SizeAlign(new PtrType(null), pos);
             case VariantType v:
             {
                 if (!_sizing.Add(v.Key)) throw new CompileError(pos, $"{v} contains itself");

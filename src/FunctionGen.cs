@@ -146,6 +146,9 @@ public sealed partial class FunctionGen
     /// A `@track_caller` routine's hidden parameter: the place it was called from.
     private const string CallerParam = "%a.caller";
 
+    /// The hidden last parameter of a routine that returns an `Optional[E]`: the caller's place for the E.
+    private const string OptionalPlaceParam = "%a.optional.place";
+
     /// The `@source` of the statement or terminator being emitted, the place a call there reports.
     private Pos? _lineSource;
     private int _sp;
@@ -1197,7 +1200,8 @@ public sealed partial class FunctionGen
         if (_sig.Sret) ps.Add($"{_sig.Ret.Parts[0].Llvm} %ret.slot");
         for (int i = 0; i < _inst.Params.Count; i++)
         {
-            string name = i < _decl.Params.Count ? $"%a.{IrName(_decl.Params[i].Name)}" : CallerParam;
+            string name = i < _decl.Params.Count ? $"%a.{IrName(_decl.Params[i].Name)}"
+                : _inst.HasOptionalPlace && i == _inst.Params.Count - 1 ? OptionalPlaceParam : CallerParam;
             var info = _sig.Params[i];
             if (info.Pass == AbiPass.Coerce)
             {
@@ -2837,6 +2841,10 @@ public sealed partial class FunctionGen
         {
             if (a.Value is ArrayLit { IsTuple: false })
                 throw Err(a.Value.Pos, $"an array literal from a manager is a BorrowedSlice[T], and this place takes {expected}");
+            if (box.Args[0] is VariantType { IsAddressed: true } optional)
+                throw Err(a.Pos, Compiler.OptionalStaysInFrame(optional, "memory from a manager")
+                    + $": keep it in a STACK place, x: &{optional.Name} <- value, or put the {optional.Leaves[0].Name} itself "
+                    + $"in the manager's memory, x: &{optional.Leaves[0].Name} <- value from manager");
             var held = new TypeRef(box.Args[0].Name, [], a.Pos) { Known = box.Args[0] };
             var call = new MethodCallExpr(a.Manager, "borrow_and_fill", [held], [a.Value], a.Pos) { ArgNames = ["t"] };
             return EvalCall(call, expected);
@@ -2927,6 +2935,14 @@ public sealed partial class FunctionGen
     {
         _c.EnsureTypeDefined(vt);
         if (value.Type is VariantType { Decl.IsAnonymous: true } sub && vt.LeafIndex(sub) < 0) return WidenVariant(value, sub, vt);
+        // An Optional is the address of its E: the E goes into a place of this frame, None is null.
+        if (vt.IsAddressed)
+        {
+            if (vt.LeafIndex(value.Type) != 0) return new Val("null", vt);
+            string place = NewSlot(value.Type);
+            Line($"store {value.Type.Llvm} {value.Op}, ptr {place}");
+            return new Val(place, vt);
+        }
         uint id = vt.LeafId(value.Type);
         string tag = FailureTag(value.Type, vt, id, made ?? _decl.Pos);
         string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {vt.TagLlvm} {tag}, 0");
@@ -3255,7 +3271,7 @@ public sealed partial class FunctionGen
     private void EmitVariantWhen(WhenStmt w, Val v, VariantType vt, Func<WhenArm, Action?, string> armBlock,
         List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
-        string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
+        string tag = EmitTmp(vt.IsAddressed ? $"icmp ne ptr {v.Op}, null" : $"extractvalue {vt.Llvm} {v.Op}, 0");
         string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
@@ -3368,7 +3384,8 @@ public sealed partial class FunctionGen
         // owns, which ends once on every path like any other.
         if (Entities.Holds(branch))
         {
-            string place = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+            // An Optional's value is the address of the E's place already.
+            string place = EmitTmp(vt.IsAddressed ? $"load ptr, ptr {slot}" : $"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
             Define(binding.Name, new Val(place, new PtrType(branch)), binding.Pos);
             if (MemOn)
             {
@@ -5398,7 +5415,7 @@ public sealed partial class FunctionGen
         if (_blockName.Length > 0 && plan.Decl.AnnotationNamed(ExpensiveCallLint.Annotation) is not null)
             _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl) { InLoop = _loops.Count > 0 });
         int offset = plan.Receiver is null ? 0 : 1;
-        int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
+        int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0) - (sig.HasOptionalPlace ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
         if (!arityOk && plan.Decl.Owner is { Name: "BorrowedSlice" } && plan.Decl.IsLibrary
             && OldMemoryElementCall(new MethodCallExpr(plan.Receiver ?? new ValueRef("m", plan.Pos), plan.Decl.Name, [], plan.Args, plan.Pos)) is { } newer)
@@ -5430,6 +5447,9 @@ public sealed partial class FunctionGen
         for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset], ReferenceEquals(plan.Args[i], _claimContents) ? 0 : i + 1));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
         if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
+        // The E of the Optional the routine returns lives in a place of this frame, which the call fills.
+        if (sig.HasOptionalPlace) args.Add(new Val(NewSlot(sig.Params[^1] is PtrType { Pointee: { } placeOf } ? placeOf : sig.Ret), sig.Params[^1]));
+        CheckOptionalRefill(plan, sig, args, offset);
         MemCall(plan, sig, offset);
         CheckStoreEscape(plan, sig);
         RecordStore(plan, sig);
@@ -5495,6 +5515,20 @@ public sealed partial class FunctionGen
         }
         return EmitAbiCall($"{inst.CcPrefix(_c.Target)}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
+    }
+
+    /// An Optional is bound where it is made and isn't stored into a place again: a place filled from one call site in
+    /// a loop would point at the E the next pass puts in the same frame place.
+    private void CheckOptionalRefill(CallPlan plan, Instance sig, List<Val> args, int offset)
+    {
+        if (plan.Decl.Name is not ("poke" or "poke_volatile" or "poke_into" or "store" or "store_into" or "replace")) return;
+        // The fill of the place a `<-` line borrows is where the Optional is bound.
+        if (plan.Args is [var filled] && ReferenceEquals(filled, _claimContents)) return;
+        for (int i = offset; i < args.Count; i++)
+            if (args[i].Type is VariantType { IsAddressed: true } optional)
+                throw Err(plan.Pos, $"{plan.Decl.Name} stores {optional.Name} into a place, and an Optional is bound where it is "
+                    + $"made: x: &{optional.Name} <- f(). Take the {optional.Leaves[0].Name} out with when (is "
+                    + $"{optional.Leaves[0].Name} as x) and keep it in a place of its own");
     }
 
     /// The place a call to a `@track_caller` routine passes: a `@track_caller` routine passes on the place it was
@@ -6016,6 +6050,7 @@ public sealed partial class FunctionGen
         }
         var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
+        if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
         // The value a STACK place held goes to the caller: the place has nothing left to give back.
         if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
         RecordReturn(returned, r.Pos);
@@ -6036,6 +6071,30 @@ public sealed partial class FunctionGen
         if (_inst.PassesBf16AsBits && Instance.BitsCarrier(_inst.Ret, isReturn: true, _c.Target) is { } carrier)
             v = new Val(EmitTmp($"bitcast {_inst.Ret.Llvm} {v.Op} to {carrier}"), _inst.Ret);
         Return($"ret {_inst.LlvmRet(_c.Target)} {v.Op}");
+    }
+
+    /// The Optional a routine returns, in its caller's place: the E it points at moves into that place, unless it is
+    /// there already, and the routine returns the place's address, or null for None.
+    private Val MoveIntoOptionalPlace(Val v)
+    {
+        if (!Emitting || v.Type is not VariantType { IsAddressed: true } vt || v.Op == "null") return v;
+        var held = vt.Leaves[0];
+        _c.EnsureTypeDefined(held);
+        string present = EmitTmp($"icmp ne ptr {v.Op}, null");
+        string elsewhere = EmitTmp($"icmp ne ptr {v.Op}, {OptionalPlaceParam}");
+        string move = EmitTmp($"and i1 {present}, {elsewhere}");
+        var moving = NewLBlock("optional.move");
+        var moved = NewLBlock("optional.moved");
+        Terminate($"br i1 {move}, label %{moving.Label}, label %{moved.Label}");
+        _cur = moving;
+        if (_c.SizeAlign(held, default).Size > 0)
+        {
+            string e = EmitTmp($"load {held.Llvm}, ptr {v.Op}");
+            Line($"store {held.Llvm} {e}, ptr {OptionalPlaceParam}");
+        }
+        Terminate($"br label %{moved.Label}");
+        _cur = moved;
+        return new Val(EmitTmp($"select i1 {present}, ptr {OptionalPlaceParam}, ptr null"), vt);
     }
 
     /// `jump name(args)`: to a block of the routine, its arguments evaluated here. While they are, `_arm` says where
