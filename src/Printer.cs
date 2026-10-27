@@ -177,7 +177,8 @@ public sealed class Printer
                 Line(s, indent, $"drop {Expr(d.Value)}");
                 break;
             case StealStmt st:
-                Line(s, indent, $"steal {Expr(st.From)} as {st.Name}");
+                Line(s, indent, st.Inject is null ? $"steal {Expr(st.From)} as {st.Name}"
+                    : $"steal {Expr(st.From)} as {st.Name} inject {Expr(st.Inject, 0)}");
                 break;
             case BecomesStmt { Value: WhenExpr w } b:
                 Line(s, indent, $"becomes when{(w.When.Value is null ? "" : " " + Expr(w.When.Value))}");

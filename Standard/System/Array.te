@@ -157,9 +157,12 @@ needs T: typename, COUNT: U64, Destructible[T]
 ### :throws: Crashes with `IndexOutOfBoundsError` when `end >= COUNT` and `end > start`.
 routine @Array[T, COUNT].shift_right(start: U64, end: U64) -> None
 needs T: typename, COUNT: U64
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `start` is
+    # left for it to fill.
+    base: @T = bitcast[@Me, @T](me)
     until i <= start with i: U64 = end
         from: U64 = i - 1
-        me.getslot(i).poke(steal me.getslot(from))
+        me.getslot(i).poke(steal base.stride(from))
         continue with i: from
     then
         return
@@ -170,12 +173,34 @@ needs T: typename, COUNT: U64
 ### :throws: Crashes with `IntegerOverflowError` when `end` is 0, and with `IndexOutOfBoundsError` when `end > COUNT`.
 routine @Array[T, COUNT].shift_left(start: U64, end: U64) -> None
 needs T: typename, COUNT: U64
+    if end > COUNT
+        throw IndexOutOfBoundsError(index: end - 1, count: COUNT)
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `end` - 1 is
+    # left out of it.
+    base: @T = bitcast[@Me, @T](me)
     until i >= end - 1 with i: U64 = start
         from: U64 = i + 1
-        me.getslot(i).poke(steal me.getslot(from))
+        me.getslot(i).poke(steal base.stride(from))
         continue with i: from
     then
         return
+
+### Takes the element at `index` out and moves elements [`index` + 1, `end`) one slot left, to [`index`, `end` - 1), so the
+### elements in use stay in a row. The place at `end` - 1 is left out of them: for an array whose count of used places
+### is kept beside it, which becomes `end` - 1.
+### :param index: The index of the element to take out.
+### :param end: The index past the last element in use.
+### :returns: The element that was at `index`.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= end` or `end > COUNT`.
+@track_caller
+routine @Array[T, COUNT].take_at(index: U64, end: U64) -> T
+needs T: typename, COUNT: U64
+    if index < end
+        from: @T = me.getslot(index)
+        taken: &T <- steal from.stride(0)
+        me.shift_left(start: index, end)
+        return steal taken
+    throw IndexOutOfBoundsError(index, count: end)
 
 ### Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front. An element that holds an entity moves instead, and its old place is left hollow.
 ### :param dst_start: The first index written in this array.
@@ -186,9 +211,12 @@ needs T: typename, COUNT: U64
 ### :note: Overlapping ranges within one array are only safe when `dst_start` is below `src_start`.
 routine @Array[T, COUNT].copy(dst_start: U64, src: @Me, src_start: U64, count: U64) -> None
 needs T: typename, COUNT: U64
+    # The source places are walked as raw memory once getslot has checked them: the caller's count says which hold a
+    # value.
     each i in 0 til count
         src_index: U64 = src_start + i
         dst_index: U64 = dst_start + i
-        me.getslot(dst_index).poke(steal src.getslot(src_index))
+        from: @T = src.getslot(src_index)
+        me.getslot(dst_index).poke(steal from.stride(0))
     then
         return

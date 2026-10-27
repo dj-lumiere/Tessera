@@ -382,10 +382,14 @@ public sealed record DropStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
 /// `steal a as b`: the entity the slot `a` holds moves to a new slot `b`, and `a` ends. `steal place as b`: what a
 /// place (a field or an element, through a pointer) holds moves to `b`, and the place is left hollow until a value is
-/// put back (`place.poke(...)`).
+/// put back (`place.poke(...)`). `steal place as b inject v`: `v` is computed first, then the old value goes to `b` and
+/// `v` goes into the place in the same step, so the place is never hollow.
 public sealed record StealStmt(Expr From, string Name, Pos Pos) : Stmt(Pos)
 {
     public Pos NamePos { get; init; }
+
+    /// The value `inject` puts into the place, or null for the form that leaves the place hollow.
+    public Expr? Inject { get; init; }
 }
 
 /// `becomes v`: the value of the `when` arm this ends.
@@ -657,7 +661,10 @@ public static class Bodies
             case BindStmt b: yield return b.Value; break;
             case ExprStmt e: yield return e.Value; break;
             case DropStmt d: yield return d.Value; break;
-            case StealStmt st: yield return st.From; break;
+            case StealStmt st:
+                if (st.Inject is not null) yield return st.Inject;
+                yield return st.From;
+                break;
             case DestructureStmt d: yield return d.Value; break;
             case IfStmt i: yield return i.Cond; break;
             case WhenStmt w:

@@ -222,7 +222,8 @@ routine start() -> None
   `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
   `@T` (the address `data + i * T.data_size()`, checked against the count), `m.getslice(start, count)` a run of them as
   a `@[T]`, and `m.getslice()` every value. An entity element is never copied, so `m[i]` on one is a build error: look
-  at it through `m.getslot(i)`, or take it out with `steal m.getslot(i)`, which leaves the place hollow. Write an
+  at it through `m.getslot(i)`, or take it out with `steal m.getslot(i) as old inject new`, which puts `new` in its
+  place in the same step (Entities, below). Write an
   element through its place: `m.getslot(i).poke(v)`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and
   `m.getview(i)` are build errors that name these forms. A BorrowedSlice also has
   `construct(count, manager)` (uninitialized, failable: it throws `OutOfMemoryError` when the manager has no memory to give or the size of `count` values doesn't
@@ -1336,6 +1337,18 @@ routine start() -> None
   parameter, `me`, or a global is still hollow (the caller would find the hole). The place is zeroed in place, so a
   `destruct` that reaches it anyway does nothing. `return c` hands what the place `c` holds to the caller,
   and `c` ends.
+- `steal place as old inject new` takes an entity out of a place and puts another in, in one step: `new` is computed
+  first (it may read the place), then the place's value goes to `old` and `new` goes into the place, so the place is
+  never hollow (`steal a.getslot(i) as old inject Counter.construct(n: 0)`, `steal p.left as was inject
+  Counter.construct(n: 7)`). `inject .hollow()` leaves the place holding nothing on purpose (a ticket list taken apart).
+  The builder follows a hollow place by how it is written: a name, a field chain from one, or an element at a constant
+  index (`xs.getslot(0)`). An element at an index that is a variable or a computation (`xs.getslot(i)`) is not
+  followed (`j: U64 = i` then `xs.getslot(j)` reaches the same place), so a `steal` that would leave one hollow is a
+  build error, as a statement or as an argument ("steal would leave an element at the index i, which is not a
+  constant, ...: steal a.getslot(i) as taken inject <new value>, or trade two elements with swap(first, second)").
+  Places reached with `stride` (or `p[i]` on a pointer) are raw memory: `steal p.stride(i)` leaves the place hollow and
+  the program's count says which places hold a value, as the collections do inside (`Array.shift_left`, `copy`,
+  `take_at`).
 - What copies an entity is a build error that says what to do instead: a load out of memory (`p.peek()`, `m[i]`), or a
   field read out of a record value.
 - A record can't hold an entity by value (it would copy it), a generic one included (`nodes: BorrowedSlice[T]`): declare the
@@ -1578,7 +1591,7 @@ says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: `drop` of an array drops each element, the last first) | index |
+| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap), `destruct_all` (no `destruct`: `drop` of an array drops each element, the last first) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
 | `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |

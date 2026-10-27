@@ -255,7 +255,7 @@ public sealed partial class FunctionGen
             case MethodCallExpr { Name: "getitem" } item when InferQuiet(item) is { } t && Entities.Holds(t):
                 return $"getitem copies the element, and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, "
                     + "which is never copied: look at it through its place, getslot(i) (a @" + t.Name + "), or take it out with "
-                    + "steal xs.getslot(i)";
+                    + "steal xs.getslot(i) as old inject <new value>";
             case MethodCallExpr { Name: "peek" or "peek_unbroken" or "peek_volatile" or "load" } m
                 when InferQuiet(m) is { } t && Entities.Holds(t):
                 return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and {(Entities.IsEntity(t) ? "an entity" : "a value holding an entity")} "
@@ -361,7 +361,7 @@ public sealed partial class FunctionGen
             _moving = true;
             return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
         }
-        // `steal p.stride(i)`, `steal xs.getslot(i)`: the value an element's place holds, moved out, and the place left
+        // `steal p.stride(i)`, `steal xs.getslot(0)`: the value an element's place holds, moved out, and the place left
         // hollow, as `steal p.left` leaves a field: reading it again before a value is put back (`.poke(...)`) is a
         // build error, followed by the place's spelling.
         if (s.Value is not ValueRef && InferQuiet(s.Value) is PtrType { Pointee: { } element } && s.Value is MethodCallExpr or IndexExpr)
@@ -377,6 +377,10 @@ public sealed partial class FunctionGen
                 _moving = true;
                 return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
             }
+            if (Entities.Holds(element) && UnfollowedPlace(s.Value) is { } why)
+                throw Err(s.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
+                    + $"Take the value out on its own line and put the new value in at once: steal {new Printer().Expr(s.Value, 0)} as old "
+                    + "inject <new value>, or trade two elements with swap(first, second)");
             // The place's address once, its value out, then zeroed in place (a memset: a whole all-zero value of a big
             // element as one store takes LLVM minutes and can crash it).
             var place = Eval(s.Value, new PtrType(element));
@@ -426,6 +430,15 @@ public sealed partial class FunctionGen
         }
         if (Infer(st.From) is not PtrType { Pointee: { } held } || !Entities.Holds(held))
             throw Err(st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
+        if (st.Inject is not null)
+        {
+            EmitStealInject(st, held);
+            return;
+        }
+        if (UnfollowedPlace(st.From) is { } why)
+            throw Err(st.From.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
+                + $"Put the new value in at once: steal {new Printer().Expr(st.From, 0)} as {st.Name} inject <new value>, "
+                + "or trade two elements with swap(first, second)");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
         EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
             new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
@@ -437,6 +450,64 @@ public sealed partial class FunctionGen
             Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
         }
     }
+
+    /// `steal place as old inject fresh`: `fresh` is computed first into a slot of its own, then the place's value goes
+    /// to `old` and `fresh` goes into the place, so the place is never hollow and nothing has to follow it.
+    private void EmitStealInject(StealStmt st, DType held)
+    {
+        string fresh = $"$inject{_tmp++}";
+        EmitStmt(new BindStmt(fresh, new TypeRef("$injected", [], st.Inject!.Pos) { Known = new PtrType(held) },
+            new ClaimExpr(st.Inject.Pos) { Contents = st.Inject }, st.Inject.Pos));
+        if (_cur.Terminated) return;
+        RegisterStackPlace(fresh, st.Inject.Pos);
+        var taken = new StealExpr(st.From, st.Pos) { Place = true };
+        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
+            new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
+        if (_cur.Terminated) return;
+        // For the memory rules the place is taken out and filled again on this line: the poke below is that refill.
+        if (MemOn && PlaceKey(st.From) is { } key)
+        {
+            Mem(new MemoryRules.Acquire(key, "emptied", st.Pos) { Entity = held.Name });
+            Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
+        }
+        EvalAny(new MethodCallExpr(st.From, "poke", [], [new StealExpr(new ValueRef(fresh, st.Inject.Pos), st.Inject.Pos)], st.Pos));
+    }
+
+    /// Why the builder can't follow `place` once steal leaves it hollow, or null when it can: a name, a field chain from
+    /// one, or an element at a constant index (`xs.getslot(0)`). An element at an index that is a variable or a
+    /// computation (`xs.getslot(i)`) is not followed, because another index with the same value (`j = i`) reaches the
+    /// same place, and a chain that does not start at a name has no name to follow. A place reached with `stride` or `p[i]`
+    /// is pointer arithmetic on raw memory, which the program follows itself (its count says which places hold a value).
+    private static string? UnfollowedPlace(Expr place)
+    {
+        if (RawPlace(place)) return null;
+        if (PlaceKey(place) is null) return "a place that does not start at a name";
+        for (var at = place; ;)
+        {
+            switch (at)
+            {
+                case FieldExpr f:
+                    at = f.Base;
+                    continue;
+                case MethodCallExpr { Name: "getslot", Args: [var index] } m:
+                    if (index is not IntLit)
+                        return $"an element at the index {new Printer().Expr(index, 0)}, which is not a constant";
+                    at = m.Receiver;
+                    continue;
+                default:
+                    return null;
+            }
+        }
+    }
+
+    /// Whether `place` is reached through pointer arithmetic (`p.stride(i)`, `p[i]` on a pointer) anywhere in its chain.
+    private static bool RawPlace(Expr place) => place switch
+    {
+        MethodCallExpr { Name: "stride" } or IndexExpr => true,
+        FieldExpr f => RawPlace(f.Base),
+        MethodCallExpr { Name: "getslot" } m => RawPlace(m.Receiver),
+        _ => false,
+    };
 
     /// A place written as a chain from a name, `p.left`, `xs.getslot(i)` or `p.stride(i)`, as text: what the
     /// emptied-place check follows.

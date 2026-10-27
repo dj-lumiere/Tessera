@@ -58,9 +58,11 @@ needs T: typename, COUNT: U64
     made: &Me <- Me.construct(manager)
     items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
-    view: @[T] = items.getview()
+    # Every value moves out into the new collection, so the list is given back without destructing them: its places
+    # are walked as raw memory.
+    first: @T = items.getview().to[@T]()
     each i: U64 in 0 til COUNT
-        drop made.add(steal view.getslot(i))
+        drop made.add(steal first.stride(i))
     then
         # every value went into the sorted set: the list's places are hollow
         drop items
@@ -286,7 +288,7 @@ needs T: typename
             me.children[i + 1] = child
             continue with i: i - 1
         then
-            me.keys.getslot(index).poke(steal left.keys.getslot(mid))
+            me.keys.copy(dst_start: index, src: left.keys, src_start: mid, count: 1)
             me.children[index + 1] = right
             left.count.poke(mid)
             next_count: U64 = me.count.peek() + 1
@@ -309,7 +311,7 @@ needs T: typename
                 me.children[i2 + 1] = child
                 continue with i2: i2 - 1
             then
-                me.keys.getslot(index).poke(steal left.keys.getslot(mid))
+                me.keys.copy(dst_start: index, src: left.keys, src_start: mid, count: 1)
                 me.children[index + 1] = right
                 left.count.poke(mid)
                 next_count: U64 = me.count.peek() + 1
@@ -415,10 +417,8 @@ needs T: typename
 ### :returns: The removed key.
 routine @SortedSetNode[T].remove_leaf_at(index: U64) -> T
 needs T: typename
-    old: &T <- steal me.keys.getslot(index)
-
     count: U64 = me.count.peek()
-    me.keys.shift_left(start: index, end: count)
+    old: &T <- me.keys.take_at(index, end: count)
     new_count: U64 = count - 1
     me.count.poke(new_count)
     me.subtree_count.poke(new_count)
@@ -440,8 +440,8 @@ needs T: typename
     child_count: U64 = child.count.peek()
 
     child.keys.shift_right(start: 0, end: child_count)
-    child.keys.getslot(0).poke(steal me.keys.getslot(separator))
-    me.keys.getslot(separator).poke(steal left.keys.getslot(left_count - 1))
+    child.keys.copy(dst_start: 0, src: me.keys, src_start: separator, count: 1)
+    me.keys.copy(dst_start: separator, src: left.keys, src_start: left_count - 1, count: 1)
     if not child.leaf.peek()
         children: U64 = child_count + 1
         child.children.shift_right(start: 0, end: children)
@@ -463,7 +463,7 @@ needs T: typename
     child_count: U64 = child.count.peek()
     right_count: U64 = right.count.peek()
 
-    child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
+    child.keys.copy(dst_start: child_count, src: me.keys, src_start: i, count: 1)
     me.keys.getslot(i).poke(steal right.keys.getslot(0))
     right.keys.shift_left(start: 0, end: right_count)
     if not child.leaf.peek()
@@ -487,7 +487,7 @@ needs T: typename
     left_count: U64 = left.count.peek()
     right_count: U64 = right.count.peek()
 
-    left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
+    left.keys.copy(dst_start: left_count, src: me.keys, src_start: i, count: 1)
     dst_start: U64 = left_count + 1
     left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
     if not left.leaf.peek()
