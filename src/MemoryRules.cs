@@ -82,7 +82,12 @@ public static class MemoryRules
 
     /// A field that holds memory or an entity gets a new value with `poke`: it must hold nothing then (its slot was
     /// filled with `.hollow()`, or steal emptied it), or what it held is lost. `What` is the field's type.
-    public sealed record FieldStore(string Place, string What, Pos Pos) : Event(Pos);
+    public sealed record FieldStore(string Place, string What, Pos Pos) : Event(Pos)
+    {
+        /// A `<-` line that fills a field keeping an `E?`: None is a state such a field may be in, so only a field known
+        /// to hold an E is an error here, and the line checks the rest while running.
+        public bool Fill { get; init; }
+    }
 
     /// The line leaves the block: to `Block` (null for a return or a call that doesn't return), passing each named
     /// handle to the parameter it is mapped to.
@@ -523,10 +528,13 @@ public static class MemoryRules
                         {
                             if (g.Ended is null && !state.Names.Any(n => n.Key != fs.Place && n.Value == id))
                                 Report(fs.Pos, $"'{fs.Place}' holds a {g.Entity ?? fs.What} (from line {g.Born.Line}) that hasn't ended, and this "
-                                    + $"overwrites it: drop {fs.Place} first, or change it with {fs.Place}.replace(value: ...)");
+                                    + (fs.Fill
+                                        ? $"line would lose it: drop {fs.Place} first, or take it out with steal {fs.Place} as old inject .hollow()"
+                                        : $"overwrites it: drop {fs.Place} first, or change it with {fs.Place}.replace(value: ...)"));
                             state.Names.Remove(fs.Place);
                             break;
                         }
+                        if (fs.Fill) break;
                         // A field of a slot filled with `.hollow()` holds nothing until it is poked once.
                         var parts = fs.Place.Split('.');
                         bool hollow = Enumerable.Range(1, parts.Length - 1).Any(n => state.HollowSlots.Contains(string.Join('.', parts.Take(n))));

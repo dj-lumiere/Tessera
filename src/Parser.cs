@@ -1757,6 +1757,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return new ExprStmt(tried, pos);
         }
         var lhs = ParsePostfix();
+        // `me.next <- value from manager`: a field that holds an E? gets a new place from the manager.
+        if (Accept(TokenKind.LeftArrow))
+        {
+            var filled = AtManager(ParseExpr());
+            ExpectLineEnd();
+            return new FillStmt(lhs, filled, pos);
+        }
         // `xs[i] = v` stores through setitem.
         if (Is(TokenKind.Eq) && lhs is GetItemExpr item)
         {

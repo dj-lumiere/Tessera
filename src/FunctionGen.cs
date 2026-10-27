@@ -454,6 +454,121 @@ public sealed partial class FunctionGen
         }
     }
 
+    /// `place <- value from manager`: a field (or an element) that keeps an `E?` holds the place of its E as a `&E`, a
+    /// BorrowedCell, and this line fills it with a new place from the manager that holds `value` (the manager's
+    /// `borrow_and_fill`). `from STACK` makes the place a slot of this routine's frame, which the field holds with no
+    /// manager. `place <- steal cell` moves in a `&E` that holds its place already. The place must hold nothing: a poke
+    /// into one that holds something is the memory check's error.
+    private void EmitFill(FillStmt f)
+    {
+        var printer = new Printer();
+        string spelled = printer.Expr(f.Place, 0);
+        if (f.Place is ValueRef named)
+            throw Err(f.Pos, $"'<-' borrows a place, and a binding names its type: {named.Name}: &T <- value. A field that "
+                + $"keeps an E? is filled with <- (me.next <- value from HEAP)");
+        if (Infer(f.Place) is not PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var held] } cell }
+            || cell.Decl.Module != Compiler.SystemModule)
+            throw Err(f.Pos, $"'<-' fills a field that keeps an E? (an entity or nothing) with a place from a manager, and "
+                + $"{spelled} is {DescribePlace(f.Place)}: write {spelled}.poke(value)");
+        bool moved = f.Value is not AtExpr && InferQuiet(f.Value) is { } given && given.Equals(cell);
+        if (f.Value is not AtExpr && !moved)
+            throw Err(f.Value.Pos, $"{spelled} keeps its {held.Name} in a place from a manager, and this line names none: "
+                + $"{spelled} <- {printer.Expr(f.Value, 0)} from HEAP (or from STACK, a slot of this routine's frame)");
+        CheckFillEmpty(f, cell, held);
+        if (f.Value is AtExpr at && IsStackNamed(at.Manager))
+        {
+            EmitStackFill(f, cell, held, at);
+            return;
+        }
+        // A `&E` that holds its place already (`steal old`, a call that returns one) moves in as it is.
+        PokeFill(f, f.Value, held);
+    }
+
+    /// The frame slots `place <- value from STACK` filled, by their hidden names, with the place as written.
+    private readonly Dictionary<string, string> _stackFills = [];
+
+    /// A claimed slot or span of the frame, for the escape check's messages.
+    private string FrameSlotWords(BindStmt b, DType t) =>
+        _stackFills.TryGetValue(b.Name, out var filled) ? $"the frame slot that {filled} holds (filled from STACK at line {b.Pos.Line})"
+        : Compiler.IsCoreSpan(t, out _) ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
+        : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
+
+    /// Set while a `<-` line fills a field that keeps an `E?` (EmitFill): its poke is a fill, not an overwrite.
+    private bool _filling;
+
+    /// The line that fills a field keeping an `E?` finds it holding nothing, or stops the program: what it held would
+    /// otherwise be lost. A field the build knows holds an E is its error already.
+    private void CheckFillEmpty(FillStmt f, RecordType cell, DType held)
+    {
+        if (!Emitting) return;
+        bool muted = _memMuted;
+        _memMuted = true;
+        Val place;
+        try { place = EvalAny(f.Place); }
+        finally { _memMuted = muted; }
+        string atField = EmitTmp($"getelementptr inbounds {cell.Llvm}, ptr {place.Op}, i32 0, i32 0");
+        string at = EmitTmp($"load ptr, ptr {atField}");
+        string holds = EmitTmp($"icmp ne ptr {at}, null");
+        var full = NewLBlock("fill.full");
+        var empty = NewLBlock("fill.empty");
+        Terminate($"br i1 {holds}, label %{full.Label}, label %{empty.Label}");
+        _cur = full;
+        string spelled = new Printer().Expr(f.Place, 0);
+        CrashHere(new CallExpr("UnacceptedValueError", [],
+            [new StrLit($"{spelled} holds a {held.Name} already, and this line would lose it: drop {spelled} first, or take it out "
+                + $"with steal {spelled} as old inject .hollow().", f.Pos)], f.Pos) { ArgNames = ["description"], Path = Compiler.SystemModule }, f.Pos);
+        _cur = empty;
+    }
+
+    /// Pokes the filled place (`EmitFill`): the memory check takes it as a fill, and the place holds an E from here on, so
+    /// a second fill before a drop or a steal is its error.
+    private void PokeFill(FillStmt f, Expr value, DType held)
+    {
+        bool filling = _filling;
+        _filling = true;
+        try { EvalAny(new MethodCallExpr(f.Place, "poke", [], [value], f.Pos)); }
+        finally { _filling = filling; }
+        if (MemOn && !_cur.Terminated && PlaceKey(f.Place) is { } key)
+        {
+            _memTracked.Add(key);
+            Mem(new MemoryRules.Acquire(key, "filled", f.Pos) { Entity = held.Name, Field = true });
+        }
+    }
+
+    /// What `place` holds, for a message: its type, or what isn't a place.
+    private string DescribePlace(Expr place) => InferQuiet(place) is PtrType { Pointee: { } held } ? $"a place of {held.Name}"
+        : InferQuiet(place) is { } t ? $"a {t.Name}, not a place" : "not a place";
+
+    /// `place <- value from STACK`: the E goes into a frame slot of this routine, and the field holds that slot with no
+    /// manager. The holder's destruct ends the E and gives nothing back: the slot is the frame's. A view of the frame
+    /// doesn't leave the routine (the escape check), so neither does the holder once it is filled so. A loop body
+    /// would fill each pass into the same slot, which the line before still holds.
+    private void EmitStackFill(FillStmt f, RecordType cell, DType held, AtExpr at)
+    {
+        string spelled = new Printer().Expr(f.Place, 0);
+        if (_loops.Count > 0)
+            throw Err(at.Manager.Pos, $"a loop fills {spelled} from STACK on every pass, and every pass's {held.Name} would go "
+                + $"into the same slot of the frame: {spelled} <- ... from HEAP");
+        string name = $"$stack{_tmp++}";
+        _stackFills[name] = spelled;
+        var slotType = new TypeRef("BorrowedCell", [new TypeArgType(new TypeRef("$held", [], at.Pos) { Known = held })], at.Pos)
+            { Path = Compiler.SystemModule, Amp = true };
+        bool muted = _memMuted;
+        _memMuted = true;
+        try { EmitStmt(new BindStmt(name, slotType, at.Value, at.Pos) { Borrows = true }); }
+        finally { _memMuted = muted; }
+        if (_cur.Terminated) return;
+        // The field ends the E from here on: the builder doesn't give the slot back at the body's exit.
+        if (_stackPlaces.TryGetValue(name, out var place))
+        {
+            _boxScopes[^1].Remove(place);
+            _stackPlaces.Remove(name);
+        }
+        var owner = new TypeRef("BorrowedCell", [], at.Pos) { Known = cell };
+        var over = new NsCallExpr(owner, "over_frame", [], [new ValueRef(name, at.Pos)], at.Pos) { ArgNames = ["at"] };
+        PokeFill(f, over, held);
+    }
+
     /// `steal place as old inject fresh`: `fresh` is computed first into a slot of its own, then the place's value goes
     /// to `old` and `fresh` goes into the place, so the place is never hollow and nothing has to follow it.
     private void EmitStealInject(StealStmt st, DType held)
@@ -902,14 +1017,14 @@ public sealed partial class FunctionGen
         if (!MemOn) return;
         string? receiver = plan.Receiver is null ? null : MemName(plan.Receiver);
         // A value put back into a place steal emptied: the place holds something again.
-        bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && receiver is null
+        bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && (receiver is null || _filling)
             && PlaceKey(plan.Receiver) is not null && !(plan.Receiver is ValueRef view && _takenViews.Contains(view.Name));
         if (refilling)
         {
             string key = PlaceKey(plan.Receiver!)!;
             // A field that holds memory or an entity is poked only while it holds nothing.
             if (plan.Receiver is FieldExpr && FieldHeld(plan.Receiver) is { } held)
-                Mem(new MemoryRules.FieldStore(key, held.Name, plan.Pos));
+                Mem(new MemoryRules.FieldStore(key, held.Name, plan.Pos) { Fill = _filling });
             else
                 Mem(new MemoryRules.Store(key, null, plan.Pos) { Hollow = plan.Args is [ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" }] });
         }
@@ -1770,15 +1885,11 @@ public sealed partial class FunctionGen
                 if (MemOn)
                 {
                     if (b.Value is ClaimExpr)
-                        _frameViews[b.Name] = Compiler.IsCoreSpan(t, out _)
-                            ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
-                            : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
+                        _frameViews[b.Name] = FrameSlotWords(b, t);
                     else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
                 if (b.Value is ClaimExpr)
-                    BindClaim(b.Name, Compiler.IsCoreSpan(t, out _)
-                        ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
-                        : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})");
+                    BindClaim(b.Name, FrameSlotWords(b, t));
                 else BindAtoms(b.Name, b.Value, t);
                 NoteBoundViews(b, t);
                 if (b.Value is not ClaimExpr) NoteAccessBinding(b.Name, b.Value, t, b.Pos);
@@ -1915,7 +2026,8 @@ public sealed partial class FunctionGen
                 if ((InferQuiet(d.Value) is PtrType { Pointee: ArrayType inArray } ? inArray : InferQuiet(d.Value) as ArrayType) is { } array
                     && (d.Value is ValueRef or FieldExpr))
                 {
-                    for (long i = array.Count - 1; i >= 0 && !_cur.Terminated; i--)
+                    // A Slots of plain values (`Slots[Char, 4]`) ends as one: its elements have nothing to give back.
+                    for (long i = array.Count - 1; i >= 0 && !_cur.Terminated && HasReleaseDuty(array.Elem); i--)
                     {
                         bool muted = _memMuted;
                         _memMuted = true;
@@ -1966,6 +2078,9 @@ public sealed partial class FunctionGen
             }
             case StealStmt st:
                 EmitSteal(st);
+                break;
+            case FillStmt fill:
+                EmitFill(fill);
                 break;
             case IfStmt i:
                 EmitIf(i);
@@ -2481,6 +2596,18 @@ public sealed partial class FunctionGen
             throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
+        // `None()` where an `E?` is kept (a `&E` of an entity): the hollow place, which holds nothing.
+        if (e is CallExpr { Name: "None", Args.Count: 0 } or RecordLit { Fields.Count: 0 } && KeptOptional(new PtrType(expected)) is not null
+            && Compiler.IsNoneRecord(InferQuiet(e)))
+        {
+            _c.EnsureTypeDefined(expected);
+            return new Val("zeroinitializer", expected);
+        }
+        // An E where an `E?` is kept: the E goes in a place from a manager, which a `<-` line names.
+        if (KeptOptional(new PtrType(expected)) is var (_, keptHeld) && InferQuiet(e) is { } keptGiven && keptGiven.Equals(keptHeld))
+            throw Err(e.Pos, $"a {keptHeld.Name}? is kept in a place from a manager, and this {keptHeld.Name} has none: put None() "
+                + $"here and fill it on a line of its own, x.field <- value from HEAP, or pass a &{keptHeld.Name} from one "
+                + $"(c: &{keptHeld.Name} <- value from HEAP, then steal c)");
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
         {
@@ -3078,6 +3205,9 @@ public sealed partial class FunctionGen
         _c.CaseUses.Add(p.Pos);
         int index = v.LeafIndex(type);
         if (index >= 0) return ([index], p.Binding, type);
+        // A branch written `E?` is the place of the E from a manager, a `&E`: `is Counter? as c` observes it.
+        if (type is VariantType { IsAddressed: true } && _c.HeldOptional(type, p.Pos, _env) is var kept && v.LeafIndex(kept) >= 0)
+            return ([v.LeafIndex(kept)], p.Binding, kept);
         // A crashable the call can't give (or can't give yet, while what it throws is still being found) has an arm
         // that never runs.
         if ((Crashing.IsCheck(v) || Crashing.IsUnion(v)) && (Crashing.IsCrashable(type)
@@ -3181,7 +3311,13 @@ public sealed partial class FunctionGen
         else
         {
             int subjectTemps = _statementTemps.Count;
-            var v = EvalAny(w.Value);
+            // A field that keeps an E? is read as it is, a dropped one included: hollow is its None.
+            bool observesKept = w.Value is FieldExpr && KeptOptional(InferQuiet(w.Value)) is not null;
+            bool mutedBefore = _memMuted;
+            _memMuted |= observesKept;
+            Val v;
+            try { v = EvalAny(w.Value); }
+            finally { _memMuted = mutedBefore; }
             // The subject read through a temporary slot (`when Counter.at(n).get()`): a subject that
             // borrows nothing from it ends it here, before an arm can leave.
             if (!MayBorrow(v.Type, null)) FlushTemps(subjectTemps);
@@ -3189,7 +3325,9 @@ public sealed partial class FunctionGen
             if (v.Type is PtrType { Pointee: VariantType held } && Entities.Holds(held))
                 throw Err(w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
                     + $"it, when steal {(w.Value is ValueRef slotName ? slotName.Name : "...")}");
-            if (v.Type is VariantType vt)
+            if (KeptOptional(v.Type) is { } kept)
+                EmitKeptOptionalWhen(w, v, kept.Cell, kept.Held, Arm, armNames);
+            else if (v.Type is VariantType vt)
             {
                 // The arms' names are read out of this value, so they reach what it reaches.
                 var outerScrutinee = _whenScrutinee;
@@ -3415,6 +3553,71 @@ public sealed partial class FunctionGen
         Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
 
+    /// The `&E` a place keeps for an `E?` (an entity's field, an element, a `&E` of a routine), and its E: the place of an
+    /// E from a manager, hollow for None. Null for any other type.
+    private static (RecordType Cell, DType Held)? KeptOptional(DType? t) =>
+        t is PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var held] } cell }
+        && cell.Decl.Module == Compiler.SystemModule && Entities.Holds(held)
+            ? (cell, held) : null;
+
+    /// A `when` on a place that keeps an `E?`: `is E as x` names the E where it is, a view `@E` (the place still keeps
+    /// it), `is None` observes a hollow place, and `else` takes the other one. Nothing moves, so no arm has an entity to
+    /// end: taking it out is `steal place as old inject .hollow()`.
+    private void EmitKeptOptionalWhen(WhenStmt w, Val v, RecordType cell, DType held, Func<WhenArm, Action?, string> armBlock,
+        List<(ValueRef Binding, string Arm, int Line)> armNames)
+    {
+        if (w.ElseBinding is { } rest)
+            throw Err(rest.Pos, $"else as {rest.Name} would name a hollow place: observe the {held.Name} with is {held.Name} as x");
+        _c.EnsureTypeDefined(cell);
+        string atField = EmitTmp($"getelementptr inbounds {cell.Llvm}, ptr {v.Op}, i32 0, i32 0");
+        string at = EmitTmp($"load ptr, ptr {atField}");
+        string present = EmitTmp($"icmp ne ptr {at}, null");
+        string? presentLabel = null, noneLabel = null;
+        foreach (var arm in w.Arms)
+        {
+            if (arm.IsElse)
+            {
+                if (presentLabel is not null && noneLabel is not null)
+                    throw Err(arm.Pos, $"is {held.Name} and is None have their arms, so else never runs");
+                string label = armBlock(arm, null);
+                presentLabel ??= label;
+                noneLabel ??= label;
+                continue;
+            }
+            if (arm.Cases is null) throw Err(arm.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None");
+            var patterns = arm.Cases.Select(c => c is IsPattern p
+                ? (Pattern: p, Type: Resolve(p.Type))
+                : throw Err(c.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None")).ToList();
+            if (patterns.Count > 1 && patterns.Any(p => p.Pattern.Binding is not null))
+                throw Err(arm.Pos, "an arm that names the value observes one type");
+            bool isNone(DType t) => t is RecordType { Decl.Name: "None" } none && none.Decl.Module == Compiler.SystemModule;
+            foreach (var (p, type) in patterns)
+            {
+                _c.CaseUses.Add(p.Pos);
+                if (!type.Equals(held) && !isNone(type))
+                    throw Err(p.Type.Pos, $"{type} isn't what this place keeps: it holds a {held.Name} or nothing (is {held.Name} as x, is None)");
+                if (isNone(type) && p.Binding is { } noneName)
+                    throw Err(noneName.Pos, "None holds nothing to name: is None =>");
+                if (type.Equals(held) ? presentLabel is not null : noneLabel is not null)
+                    throw Err(arm.Pos, $"two arms observe {type}");
+            }
+            var binding = patterns[0].Pattern.Binding;
+            string armLabel = armBlock(arm, binding is null ? null : () =>
+            {
+                Define(binding.Name, new Val(at, new PtrType(held)), binding.Pos);
+                if (_escape is not null && w.Value is not null) _atoms[binding.Name] = Shifted(AtomsOf(w.Value), 1);
+            });
+            if (binding is not null) armNames.Add((binding, $"is {held.Name} as {binding.Name}", binding.Pos.Line));
+            foreach (var (_, type) in patterns)
+                if (type.Equals(held)) presentLabel = armLabel;
+                else noneLabel = armLabel;
+        }
+        if (presentLabel is null || noneLabel is null)
+            throw Err(w.Pos, $"when on a place that keeps a {held.Name}? doesn't observe {(presentLabel is null ? held.Name : "None")}; "
+                + "add an arm for it, or an else arm");
+        Terminate($"br i1 {present}, label %{presentLabel}, label %{noneLabel}");
+    }
+
     /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.te).
     private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
@@ -3633,12 +3836,16 @@ public sealed partial class FunctionGen
     /// Whether `t` is an array of Bytes or Chars, whose `getview()` writes as text.
     private static bool IsTextArray(DType t) => t is ArrayType { Elem: IntType { Kind: IntKind.Byte or IntKind.Char } };
 
-    /// The `@[Char]` view of a `&[Char]` (a STACK one, or one a manager lent), or null for any other receiver.
-    private Expr? CharPlaceSlice(Expr receiver, DType rt)
+    /// The `@[Char]` / `@[Byte]` view of a `&[Char]` / `&[Byte]` (a STACK one, or one a manager lent), and which of the
+    /// two it is, or null for any other receiver.
+    private (Expr View, IntKind Kind)? TextPlaceSlice(Expr receiver, DType rt)
     {
-        if (receiver is ValueRef r && _stackSpans.Contains(r.Name) && IsCharSpan(rt)) return receiver;
-        return ManagedMemory(rt) is { Decl.Name: "BorrowedSlice", Args: [IntType { Kind: IntKind.Char }] }
-            ? new MethodCallExpr(receiver, "getslice", [], [], receiver.Pos)
+        if (receiver is ValueRef r && _stackSpans.Contains(r.Name)
+            && rt is RecordType { Decl.Name: "PointedSlice", Args: [IntType { Kind: IntKind.Char or IntKind.Byte } stackElem] } span
+            && span.Decl.Module == Compiler.SystemModule)
+            return (receiver, stackElem.Kind);
+        return ManagedMemory(rt) is { Decl.Name: "BorrowedSlice", Args: [IntType { Kind: IntKind.Char or IntKind.Byte } elem] }
+            ? (new MethodCallExpr(receiver, "getslice", [], [], receiver.Pos), elem.Kind)
             : null;
     }
 
@@ -4950,10 +5157,12 @@ public sealed partial class FunctionGen
             }
         }
 
-        // A `&[Char]` is a collection of characters: shown, it writes its list (`['h', 'i']`), as an `Items[Char, N]`
-        // does. Only a view, `@[Char]`, writes them as text.
-        if (m is { Name: "represent_into", TypeArgs.Count: 0, Args: [var listOut] } && CharPlaceSlice(m.Receiver, rt) is { } chars)
-            return PlanCall(new CallExpr("write_char_list", [], [listOut, chars], m.Pos) { ArgNames = ["out", "chars"], Path = FormatModule },
+        // A `&[Char]` or a `&[Byte]` is a collection: shown, it writes its list (`['h', 'i']`, `[b'L', b'u']`), as an
+        // `Items[Char, N]` does. Only a view, `@[Char]` or `@[Byte]`, writes them as text.
+        if (m is { Name: "represent_into", TypeArgs.Count: 0, Args: [var listOut] } && TextPlaceSlice(m.Receiver, rt) is var (elements, kind))
+            return PlanCall(kind == IntKind.Char
+                ? new CallExpr("write_char_list", [], [listOut, elements], m.Pos) { ArgNames = ["out", "chars"], Path = FormatModule }
+                : new CallExpr("write_byte_list", [], [listOut, elements], m.Pos) { ArgNames = ["out", "bytes"], Path = FormatModule },
                 expected);
 
         // Receivers behind a pointer: `p.m()` finds `routine @T.m` first, then `routine PointedCell[T].m`. The more specific

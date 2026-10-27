@@ -1432,6 +1432,10 @@ public sealed partial class Compiler
         if (FindRecord(t.Name, env.File, t.Pos, t.Path) is { } s)
         {
             var args = GenericArgs(s.TypeParams, s.Clauses, s.File, t.Args, env, $"record '{s.Name}'", s.Name, t.Pos);
+            // A BorrowedCell of an Optional is the STACK place a routine keeps one in. Any other record keeps an E? as the
+            // place of the E from a manager, as an entity's field does: `List[Counter?]` holds `&Counter` elements.
+            if (!(s is { Name: "BorrowedCell", Module: SystemModule }))
+                args = args.Select(a => HeldOptional(a, t.Pos, env)).ToList();
             // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
             // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
@@ -1439,12 +1443,6 @@ public sealed partial class Compiler
                 throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
             CheckResultCode(s, args, t.Pos);
-            // A BorrowedCell of an Optional is the STACK place a routine keeps one in: anything else would keep the
-            // address after the frame its E lives in has ended.
-            if (args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType kept
-                && !(s is { Name: "BorrowedCell", Module: SystemModule }))
-                throw new CompileError(t.Pos, OptionalStaysInFrame(kept, $"{s.Name}[...]")
-                    + $": hold the {kept.Leaves[0].Name} itself, {s.Name}[{kept.Leaves[0].Name}]");
             return new RecordType(s, args, TransparentField);
         }
 
@@ -1920,7 +1918,7 @@ public sealed partial class Compiler
         {
             if (fields.Any(x => x.Item1 == f.Name))
                 throw new CompileError(f.Pos, $"field '{f.Name}' is declared twice");
-            var ft = ResolveType(f.Type, env);
+            var ft = HeldOptional(ResolveType(f.Type, env), f.Pos, env);
             // A record is copied with `=`, and so would everything in it be: an entity goes in an entity.
             if (!s.Decl.IsEntity && Entities.Holds(ft))
                 throw new CompileError(f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
@@ -1929,6 +1927,15 @@ public sealed partial class Compiler
         }
         return fields;
     }
+
+    /// An `E?` that something keeps (an entity's field, an element of a collection, a variant's branch) is the place of
+    /// an E borrowed from a manager: a `&E` (`BorrowedCell[E]`, `{ at, manager }`), hollow for None. The line that fills
+    /// it names the manager (`me.next <- value from HEAP`), and its destruct ends the E and gives the place back. Any
+    /// other type is itself.
+    public DType HeldOptional(DType t, Pos pos, TypeEnv env) => t is VariantType { IsAddressed: true } optional
+        ? ResolveType(new TypeRef("BorrowedCell", [new TypeArgType(new TypeRef("$held", [], pos) { Known = optional.Leaves[0] })], pos)
+            { Path = SystemModule, Amp = true }, env)
+        : t;
 
     /// The record's type parameters bound to its arguments, plus Me.
     private TypeEnv RecordEnv(RecordType s)
@@ -1972,7 +1979,8 @@ public sealed partial class Compiler
                 var t = b.Type.Known ?? ResolveType(b.Type, env, allowVoid: true);
                 // A branch of `None` (a generic argument read as the return of nothing) holds the one value.
                 if (t is VoidType) t = ResolveType(new TypeRef("None", [], b.Pos) { Path = SystemModule }, env);
-                return t;
+                // A branch `E?` keeps the E in a place from a manager, as an entity's field does: a `&E` branch.
+                return v.IsOptional ? t : HeldOptional(t, b.Pos, env);
             }).ToList();
         }
         finally
@@ -2171,15 +2179,7 @@ public sealed partial class Compiler
                 _definingTypes.Add(s.Key);
                 try
                 {
-                    foreach (var (fieldName, ft) in Fields(s))
-                    {
-                        if (ft is VariantType { IsAddressed: true } optional)
-                            throw new CompileError(s.Decl.Fields.FirstOrDefault(f => f.Name == fieldName)?.Pos ?? s.Decl.Pos,
-                                OptionalStaysInFrame(optional, $"field '{fieldName}' of {s.Name}")
-                                + $": hold the {optional.Leaves[0].Name} itself in an entity's field (.hollow() when there is "
-                                + $"none), or its address, @{optional.Leaves[0].Name}");
-                        EnsureTypeDefined(ft);
-                    }
+                    foreach (var (_, ft) in Fields(s)) EnsureTypeDefined(ft);
                 }
                 finally
                 {

@@ -396,6 +396,10 @@ public sealed record StealStmt(Expr From, string Name, Pos Pos) : Stmt(Pos)
     public Expr? Inject { get; init; }
 }
 
+/// `place <- value from manager`: fills a field that holds an `E?` (a `&E`, the place of an E from a manager) with a
+/// new place from the manager that holds `value`. `place <- steal cell` puts a `&E` that already holds its place there.
+public sealed record FillStmt(Expr Place, Expr Value, Pos Pos) : Stmt(Pos);
+
 /// `becomes v`: the value of the `when` arm this ends.
 public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
@@ -665,6 +669,10 @@ public static class Bodies
             case BindStmt b: yield return b.Value; break;
             case ExprStmt e: yield return e.Value; break;
             case DropStmt d: yield return d.Value; break;
+            case FillStmt f:
+                yield return f.Place;
+                yield return f.Value;
+                break;
             case StealStmt st:
                 if (st.Inject is not null) yield return st.Inject;
                 yield return st.From;

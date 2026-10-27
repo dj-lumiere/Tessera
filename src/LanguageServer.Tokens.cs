@@ -971,6 +971,10 @@ public static partial class LanguageServer
                 case BecomesStmt bc:
                     Expr(bc.Value);
                     break;
+                case FillStmt fill:
+                    Expr(fill.Place);
+                    Expr(fill.Value);
+                    break;
             }
         }
 

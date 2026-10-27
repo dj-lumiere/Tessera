@@ -215,7 +215,7 @@ routine start() -> None
   routine takes `me` by its address (`routine @BorrowedSlice[T].getslot(...)`). The block holds the values and nothing else,
   plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
   with `steal m` to a routine that takes a `BorrowedSlice` / `BorrowedCell` by value (that routine gives it back then). `drop x` is
-  `x.destruct()`, and a `BorrowedCell` / `BorrowedSlice` holds its manager, so its `destruct` gives the memory back to it: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
+  `x.destruct()`, and a `BorrowedCell` / `BorrowedSlice` holds its manager, so its `destruct` gives the memory back to it (a `BorrowedCell`'s ends its value first, so `drop node` of a `&Node` from HEAP runs the Node's destruct): a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
   drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow: `.hollow()` holds
   nothing, `drop` on it does nothing, a read crashes with `UnacceptedValueError`.
 - **The elements of a BorrowedSlice.** A `BorrowedSlice[T]` reads and writes nothing itself, and reaches its elements the way a
@@ -1431,11 +1431,31 @@ routine start() -> None
   a `T` puts the `T` in a place of the caller's frame. `try Console.ask_line(HEAP)` gives a `BorrowedSlice[Byte]` in
   that place whose bytes come from `HEAP`, the manager the call was given. So an Optional stays in that routine: in a
   STACK place (`r: &Optional[Counter] <- f()`), a parameter (which takes the entity over), or a return. `drop r` ends
-  the entity it holds. These are build errors that say what to write: a field of type `T?` (hold the `T` itself in an
-  entity's field, or its address `@T`), a type argument (`List[Counter?]`: `List[Counter]`), a variant branch,
-  memory from a manager (`<- f() from HEAP`), a `Callable` that returns one (and taking such a routine as a value),
-  and storing one into a place again (`poke`, `store`: take the `T` out with `when` and keep it in a place of its
-  own). A link that may be absent is an address, `next: @Node` (hollow when there is none) or `@Node?`.
+  the entity it holds. These are build errors that say what to write: memory from a manager (`<- f() from HEAP`), a
+  `Callable` that returns one (and taking such a routine as a value: the call through it passes no place), a type
+  argument of a variant (`Check[Counter?]`), and storing one into a place again (`poke`, `store`: take the `T` out with
+  `when` and keep it in a place of its own).
+- **A kept `E?`: an entity's field, an element, a variant's branch.** Where something keeps an `E?` (E an entity) past
+  the routine that made it, it is the place of the E borrowed from a manager, a `&E` (`BorrowedCell[E]`, `{ ptr,
+  manager }` in the IR), hollow (null) for None: a field `next: Node?` (a recursive one included), the elements of
+  `List[Counter?]` (any record's type argument, so `List[Counter?]` is `List[&Counter]`), and a variant branch written
+  `Counter?` (`is Counter? as kept` takes it). The line that fills a field names the manager: `me.next <-
+  Node.construct(v) from HEAP`. A `&E` that holds its place already moves in without one: `me.next <- steal old`.
+  `from STACK` puts the E in a slot of the routine's frame, which the field holds with no manager: the holder then
+  stays in the routine (the escape check), and a loop body can't fill from STACK (each pass would use the same slot).
+  A fill without a manager is a build error that names `from HEAP`, and so is an E written where the field goes
+  (`Me(next: Node.construct(1))`: write `None()` and fill it on a line of its own). The field must hold nothing:
+  a fill the build knows follows another one is a build error ("this line would lose it: drop first.next first, or
+  take it out with steal first.next as old inject .hollow()"), and one it can't follow checks while running and
+  crashes with `UnacceptedValueError`. A construct writes `None()` (or `.hollow()`) for it. Emptying it gives back
+  what it holds: `drop me.next` (the E's destruct, then the place back to its manager, the field hollow), or `steal
+  me.next as old inject .hollow()` (`old` is a `&Node` place the routine ends). `when me.next` observes it without
+  moving it: `is Node as n` names the E where it is, a `@Node` (so a walk is `loop with cur: @Node = first`, `when
+  cur.next`, `is Node as next => continue with cur: next`, `is None => break`), `is None` a hollow field, and it reads
+  a field after its `drop` as None. The holder's destruct (the builder's walk, or `drop me.next` in one written by
+  hand) ends the E and gives its place back, so a linked list ends node by node, and a second `drop` of the field is
+  the group check's error. Plain addresses stay as they were: a link that may be absent and is given back elsewhere
+  is `next: @Node` (hollow when there is none) or `@Node?`.
 - Two branches of the same type are a build error (a `variant` listing `S64` twice, `Optional[None]`), and so is a branch that is a
   variant holding another branch's type (`Optional[Optional[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).
@@ -1576,8 +1596,9 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer goes
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Optional[T]` (`None` for both).
-- `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view: `{line.getslice()}`).
+- `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, `Byte`
+  (`0x4c`: `0x` and two hex digits), and `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view:
+  `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
   `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
   (`Standard/System/Text/MemoryCell.te`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
@@ -1585,10 +1606,10 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
   global or a preset in memory has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
   build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
-  sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getslice()` for a `&[Byte]`'s text, `.getview()`
+  sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getview()`
   for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `lint`; it is a warning,
   not an error. Exceptions: `@[Byte]` and `@[Char]` are text (a `@[Char]` writes each character's UTF-8 straight into
-  the Writer, no memory taken), a `&[Char]` writes its list (`['h', 'i']`, like `Items[Char, N]`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
+  the Writer, no memory taken), a `&[Char]` or a `&[Byte]` (STACK or from a manager) writes its list (`['h', 'i']`, `[b'L', b'u']`, like `Items[Char, N]`: its text is `.getslice()`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
   the entity. `{view.to[Addr]()}` writes only the address (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived
   routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
@@ -1642,7 +1663,7 @@ says `@reshaping(name)`.
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
 | `Items[T, COUNT]` | a record, `needs T: record`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getview()` (through a pointer, the view of every element), `getslice`, `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
-| `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `getview()`, `getslice`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first) | index |
+| `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `getview()`, `getslice`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first, and a Slots of plain values ends as one) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
 | `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |

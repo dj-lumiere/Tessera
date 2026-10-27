@@ -176,6 +176,9 @@ public sealed class Printer
             case DropStmt d:
                 Line(s, indent, $"drop {Expr(d.Value)}");
                 break;
+            case FillStmt f:
+                Line(s, indent, $"{Expr(f.Place)} <- {Expr(f.Value)}");
+                break;
             case StealStmt st:
                 Line(s, indent, st.Inject is null ? $"steal {Expr(st.From)} as {st.Name}"
                     : $"steal {Expr(st.From)} as {st.Name} inject {Expr(st.Inject, 0)}");
