@@ -26,8 +26,8 @@ the lines: a value is bound once and never reassigned, a load and a store are ca
 
 ```tessera
 routine two_sum(list: @[S32], target: S32) -> Optional[(U64, U64)]
-    each left_idx in 0 til list.count
-        each right_idx in left_idx + 1 til list.count
+    for left_idx in 0 til list.count
+        for right_idx in left_idx + 1 til list.count
             left_val: S32 = list.getitem(left_idx)
             right_val: S32 = list.getitem(right_idx)
             if left_val + right_val == target
@@ -35,7 +35,7 @@ routine two_sum(list: @[S32], target: S32) -> Optional[(U64, U64)]
     return None()
 ```
 
-Two `each` loops make the O(n²) search, and the numbers come as a span, `@[S32]`: the address and the count of a run
+Two `for` loops make the O(n²) search, and the numbers come as a span, `@[S32]`: the address and the count of a run
 of values, carried together, so `getitem` checks each position against the count. The answer is an `Optional` of a
 tuple: the tuple itself, built with `(...)` and typed by the return type, or `None()` when there is none.
 
@@ -63,7 +63,7 @@ way: each level is made of whole pieces of the level below.
 | Level         | What it is                                                                                                                                                                                 |
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a place borrowed with `<-` (`count: &S64 <- 0`), a call, a `return`.                              |
-| **routine**   | A body of statements: `if` / `else`, `each` / `until` / `loop` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
+| **routine**   | A body of statements: `if` / `else`, `for` / `until` / `loop` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Hosted`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
 | **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |

@@ -123,7 +123,7 @@ routine start() -> None
   nearest visible value (the routine's parameters, earlier bindings in the body it is in),
   else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
-  named like a keyword (`each`, `return`, `inf`, `nan`, ...) is written between backticks: `` `each` ``
+  named like a keyword (`for`, `return`, `inf`, `nan`, ...) is written between backticks: `` `for` ``
   The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
@@ -605,7 +605,7 @@ routine start() -> None
   allocating `Console.ask` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
-  direct call to one inside a loop (`each`, `until`, `loop`), since it runs on every round. Not reported: a call
+  direct call to one inside a loop (`for`, `until`, `loop`), since it runs on every round. Not reported: a call
   on a path that leaves the loop, a call inside an `@expensive`
   routine, and a call to a routine that only calls an expensive one. Hoist the call, reuse one buffer across the
   passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
@@ -654,24 +654,24 @@ routine start() -> None
       return 1
   ```
 
-- **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
-  by -1` steps. A stepped range ends before an index that would pass the end of its type (`each i: S8 in 100 to 127
+- **Loops.** `for i in 0 til n` walks the half-open range, `for i in 1 to n` the inclusive one, `for i in n to 1
+  by -1` steps. A stepped range ends before an index that would pass the end of its type (`for i: S8 in 100 to 127
   by 20` walks 100 and 120 and stops, it never wraps around). The step's sign sets the direction, also for a step held
-  in a value (`each i in hi to lo by step` with `step` -2 walks down). `by 0` is a build error, and a step held in a
-  value that is 0 crashes with `RangeStepZeroError` before the first round. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
-  names the type (for an index, say). A range is walked by counting, with no emitter. `each x in xs.emitter()` walks a
+  in a value (`for i in hi to lo by step` with `step` -2 walks down). `by 0` is a build error, and a step held in a
+  value that is 0 crashes with `RangeStepZeroError` before the first round. A range walks the type of its bounds, `S64` when both are bare numbers; `for k: U64 in 0 til 27`
+  names the type (for an index, say). A range is walked by counting, with no emitter. `for x in xs.emitter()` walks a
   collection: each collection makes its emitter with `.emitter()`, and the builder keeps that emitter in a STACK place for
-  the loop, with nothing to give back. Write this form by default: every loop gets a new emitter. `each x in e` reads
+  the loop, with nothing to give back. Write this form by default: every loop gets a new emitter. `for x in e` reads
   an emitter in a place you named (`e: &ListEmitter[Point] <- points.emitter()`), when the walk goes on after a `break`
-  or `try e.emit()` reads it by hand. An `each` reads until emit throws `AbsentValueError`, its end. Any other failure
-  of emit stops the program on the `each` line, as a bare call of emit would. An emitter hands out each item once: after
-  an `each` that ends by itself it is empty, so a second `each` over a named emitter on every path, or an `each` inside
+  or `try e.emit()` reads it by hand. A `for` reads until emit throws `AbsentValueError`, its end. Any other failure
+  of emit stops the program on the `for` line, as a bare call of emit would. An emitter hands out each item once: after
+  a `for` that ends by itself it is empty, so a second `for` over a named emitter on every path, or a `for` inside
   a loop over an emitter made outside that loop, is a build error ("runs zero times"). Make the emitter inside the loop,
-  or call `.emitter()` again. An `each` left with `break` leaves the rest for the next one. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
+  or call `.emitter()` again. A `for` left with `break` leaves the rest for the next one. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
   before each pass: write the condition that ends the loop. `loop` doesn't end by itself: only `break`, `return` or
   `throw` leaves it, so the lines after a `loop` without a `break` never run, and a routine that ends with such a loop
   needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
-  is a build error pointing to `until` / `loop`. `until true` (the body never runs) and `until false` (write
+  is a build error pointing to `until` / `loop`, and so is `each x in xs`, pointing to `for`. `until true` (the body never runs) and `until false` (write
   `loop`, the language server offers the fix) are warnings. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a place borrowed before the loop), `continue` starts the next
   pass.
@@ -679,12 +679,12 @@ routine start() -> None
   type and first value, seen in the condition and the body. Every path through such a body passes the next values
   with `continue with n: next, steps: steps + 1`, or leaves with `break` or `return`: a body that reaches its end
   without them is a build error ("the body of a loop that carries values ends here without passing them on"). The
-  values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `each`
-  carries values the same way: `each i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
+  values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `for`
+  carries values the same way: `for i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
 - **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run once whenever the loop is left
   for the line after it: when the loop ends on its own (the condition fails, the range or emitter is exhausted) and
   after its own `break` (a `break` of a loop inside only leaves that loop). A `return` leaves the routine and skips
-  them. They see the carried values' last values (not the `each` variable). A loop whose `then` leaves (ends in
+  them. They see the carried values' last values (not the `for` variable). A loop whose `then` leaves (ends in
   `return`, say) always leaves, so nothing may follow it. Loops have no `else`: the case where the loop would not run
   even once is an `if` before the loop. The lines after the loop (or after `then`) see nothing the loop bound.
 
@@ -778,7 +778,7 @@ routine start() -> None
   A literal on the left takes the right side's type
   (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %` (and their `%` `^` `!` forms), `+ -`, the bitwise operators (one level: two
-  different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
+  different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `for`),
   comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, and `!=`,
   `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`). Any
   operand of a chain may be any expression (`0 <= f(x) < n`, `a < xs[i] <= g()`): each is evaluated once, left to right,
@@ -985,7 +985,7 @@ routine start() -> None
   while an entity's place writes the entity: `{list}`), and a generic `to[T]` (it
   would hide `PointedCell`'s `to<@U>`). You can't call a pointer method on a temporary:
   `m.emitter().emit()` fails with "has no method 'emit'"; put the emitter in a place
-  first (`iter: &DictEmitter[TKey, TValue] <- m.emitter()`). `each` is the exception: `each x in m.emitter()` keeps
+  first (`iter: &DictEmitter[TKey, TValue] <- m.emitter()`). `for` is the exception: `for x in m.emitter()` keeps
   the emitter in a place for the loop.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module
@@ -1526,15 +1526,15 @@ A loop carries what changes with `with`. The next pass's values are evaluated on
 
 ```tessera
 routine sum_to(n: U64) -> U64
-    each i in 0 til n with total: U64 = 0
+    for i in 0 til n with total: U64 = 0
         continue with total: total + i
     then
         return total
 ```
 
-Walking a collection: `each x in xs.emitter()` for the whole walk, and an emitter in a named place when the items are
+Walking a collection: `for x in xs.emitter()` for the whole walk, and an emitter in a named place when the items are
 read by hand (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
-there and `each x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ItemsEmitter`, `SlotsEmitter`, `RotatableListEmitter`,
+there and `for x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ItemsEmitter`, `SlotsEmitter`, `RotatableListEmitter`,
 `SortedListEmitter`, `SortedSetEmitter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
 
@@ -2013,7 +2013,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
 - listing: `list(at, iter)` starts a `DirEmitter` (a place, `iter: &DirEmitter <- .hollow()`), then
-  `each entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
+  `for entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
 - paths: `absolute(at, manager)`, `canonical(at, manager)`.
 
 `FsError` is a `variant` of the crashables a file system routine throws: `NotFoundError`, `NotEnoughPermissionError`,

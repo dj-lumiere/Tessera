@@ -2464,7 +2464,7 @@ public sealed partial class FunctionGen
         {
             case WhenExpr: return null;
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
-            case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
+            case RangeExpr r: throw Err(r.Pos, "a range is walked by a for loop: for i in a til b");
             case BinaryExpr { Op: "and" } fa when FlagsAnd(fa) is var (known, bare) && (known is not null || bare):
                 return known;
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" } or ChainedComparison: return BoolType.Instance;
@@ -2645,7 +2645,7 @@ public sealed partial class FunctionGen
             ChainedComparison chain => EvalChain(chain),
             UnaryExpr { Op: "not" } n => EvalNot(n),
             UnaryExpr { Op: "try" or "check" } rc => EvalRecover(rc, expected),
-            RangeExpr r => throw Err(r.Pos, "a range is walked by each: each i in a til b"),
+            RangeExpr r => throw Err(r.Pos, "a range is walked by a for loop: for i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
             ArrayLit a when LiteralView(a, expected) is { } literalView => literalView,
@@ -6524,9 +6524,9 @@ public sealed partial class FunctionGen
 
     // ── Loops ───────────────────────────────────────────────────────────────
 
-    /// `each x in xs.emitter()`: an emitter that a call hands out has no place, and its `emit` needs one. The loop
+    /// `for x in xs.emitter()`: an emitter that a call hands out has no place, and its `emit` needs one. The loop
     /// then walks a STACK place that holds it for the loop, the same lines as `e: &ListEmitter[T] <- xs.emitter()`
-    /// followed by `each x in e`, in a body of their own so the place goes back when the loop is done. Null for any
+    /// followed by `for x in e`, in a body of their own so the place goes back when the loop is done. Null for any
     /// other loop.
     private List<Stmt>? SpilledEmitter(LoopStmt l)
     {
@@ -6543,7 +6543,7 @@ public sealed partial class FunctionGen
         ];
     }
 
-    /// `each` / `while` / `until`: a header block holds a phi for each carried value (and an `each` range's index), the
+    /// `for` / `while` / `until`: a header block holds a phi for each carried value (and a `for` range's index), the
     /// body runs with them, `continue with` sends the next round's values back to the header, and the loop's end
     /// goes through `then` to the block after it.
     private void EmitLoop(LoopStmt l)
@@ -6632,7 +6632,7 @@ public sealed partial class FunctionGen
                     _values.Remove("$emitter");
                 }
                 if (emitPlan is not { Decl.IsFailable: true } || emitted is null || emitted is VoidType)
-                    throw Err(l.Source!.Pos, "each walks a range (a til b) or an emitter in memory (one whose failable emit gives "
+                    throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose failable emit gives "
                         + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;
                 if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
@@ -6808,7 +6808,7 @@ public sealed partial class FunctionGen
     private static bool IsEndOfIteration(DType t) =>
         t is RecordType { Decl: { Name: "AbsentValueError", IsLibrary: true } };
 
-    /// `check emitter.emit()` for an `each` over an emitter in memory, the emitter evaluated once.
+    /// `check emitter.emit()` for a `for` over an emitter in memory, the emitter evaluated once.
     private Val ItemCall(Val emitter, LoopStmt l)
     {
         string name = "$emitter";

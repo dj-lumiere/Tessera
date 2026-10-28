@@ -5,7 +5,7 @@ using System.Text;
 namespace Tessera;
 
 /// Writes statements and expressions back as Tessera source, in the current spelling: operators for the routines
-/// they stand for, `if` / `each` / `while` bodies by indentation, `return x`, `local` slots. The
+/// they stand for, `if` / `for` / `while` bodies by indentation, `return x`, `local` slots. The
 /// comments of the lines it writes (Comments) go before the first line that followed them.
 public sealed class Printer
 {
@@ -127,8 +127,8 @@ public sealed class Printer
                 string head = l.Kind switch
                 {
                     LoopKind.For => l.VarType is { } written
-                        ? $"each {Name(l.Var!)}: {Type(written)} in {Expr(l.Source!)}"
-                        : $"each {Name(l.Var!)} in {Expr(l.Source!)}",
+                        ? $"for {Name(l.Var!)}: {Type(written)} in {Expr(l.Source!)}"
+                        : $"for {Name(l.Var!)} in {Expr(l.Source!)}",
                     LoopKind.While when l.Cond is BoolLit { Value: true } => "loop",
                     // A loop on a condition that holds is written as the loop that ends when it doesn't.
                     LoopKind.While => $"until {Expr(Bodies.Negated(l.Cond!))}",

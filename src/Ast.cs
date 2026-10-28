@@ -328,7 +328,7 @@ public sealed record WhenArm(Expr? Cond, List<Expr>? Cases, List<Stmt> Body, Pos
 
 public enum LoopKind { For, While, Until }
 
-/// `each x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
+/// `for x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
 /// and the `then` body that runs once the loop is left for the line after it (on its own end and after a `break`). The carried values are visible in the body and in
 /// `then`, bound anew on every round by `continue with a: ..., ...`.
 public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
@@ -341,9 +341,9 @@ public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, Lis
     /// or `throw` leaves it.
     public bool NeverEndsByItself => Kind == LoopKind.While && Cond is BoolLit { Value: true }
                                      || Kind == LoopKind.Until && Cond is BoolLit { Value: false };
-    /// `each x in source`: the name each element is bound to, and what is walked (a range, or an emitter in memory).
+    /// `for x in source`: the name each element is bound to, and what is walked (a range, or an emitter in memory).
     public string? Var { get; init; }
-    /// `each k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.
+    /// `for k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.
     public TypeRef? VarType { get; init; }
     public Pos VarPos { get; init; }
     public Expr? Source { get; init; }
@@ -569,7 +569,7 @@ public sealed record StealExpr(Expr Value, Pos Pos) : Expr(Pos)
 /// `xs[i]`: `xs.getitem(i)`, and as a statement's left side `xs[i] = v` is `xs.setitem(i, v)`.
 public sealed record GetItemExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
-/// `a til b`, `a to b`, each optionally `by s`: the integers a loop walks. Only an `each` takes one.
+/// `a til b`, `a to b`, each optionally `by s`: the integers a loop walks. Only a `for` takes one.
 public sealed record RangeExpr(Expr From, Expr To, bool Inclusive, Expr? Step, Pos Pos) : Expr(Pos);
 
 /// `if c then a else b` as a value: only the side taken is evaluated. Written after `return`.

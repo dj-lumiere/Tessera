@@ -10,7 +10,7 @@ public static class ReservedNames
         "jump", "when", "return", "unreachable", "continue", "else", "elseif", "block",
         "true", "false", "routine", "record", "choice", "variant", "preset", "global",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "until", "loop", "becomes", "break", "nothing", "drop", "entity", "steal", "inf", "nan",
+        "todo", "if", "for", "until", "loop", "becomes", "break", "nothing", "drop", "entity", "steal", "inf", "nan",
         "throw",
     };
 }

@@ -3,12 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// The rule for an emitter that ran out. `each x in e` takes items from the emitter `e` until its `emit` throws
-/// `AbsentValueError`, so after an `each` that wasn't left with `break`, `e` has nothing left: a second `each` over
-/// it runs zero times, silently. The rule follows each name a routine walks with `each` through the routine's own
-/// lines and reports an `each` over a name that has certainly run out there:
+/// The rule for an emitter that ran out. `for x in e` takes items from the emitter `e` until its `emit` throws
+/// `AbsentValueError`, so after a `for` that wasn't left with `break`, `e` has nothing left: a second `for` over
+/// it runs zero times, silently. The rule follows each name a routine walks with `for` through the routine's own
+/// lines and reports a `for` over a name that has certainly run out there:
 ///
-/// - after an earlier `each` over it on every path to this one, with no `break` out of that earlier loop, or
+/// - after an earlier `for` over it on every path to this one, with no `break` out of that earlier loop, or
 /// - inside a loop that comes round again, when the name is made outside that loop and the pass before took every item.
 ///
 /// Anything else the routine does with the emitter or with what it was made from (any line that names them, other than
@@ -18,7 +18,7 @@ public static class EmitterReuseRule
 {
     private static readonly ConditionalWeakTable<RoutineDecl, object> Checked = new();
 
-    /// Throws for the first `each` in `r` over an emitter that has run out.
+    /// Throws for the first `for` in `r` over an emitter that has run out.
     public static void Check(RoutineDecl r)
     {
         if (r.Blocks is not { } blocks || Compiler.IsAsm(r)) return;
@@ -30,7 +30,7 @@ public static class EmitterReuseRule
         foreach (var b in blocks) new Walker().Walk(b.Stmts, new State());
     }
 
-    /// The names that have run out on every path to a line, each with the `each` that emptied it.
+    /// The names that have run out on every path to a line, each with the `for` that emptied it.
     private sealed class State
     {
         public readonly Dictionary<string, Pos> Empty = [];
@@ -177,7 +177,7 @@ public static class EmitterReuseRule
                 _loops.RemoveAt(_loops.Count - 1);
             }
 
-            // Out of the loop: when it ends by itself (an each's emitter is then empty) or through a break.
+            // Out of the loop: when it ends by itself (a for loop's emitter is then empty) or through a break.
             var exits = new List<State?>(first.Breaks);
             if (!l.NeverEndsByItself)
             {
@@ -254,11 +254,11 @@ public static class EmitterReuseRule
             // The first pass reports what runs out on one pass, so a pass after it reports what the loop brought round.
             var again = _loops.LastOrDefault(x => x.Again);
             if (again.Loop is not null)
-                throw new CompileError(l.Pos, $"this each over '{source}' runs zero times on every pass of the loop on line "
+                throw new CompileError(l.Pos, $"this for loop over '{source}' runs zero times on every pass of the loop on line "
                     + $"{again.Loop.Pos.Line} after the first: you made '{source}' outside that loop, and "
-                    + (emptied == l.Pos ? "this each" : $"the each on line {emptied.Line}") + " takes every item from it on the first pass. Make the emitter inside the loop, just before "
-                    + $"this each ({remake}), so each pass walks the collection from its start");
-            throw new CompileError(l.Pos, $"this each over '{source}' runs zero times: the each on line {emptied.Line} "
+                    + (emptied == l.Pos ? "this for loop" : $"the for loop on line {emptied.Line}") + " takes every item from it on the first pass. Make the emitter inside the loop, just before "
+                    + $"this for loop ({remake}), so each pass walks the collection from its start");
+            throw new CompileError(l.Pos, $"this for loop over '{source}' runs zero times: the for loop on line {emptied.Line} "
                 + $"already took every item from it, and an emitter hands out each item once. Make a new emitter for this "
                 + $"loop ({remake}) to walk the collection again");
         }

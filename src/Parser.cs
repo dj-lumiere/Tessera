@@ -51,7 +51,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "until", "loop", "continue", "break", "nothing",
+        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "for", "until", "loop", "continue", "break", "nothing",
          "becomes", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
@@ -1661,6 +1661,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Stmt ParseStmt(int col)
     {
         var pos = Cur.Pos;
+        if (EachLoopAhead())
+        {
+            throw Error("a loop over a range or a collection is written 'for x in ...': 'each' is not a keyword");
+        }
         if (WhileLoopAhead())
         {
             throw Error("a loop is written 'until' with the condition that ends it (until i >= count), or 'loop' for a loop " +
@@ -1679,7 +1683,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             switch (Cur.Text)
             {
                 case "if": return ParseIf(col);
-                case "each" or "while" or "until" or "loop": return ParseLoop(col);
+                case "for" or "while" or "until" or "loop": return ParseLoop(col);
                 case "steal":
                 {
                     Next();
@@ -1861,15 +1865,26 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                || next.Kind == TokenKind.LParen && next.Pos.Col > Cur.Pos.Col + Cur.Text.Length;
     }
 
+    /// Whether the line starts `each x in ...` or `each x: T in ...`: the name `each` followed on its line by a name and
+    /// `in` or a type, which no line that uses `each` as a name does (`each: T = v`, `each.f()`, `each(x)`).
+    private bool EachLoopAhead()
+    {
+        if (Cur is not { Kind: TokenKind.Ident, Escaped: false, Text: "each" }) return false;
+        var next = PeekTok(1);
+        if (next.Pos.Line != Cur.Pos.Line || next.Kind != TokenKind.Ident) return false;
+        var after = PeekTok(2);
+        return after is { Kind: TokenKind.Ident, Escaped: false, Text: "in" } || after.Kind == TokenKind.Colon;
+    }
+
     /// Whether the line is the old `pass`: the name `pass` alone up to the end of its line.
     private bool PassLineAhead() =>
         Cur is { Kind: TokenKind.Ident, Escaped: false, Text: "pass" } && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof;
 
-    /// `each x in source`, `until c`, `loop`, each with `with a: T = init, ...`, a body, and `then` with a body.
+    /// `for x in source`, `until c`, `loop`, each with `with a: T = init, ...`, a body, and `then` with a body.
     private LoopStmt ParseLoop(int col)
     {
         var word = Next();
-        var kind = word.Text switch { "each" => LoopKind.For, "while" or "loop" => LoopKind.While, _ => LoopKind.Until };
+        var kind = word.Text switch { "for" => LoopKind.For, "while" or "loop" => LoopKind.While, _ => LoopKind.Until };
         string? variable = null;
         Pos varPos = default;
         TypeRef? varType = null;
@@ -1880,11 +1895,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         foreach (string carried in CarriedNamesAhead()) _values?.Add(carried);
         if (kind == LoopKind.For)
         {
-            var name = ValueName("the name each element takes: each x in ...");
+            var name = ValueName("the name each element takes: for x in ...");
             variable = name.Text;
             varPos = name.Pos;
             if (Accept(TokenKind.Colon)) varType = ParseType();
-            if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': each {variable} in ...");
+            if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': for {variable} in ...");
             Next();
             source = ParseExpr();
         }
@@ -2074,7 +2089,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
-            if (Cur.Text is "if" or "each" or "until" or "loop" or "when" or "claim" or "branch")
+            if (Cur.Text is "if" or "for" or "until" or "loop" or "when" or "claim" or "branch")
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }

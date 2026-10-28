@@ -17,7 +17,7 @@ public static partial class LanguageServer
     ];
 
     private static readonly HashSet<string> ControlKeywords =
-        ["jump", "when", "return", "throw", "try", "check", "unreachable", "continue", "else", "elseif", "todo", "if", "each",
+        ["jump", "when", "return", "throw", "try", "check", "unreachable", "continue", "else", "elseif", "todo", "if", "for",
          "until", "loop", "then", "with",
          "break", "becomes", "in", "nothing", "drop"];
 
