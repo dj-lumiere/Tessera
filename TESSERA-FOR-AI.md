@@ -386,9 +386,11 @@ routine start() -> None
   `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a STACK place, a frame span, and
-  every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
+  every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / `getview`) or of a
   BorrowedCell / BorrowedSlice it holds (`m.getslice()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
-  or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
+  or into a global. A store into a view of the routine's own frame is fine (`elems: @[@S32] = arr.getview()` of a
+  STACK `arr`, then `elems.getslot(0).poke(a)` with `a` another STACK place): the check follows such a view back to
+  the place it was made from, and one made from a parameter or a global still outlives the routine. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
   - A value read out of such a place carries what the place holds: `k.load()` of a `k: &Knot` whose field holds the
@@ -854,8 +856,9 @@ routine start() -> None
   `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
   unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
 - **Random numbers** are `Xoshiro256` (`import Random`): `.from_seed(seed)` replays a stream,
-  `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`, which is `OsEntropy` with an OS), then `next()`, `next_u32()`,
-  `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
+  `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`, which is `OsEntropy` with an OS), then `next[T]()`
+  (an integer `T`, `U8` to `U128` and `S8` to `S128`, over its full range, `B32` / `B64` in [0, 1) from the top 24 / 53
+  bits of a draw) and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
   `text.json_quote_into(out)` in `System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - A whole number written in base 10 also goes into a binary float place, typed by where it goes: `x: &B64 <- 0`,
@@ -2031,7 +2034,7 @@ builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `
 a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(manager)`,
 `temp_directory(manager)`, `home_directory(manager)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
-carries that `Directory`. `OsEntropy.fill(buffer, count)` / `OsEntropy.next_u64()` are the OS's random bits (getrandom,
+carries that `Directory`. `OsEntropy.fill(buffer, count)` / `OsEntropy.next[T]()` (the types `Xoshiro256.next[T]()` takes) are the OS's random bits (getrandom,
 arc4random_buf, ProcessPrng), the source of the hash key and `Xoshiro256.from_entropy()`.
 
 **Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process(program, args,

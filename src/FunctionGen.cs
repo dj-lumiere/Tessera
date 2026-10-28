@@ -938,6 +938,9 @@ public sealed partial class FunctionGen
                 return FrameView(m.Receiver);
             case MethodCallExpr { Name: "getview" } m when Compiler.IsCoreSpan(InferQuiet(m.Receiver) ?? VoidType.Instance, out _):
                 return FrameView(m.Receiver);
+            // A view of a slot's elements (`arr.getview()` of an `&Items[T, N]`) sees the slot's memory.
+            case MethodCallExpr { Name: "getview" } m when PointsAtMemory(InferQuiet(m)):
+                return FrameView(m.Receiver);
             case FieldExpr f when PointsAtMemory(InferQuiet(f)):
                 return FrameView(f.Base);
             case RecordLit lit:
@@ -992,7 +995,8 @@ public sealed partial class FunctionGen
         ValueRef r => !_routineParams.ContainsKey(r.Name) && _frameViews.ContainsKey(r.Name),
         FieldExpr f => IsOwnFrameValue(f.Base),
         IndexExpr ix => IsOwnFrameValue(ix.Base),
-        MethodCallExpr { Name: "getslot" or "stride" } m => IsOwnFrameValue(m.Receiver),
+        MethodCallExpr { Name: "getslot" or "stride" or "getview" or "getslice" or "offset" or "to" } m =>
+            IsOwnFrameValue(m.Receiver),
         _ => false,
     };
 
@@ -5322,6 +5326,12 @@ public sealed partial class FunctionGen
             string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{plain}' is "
                 + $"failable: write try in front of the call for an Optional, {example}");
+        }
+        if (m.Name == "stride" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } strided } ? strided : rt, out DType element))
+        {
+            string view = m.Receiver is ValueRef named ? named.Name : "xs";
+            throw Err(m.Pos, $"{rt} has no method 'stride': a view is read with {view}[i], and "
+                + $"{view}.to[@{element}]().stride(i) gives a pointer when one is needed");
         }
         if (m.Name == "setitem" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } spanned } ? spanned : rt, out _))
             throw Err(m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");
