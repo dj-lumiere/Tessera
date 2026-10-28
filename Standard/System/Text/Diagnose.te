@@ -12,8 +12,8 @@
 # it is written, so a template hole picks the form. diagnose_into(out) and
 # represent_into(out) are the routines that write, which a type defines.
 #
-# Numbers and Bool read the same both ways. Char diagnoses as 'A', Byte as b'A'
-# (b'\x7f' when it isn't printable ASCII), and an Items as [1, 2, 3]. Pointers
+# Numbers, Bool and Byte read the same both ways. Char diagnoses as 'A', Byte as
+# b'A' (b'\x7F' when it isn't printable ASCII), and an Items as [1, 2, 3]. Pointers
 # diagnose as their address.
 #
 # A record, choice, or variant gets a diagnose from the builder with
@@ -117,14 +117,35 @@ needs T: typename, Writer[T]
     write_str(out, text: "\"")
     return
 
-### Writes the byte as a byte literal such as `b'A'`, escaping quotes, backslashes and non-printable bytes.
+### Writes the byte as the byte literal that makes it: `b'L'` for printable ASCII, `b'\''` and `b'\\'` for the quote
+### and the backslash, and `b'\x0A'`, two uppercase hex digits, for any other byte.
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Byte.diagnose_into[T](out: @T) -> None
 needs T: typename, Writer[T]
     write_str(out, text: "b'")
-    write_escaped_byte(out, byte: me, quote: b'\'', as_char: false)
+    if me == b'\'' or me == b'\\'
+        write_str(out, text: "\\")
+    if 0x20 <= me <= 0x7E
+        slot: &Me <- me
+        out.write_bytes(data: slot, count: 1)
+    else
+        write_str(out, text: "\\x")
+        code: U8 = me.to[U8]()
+        write_upper_hex_digit(out, digit: code >> 4)
+        write_upper_hex_digit(out, digit: code & 0x0F)
     write_str(out, text: "'")
+    return
+
+### Writes one uppercase hex digit, `0` to `9` or `A` to `F`.
+### :typeparam T: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+### :param digit: The digit's value, 0 to 15.
+secret routine write_upper_hex_digit[T](out: @T, digit: U8) -> None
+needs T: typename, Writer[T]
+    letters: @[Byte] = "0123456789ABCDEF"
+    slot: &Byte <- letters.getitem(digit.to[U64]())
+    out.write_bytes(data: slot, count: 1)
     return
 
 ### Writes the character as a character literal such as `'A'`: ASCII goes through the byte escapes, and any other

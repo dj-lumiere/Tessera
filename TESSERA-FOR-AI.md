@@ -1619,7 +1619,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Optional[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, `Byte`
-  (`0x4c`: `0x` and two hex digits), and `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view:
+  (`b'L'`, `b'\x0A'`: the byte literal that makes it, the same as its `diagnose_into`), and `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view:
   `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
   `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
