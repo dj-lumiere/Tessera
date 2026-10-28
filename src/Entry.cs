@@ -29,6 +29,10 @@ public sealed partial class Compiler
     public static bool IsEntryRoutine(RoutineDecl r) =>
         !r.IsLibrary && r.Owner is null && r.Name is StartName or WhenPowerOnName;
 
+    /// Whether `r` is the program's `when_power_on` on a target without an operating system: the step that readies
+    /// memory, .bss zeroed and .data copied, so until its prepare_core call returns no global holds its value yet.
+    public bool IsBootStep(RoutineDecl r) => !r.IsLibrary && r is { Owner: null, Name: WhenPowerOnName } && !Target.HasOs;
+
     /// The program's routine of an entry name, or null. Two of them (in two modules) is an error.
     private RoutineDecl? EntryRoutine(string name)
     {

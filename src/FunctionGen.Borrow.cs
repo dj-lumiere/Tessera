@@ -36,11 +36,13 @@ public sealed partial class FunctionGen
     private long _slotBytes;
 
     /// Whether this routine borrows and gives back its frame through the StackManager: every routine with a body,
-    /// except an `@inline` one (its frame is its caller's), an assembly one, and the StackManager's own two.
+    /// except an `@inline` one (its frame is its caller's), an assembly one, the StackManager's own two, and the boot
+    /// step (its check would read the StackManager's globals before its prepare_core readies them, and the stack is
+    /// empty there).
     private bool FrameCalls =>
         !_c.Prechecking && _decl.Blocks is { Count: > 0 } && _decl.AnnotationNamed("inline") is null && !Compiler.IsAsm(_decl)
         && !(_decl.Owner is { Name: "StackManager" } && _decl.Name is "borrow_frame" or "give_back_frame" or "report_overflow")
-        && _decl.AnnotationNamed("naked") is null;
+        && _decl.AnnotationNamed("naked") is null && !_c.IsBootStep(_decl);
 
     /// The types whose values are borrowed from a manager and given back with `drop`, bound with `<-` from the call
     /// that borrows them: the accesses, the thread, fiber and passable fiber tickets, a mapped file's storage. A piece of

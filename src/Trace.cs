@@ -65,9 +65,11 @@ public sealed partial class Compiler
             throw new CompileError(a.Pos, $"@untraced needs a body, and '{r.DisplayName}' is @external");
     }
 
-    /// Whether this instance keeps a frame on the crash trace.
+    /// Whether this instance keeps a frame on the crash trace. The boot step keeps none: the trace is a global its
+    /// prepare_core zeroes, so a frame it pushed first would be wiped there, and its pop would then take the depth
+    /// below zero and hide every frame `start` pushes after it.
     public bool IsTraced(Instance inst) =>
-        Trace && !inst.Decl.IsLibrary && !inst.IsAsm && inst.Decl.Blocks is not null
+        Trace && !inst.Decl.IsLibrary && !IsBootStep(inst.Decl) && !inst.IsAsm && inst.Decl.Blocks is not null
         && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null
         && !IsCrashableMessage(inst);
 

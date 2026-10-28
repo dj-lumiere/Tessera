@@ -1167,7 +1167,7 @@ public sealed partial class FunctionGen
     {
         // A program's own when_power_on, without an operating system, readies memory before it touches a global, and
         // readies it at all: nothing else zeroes .bss or copies .data.
-        bool bootEntry = !_decl.IsLibrary && _decl is { Owner: null, Name: Compiler.WhenPowerOnName } && !_c.Target.HasOs;
+        bool bootEntry = _c.IsBootStep(_decl);
         _memoryReady = bootEntry ? false : null;
         _crashSlotSet = bootEntry ? false : null;
         try
