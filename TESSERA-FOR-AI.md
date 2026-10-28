@@ -200,7 +200,7 @@ routine start() -> None
   load (COUNT values at `first: @T` are `first.to[@Items[T, COUNT]]().peek()`);
   a bare `[1, 2]` isn't a value. `[a, b] * 3` repeats the elements (`a, b, a, b, a, b`). A bracket literal followed by `*` is always that repeat, so a Vector literal is bound to a name before it is multiplied. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
-  `preset SORTED: &Items[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
+  `preset SORTED: Items[S64, 3] = [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line. A receiver gives it no type: `[1, 2].eq(...)` is an error.
 - **Where values are: four types.** `@T` (a `PointedCell`) is the address of one value (a place's value, a field, an element,
   memory from C). `@[T]` (Core, `Types/PointedSlice.te`) is `{data, count}`, a run of values it views. Both only VIEW
@@ -254,14 +254,23 @@ routine start() -> None
   of its own for is called on its `getslice()` (`line.trim()` on a `BorrowedSlice[Byte]`). Only at argument positions and
   receivers: anywhere else write `m.getslice()` (`view: @[U32] = m.getslice()`). The view is valid until the memory
   is given back or resized.
-- **Static and frame memory as a span.** `preset NAME: &[T] <- [a, b]` is read-only static data (a write faults
-  on a hosted target, the build doesn't catch it). `preset GREETING: &[Byte] <- "hello"` is a string literal's
-  bytes, and a span preset of text spans may name it: `preset WORDS: &[@[Byte]] <- [GREETING, "world"]` (a
-  `global` can't take a string literal: it is read-only). `global NAME: &[T] <- [0] * 26` is mutable static memory (the
-  literal gives the count). `xs: &[T] <- [0] * 64` puts the values in the routine's frame (STACK), with a count the
-  build knows (a literal count or a preset). An array literal passed as an argument where a span is expected is a
-  frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine. `preset NAME: &Items[T, N] <-
-  [...]` is an array in memory.
+- **Static and frame memory as a span.** `global NAME: &[T] <- [0] * 26` is mutable static memory (the literal gives
+  the count), and `global WORDS: &[@[Byte]] <- [GREETING, "world"]` a run of text views (a global's whole value can't be
+  a string literal: it is read-only). `xs: &[T] <- [0] * 64` puts the values in the routine's frame (STACK), with a
+  count the build knows (a literal count or a preset). An array literal passed as an argument where a span is expected
+  is a frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine.
+- **Literals, presets and `=` views.** An array literal is an `Items[T, N]` value, and a string literal is a `@[Byte]`, a
+  view of read-only data the builder emits. That is their type where nothing else names one (a generic routine's `T`
+  inferred from the argument). `Items[T, _]` takes its count from the literal in a binding, a preset or a global:
+  `xs: Items[S32, _] = [1, 2, 3]`, `g: Items[Byte, _] = "hello"` (5 bytes), `c: Items[Char, _] = "루미"` (2),
+  `slots: &Items[S64, _] <- [0] * 4`. A `_` anywhere else is a build error. With `=`, a `@T` or `@[T]` view is taken
+  only of read-only data: a string literal, an array literal whose elements are all constants (`xs: @[S64] = [1, 2, 3]`,
+  `p: @Items[S32, _] = [5, 6]`, placed in read-only data), and a preset (`v: @[U8] = TABLE`). Writing through such a
+  view or a part of it (`getslot`, `getslice`, a field) is a build error ("'v' views the preset 'TABLE', which is
+  read-only data ..."). An array literal with a variable in it has no fixed place, so `xs: @[S32] = [a, 2]` is a build
+  error that points to `xs: Items[S32, _] = [...]`, or to `xs: &Items[S32, _] <- [...]` and `xs.getview()`. The check
+  follows views inside one routine: a read-only view handed to a routine that writes through its parameter isn't
+  caught (on a hosted target the write faults).
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
   `node: &Node <- (value: 1, next: .hollow()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
@@ -529,20 +538,27 @@ routine start() -> None
   build error naming `manager`. Memory C frees or reallocates, or
   memory from C's malloc, goes through `C_HEAP` (plain malloc in every build). On a target without an OS, naming `HEAP`
   is a build error that says the target has none, and the program passes a manager of its own.
-- **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
-  if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), `preset NAME: &T <- value`
-  (read-only), and the span forms above: `preset TABLE: &Items[U32, 4] <- [...]`, `preset NAMES: &[@[Byte]] <- [...]`,
-  `global COUNT: &U64 <- 0`. `global COUNT: &U64 = 5` is a build error ("a global is a place, filled with '<-':
-  global COUNT: &U64 <- value"), so are `global COUNT: @U64 <- 5` ("a global is a place, written &T or &[T] (@T and
-  @[T] only view)") and `preset BOUND: &U64 = 20`. `preset NAME: T = value` is a value, not memory: folded at build time, with
-  no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type
-  argument where a count goes: `Items[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
-  before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
-  a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
-  address, and a global holding a pointer is `&@T`: `global HEAD: &@Node <- .hollow()`). A global or preset place's
-  name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`, `K.getitem(i)`, `TABLE[2]`.
-  Writing a `&T` preset's memory is a build error. Neither kind is a buildtime
-  constant: a preset value is (`Items[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
+- **Globals are places, filled with `<-`. Presets are values, written with `=`.** `p: &T <- v` (a STACK place, `<-
+  .hollow()` if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), and the span form
+  above: `global COUNT: &U64 <- 0`, `global TABLE: &Items[U32, _] <- [...]`. `global COUNT: &U64 = 5` is a build error
+  ("a global is a place, filled with '<-': global COUNT: &U64 <- value"), and so is `global COUNT: @U64 <- 5` ("a global
+  is a place, written &T or &[T] (@T and @[T] only view)"). A preset is a value the build knows, `preset NAME: T =
+  value`, of a value type: a number, `Bool`, a choice or flags value, a record, a tuple, an `Items[...]`, a routine
+  value. `preset NAME: &T <- value`, `<-`, an address type (`@T`, `@[T]`) and a type that holds an address
+  (`Items[@[Byte], 2]`) are build errors that point to `global`, the static memory that has a place and addresses. A
+  number, `Bool` or choice preset is folded where it is used and has no address. Its value may use operators like a
+  body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type argument where a count goes: `Items[Byte,
+  (BITS + 7) // 8]` with `needs BITS: U64`. An `Items`, record, tuple or routine-value preset is put in read-only data:
+  `preset TABLE: Items[U32, _] = [...]`, `preset GREETING: Items[Byte, _] = "hello"`, `preset ORIGIN: Point = (x: 3, y:
+  4)`. Its name is its value (`copy: Items[U32, 4] = TABLE`, `ORIGIN.x`), a routine on `@T` reads it in place
+  (`TABLE.getitem(i)`, `TABLE[2]`, `TABLE.getview()`), and it is viewed where a `@T` or a `@[T]` of it goes (`v: @[U32]
+  = TABLE`, `total(TABLE)` for a `@[U32]` parameter). Writing it is a build error ("'TABLE' is a preset; its memory is
+  read-only"). Globals and presets are part of the program image, there before `start` runs (nothing runs before it to
+  compute one, on any target), so their contents are known at build time: literals, presets, `.hollow()`, `[...]` (an
+  array), `T(field: value)` (a record field by field), a routine for a `Callable` (`f.to[Callable]()`), and in a global
+  the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node
+  <- .hollow()`). A global's name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`,
+  `K.getitem(i)`. Only a folded preset is a buildtime constant (`Items[S64, N]` with `preset N: U64 = 4`).
 - One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
   differ are a build error ("'abs' is declared at f.te:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
   routine has one signature"). Declare it once, with the types its C declaration has.
@@ -594,7 +610,7 @@ routine start() -> None
   (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`SignalCaster.wait`, `wait_on`, a ticket's `retrieve`), which belong in loops.
-- A `preset` value is folded by the builder, and only from literals (`inf` and `nan` too), other presets, integer and
+- A number, `Bool` or choice preset is folded by the builder, and only from literals (`inf` and `nan` too), other presets, integer and
   `Bool` arithmetic and conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64
   `add`/`sub`/`mul`/`truediv` (and their `_unchecked` forms, `+! -! *! /!`), `neg` of every float, `to[T]()` and
   `to_unchecked[T]()` between `B16`, `BF16`, `B32` and `B64` (`B64.to[B16](0.5)`), `max`/`min`/`sizeof`/`alignof`, and
@@ -1062,8 +1078,9 @@ routine start() -> None
   Source files must be UTF-8.
 - A string literal is also an array literal whose count the build knows: its UTF-8 bytes where `Items[Byte, N]` or a
   STACK `&[Byte]` goes (`"루미"` is 6), its code points where `Items[Char, N]`, a STACK `&[Char]` or `@[Char]` goes
-  (`"루미"` is 2). `@[Byte]` and `@[Char]` view the program image (no copy), `Items` and STACK `&[...]` are copies the
-  routine can change (`copy: &[Byte] <- "Lumi"`). A count that doesn't match is a build error that gives both the byte
+  (`"루미"` is 2), and `Items[Byte, _]` / `Items[Char, _]` take that count. `@[Byte]` and `@[Char]` view the program
+  image (no copy) and only read, `Items` and STACK `&[...]` are copies the routine can change (`copy: &[Byte] <-
+  "Lumi"`). A count that doesn't match is a build error that gives both the byte
   and the character count. A `\x` byte above 7F is a build error where Chars go. Text processing by character in any
   language (regular expressions and the like) goes through `@[Char]` routines.
 - String literals are a `@[Byte]` where one is expected, `CStrView` / `CWStrView` (terminated C text) where one of those
@@ -1277,7 +1294,7 @@ routine start() -> None
   where a flags value goes, `<` and the other orderings, and `when x` on a flags value are build errors. A flags
   type derives Representable (`MINE and FLAGGED`, `none` when no member is on), Diagnosable (`CellMarks.MINE and
   CellMarks.FLAGGED`, `none`), Equatable, and Hashable (as its bits), never Comparable. Presets take flags values
-  too: `preset EMPTY: CellMarks = none`, `preset START: &Cell <- Cell(marks: MINE and FLAGGED, adjacent_mines: 0)`.
+  too: `preset EMPTY: CellMarks = none`, `preset START: Cell = Cell(marks: MINE and FLAGGED, adjacent_mines: 0)`.
 
   ```tessera
   ### What is true of a cell.
@@ -1607,7 +1624,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   (`Standard/System/Text/MemoryCell.te`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
   3)`, `&S64(at: 0x55d0c1a2b3c0, manager: HEAP)`, `&[S64](data: 0x55d0c1a2b3c0, count: 3, manager: HEAP)`. The manager
   is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
-  global or a preset in memory has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
+  global has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
   build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
   sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getview()`
   for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `lint`; it is a warning,
@@ -2346,8 +2363,8 @@ the type's own).
 broken over lines, also a tuple, call arguments, parameters or a record literal, may end with a comma before its
 closing bracket, on one line that comma is a build error), and `[0] * 256`
 repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
-array presets (`K.getitem(i)`, with `preset K: &Items[T, COUNT] <- [...]`), and for span presets and globals
-(`preset K: @[T] <- [...]`, `K.getitem(i)`, `K.count()`).
+array presets (`K.getitem(i)`, with `preset K: Items[T, COUNT] = [...]`), and for span globals
+(`global K: &[T] <- [...]`, `K.getitem(i)`, `K.count()`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:

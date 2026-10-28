@@ -1025,35 +1025,51 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         Expect(TokenKind.Colon, "':' and the preset's type");
         var type = ParseType();
-        // `preset NAME: &[T] <- [a, b]` is read-only memory of the literal's elements, and the name is a span of them.
+        // A preset is a value the build knows, written with `=` and a value type. A place (`&T`) and an address
+        // (`@T`) are memory, which is a global's.
+        string global = "a place in memory and an address are a global's, the static memory a program changes";
         if (StorageSpanOf(type) is { } spanType)
-        {
-            if (Is(TokenKind.Eq))
-                throw Error($"a preset in memory is a place, filled with '<-': preset {name}: {type} <- [a, b]");
-            Expect(TokenKind.LeftArrow, $"'<-' and the elements: preset {name}: {type} <- [a, b]");
-            var elements = ParseExpr();
-            ExpectLineEnd();
-            return new PresetDecl(file, annotations, owner, name, spanType, elements, pos) { IsStorage = true, IsSpan = true };
-        }
-        // `preset NAME: &T <- value` is read-only memory, whose name is its address; `preset NAME: T = value` is a value.
+            throw new CompileError(type.Pos, $"a preset is a value, written with '=': preset {name}: Items[{ElemOf(spanType)}, _] = [a, b]; "
+                + $"{global}: global {name}: {type} <- [a, b]");
         if (StoragePointeeOf(type) is { } pointee)
+            throw new CompileError(type.Pos, $"a preset is a value, written with '=': preset {name}: {pointee} = value; "
+                + $"{global}: global {name}: {type} <- value");
+        if (PointeeOf(type) is not null || IsSpanType(type))
         {
-            if (Is(TokenKind.Eq))
-                throw Error($"a preset in memory is a place, filled with '<-': preset {name}: {type} <- value");
-            Expect(TokenKind.LeftArrow, $"'<-' and the contents: preset {name}: {type} <- value");
-            var contents = ParseExpr();
-            ExpectLineEnd();
-            return new PresetDecl(file, annotations, owner, name, pointee, contents, pos) { IsStorage = true };
+            string valueType = PointeeOf(type) is { } viewed ? $"{viewed}" : $"Items[{ElemOf(type)}, _]";
+            throw new CompileError(type.Pos, $"a preset is a value, and {type} is an address: preset {name}: {valueType} = value, "
+                + $"which a routine views with v: {type} = {name}; {global}: global {name}: &{type} <- value");
         }
         if (Is(TokenKind.LeftArrow))
-            throw Error(PointeeOf(type) is not null || IsSpanType(type)
-                ? $"a preset in memory is a place, written &T or &[T] (@T and @[T] only view): preset {name}: &{(PointeeOf(type) ?? ElemOf(type))} <- value"
-                : $"'<-' fills a place, and a preset of type {type} is a value: preset {name}: {type} = value, "
-                  + $"or preset {name}: &{type} <- value to put it in memory");
+            throw Error($"a preset is a value, written with '=': preset {name}: {type} = value");
         Expect(TokenKind.Eq, "'='");
         var value = ParseExpr();
         ExpectLineEnd();
+        FillLiteralCount(type, value);
         return new PresetDecl(file, annotations, owner, name, type, value, pos);
+    }
+
+    /// `Items[T, _]` (also behind `&` or `@`) given an array or a string literal: the `_` becomes the literal's
+    /// count. An array literal counts its elements (times its repeat), a string literal its UTF-8 bytes for
+    /// `Items[Byte, _]` and its characters for `Items[Char, _]`. Anything else leaves the `_`, which the checker
+    /// reports.
+    private static void FillLiteralCount(TypeRef type, Expr value)
+    {
+        if (value is AtExpr at) value = at.Value;
+        var items = type is { Name: "BorrowedCell" or "PointedCell", Args: [TypeArgType inner] } ? inner.Type : type;
+        if (items is not { Name: "Items", Path: null or Compiler.SystemModule, Args: [TypeArgType elem, TypeArgInferred] }) return;
+        TypeArg? count = value switch
+        {
+            ArrayLit { IsTuple: false, Repeat: null } lit => new TypeArgInt(lit.Elements.Count),
+            ArrayLit { IsTuple: false, Repeat: { } times, Elements.Count: 1 } => new TypeArgExpr(times),
+            ArrayLit { IsTuple: false, Repeat: { } times } lit =>
+                new TypeArgExpr(new BinaryExpr("*", new IntLit(lit.Elements.Count, lit.Pos), times, lit.Pos)),
+            StrLit s when elem.Type is { Name: "Byte", Args.Count: 0 } => new TypeArgInt(Compiler.Utf8Length(s.Value)),
+            StrLit s when elem.Type is { Name: "Char", Args.Count: 0 } && Compiler.CodePoints(s.Value) is { } chars =>
+                new TypeArgInt(chars.Count),
+            _ => null,
+        };
+        if (count is not null) items.Args[1] = count;
     }
 
     /// `global NAME: @T` (all-zero) or `global NAME: @T <- value`: the name is the address of the memory.
@@ -1084,6 +1100,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                           : $"a global is a place: global {name.Text}: &{type}, or global {name.Text}: &[{type}] <- [...] for a run of them");
         Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
+        if (value is not null) FillLiteralCount(type, value);
         return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
 
@@ -1443,6 +1460,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private TypeArg ParseTypeArg(bool inClause = false)
     {
         int start = _i;
+        // `Items[T, _]`: the count of the literal the binding or the preset is given.
+        if (Is(TokenKind.Underscore) && (PeekTok(1).Kind is TokenKind.Comma or TokenKind.RBracket)) return new TypeArgInferred(Next().Pos);
         if (Is(TokenKind.Int))
         {
             var count = new TypeArgInt(Next().IntValue);
@@ -1722,6 +1741,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var borrowed = AtManager(ParseExpr());
                 ExpectLineEnd();
                 _values!.Add(name);
+                FillLiteralCount(type, borrowed);
                 return new BindStmt(name, type, borrowed, pos) { Borrows = true };
             }
             Expect(TokenKind.Eq, "'=' (or '<-' to borrow a place)");
@@ -1730,6 +1750,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(at.Pos, $"a place from a manager is borrowed with '<-': {name}: {(type is { Name: "BorrowedCell" or "BorrowedSlice" } ? $"{type}" : $"&{type}")} <- ... from manager");
             if (value is not WhenExpr) ExpectLineEnd();
             _values!.Add(name);
+            FillLiteralCount(type, value);
             return new BindStmt(name, type, value, pos);
         }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Comma)

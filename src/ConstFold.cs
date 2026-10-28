@@ -319,6 +319,8 @@ public sealed partial class Compiler
         var cenv = new TypeEnv(c.File);
         if (owner is not null) cenv.Bind("Me", owner);
         var t = ResolveType(c.Type, cenv);
+        if (PresetInMemory(t))
+            throw new CompileError(r.Pos, $"'{c.Name}' is a {t}, and a preset folds only numbers, Bool and choice values from other presets");
         return PresetConst(c, t, owner, r.Pos);
     }
 

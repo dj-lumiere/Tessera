@@ -1870,6 +1870,7 @@ public sealed partial class FunctionGen
                 else
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
+                NoteReadOnlyView(b.Name, b.Value, t);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 NoteWorkName(b.Name, t, b.Value, b.Pos);
                 if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
@@ -2626,6 +2627,8 @@ public sealed partial class FunctionGen
         // An argument borrows what a parameter takes as a view: a BorrowedSlice lends its PointedSlice, a BorrowedCell its address.
         if (argument > 0 && Lends(InferQuiet(e), expected))
             return Eval(new MethodCallExpr(e, LendName(InferQuiet(e)), [], [], e.Pos), expected, argument);
+        // A preset in read-only data is viewed where a `@T` or a `@[T]` of it goes, and nothing writes through the view.
+        if (e is PresetRef { AsView: false } viewedPreset && PresetViewOf(viewedPreset, expected) is { } presetView) return presetView;
         Val v = e switch
         {
             IntLit { Base10: true } i when Compiler.WholeAsFloat(i.Value, expected, i.Pos) is { } whole =>
@@ -2654,6 +2657,7 @@ public sealed partial class FunctionGen
             RangeExpr r => throw Err(r.Pos, "a range is walked by each: each i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
+            ArrayLit a when LiteralView(a, expected) is { } literalView => literalView,
             ArrayLit a => EvalElementsLit(a, expected),
             AtExpr at => EvalAt(at, expected),
             ImplicitMemberExpr m => throw Err(m.Pos,
@@ -4344,7 +4348,9 @@ public sealed partial class FunctionGen
 
     // ── Consts, choice members, routine values ────────────────────────────────
 
-    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false, bool IsReadOnly = false);
+    /// `InMemory`: a preset value in read-only data, which can also be viewed through its address (PresetRef.AsView).
+    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false, bool IsReadOnly = false,
+        bool InMemory = false);
 
     private PresetInfo? ResolvePreset(PresetRef r)
     {
@@ -4361,7 +4367,7 @@ public sealed partial class FunctionGen
                     $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Unhosted) "
                     + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
-            return c is null ? null : PresetValue(c, null);
+            return c is null ? null : PresetValue(c, null, r.AsView);
         }
 
         var ownerType = TryResolveOwner(r.Owner);
@@ -4379,10 +4385,10 @@ public sealed partial class FunctionGen
                      ? $"'{r.Owner}.{r.Name}' is gone: write the literal {(r.Name switch { "INFINITY" => "inf", "NEG_INFINITY" => "-inf", _ => "nan" })}, "
                        + "typed by where it goes"
                      : $"unknown preset '{r.Owner}.{r.Name}'");
-        return PresetValue(oc, ownerType);
+        return PresetValue(oc, ownerType, r.AsView);
     }
 
-    private PresetInfo PresetValue(PresetDecl c, DType? self)
+    private PresetInfo PresetValue(PresetDecl c, DType? self, bool asView = false)
     {
 
         var env = new Compiler.TypeEnv(c.File);
@@ -4417,6 +4423,21 @@ public sealed partial class FunctionGen
         {
             var ptr = new PtrType(t);
             return new PresetInfo(ptr, _ => new Val(_c.PresetStorageGlobal(c, t, env), ptr), IsReadOnly: true);
+        }
+        // An Items, a record, a tuple or a routine value is in read-only data: read as a value, or viewed through its
+        // address (AsView), which nothing writes through.
+        if (Compiler.PresetInMemory(t))
+        {
+            if (asView)
+            {
+                var view = new PtrType(t);
+                return new PresetInfo(view, _ => new Val(_c.PresetStorageGlobal(c, t, env), view), IsReadOnly: true);
+            }
+            return new PresetInfo(t, _ =>
+            {
+                _c.EnsureTypeDefined(t);
+                return new Val(EmitTmp($"load {t.Llvm}, ptr {_c.PresetStorageGlobal(c, t, env)}"), t);
+            }, IsReadOnly: true, InMemory: true);
         }
         // Every other preset is a constant the builder folded (ConstFold.cs), the same at each use.
         return new PresetInfo(t, _ => new Val(Compiler.ConstLlvm(_c.PresetConst(c, t, self, c.Pos)), t));
@@ -4832,7 +4853,7 @@ public sealed partial class FunctionGen
                 {
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
-                    if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt)) preferred = false;
+                    if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt) || PresetViews(args[i], at, pt)) preferred = false;
                     else if (FailingCallable(r, i + first, at, pt, args[i].Pos) is { } failing)
                         env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
                     else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)))
@@ -5128,6 +5149,21 @@ public sealed partial class FunctionGen
     private CallPlan? PlanMethod(MethodCallExpr m, DType? expected)
     {
         if (StackPlaceCall(m) is MethodCallExpr onPlace) m = onPlace;
+        // `xs.count()` of an Items value or preset is its type's count, `Items[T, N].count()`.
+        if (m is { Name: "count", Args.Count: 0, TypeArgs.Count: 0, Receiver: ValueRef or PresetRef }
+            && InferQuiet(m.Receiver) is ArrayType { IsSlots: false } counted)
+            return PlanCall(new NsCallExpr(new TypeRef(counted.Name, [], m.Pos) { Known = counted }, "count", [], [], m.Pos), expected);
+        // A preset in read-only data is the receiver of a routine on `@T` through its address (`TABLE.getitem(i)` reads
+        // it in place), and of a routine on `T` as the value. Shown, it writes its value.
+        if (m.Receiver is PresetRef { AsView: false } preset && m.Name is not ("represent_into" or "diagnose_into")
+            && ResolvePresetQuiet(preset) is { InMemory: true })
+        {
+            try
+            {
+                if (PlanMethod(m with { Receiver = preset with { AsView = true } }, expected) is { } viewed) return viewed;
+            }
+            catch (CompileError) { }
+        }
         if (ManagedMemory(TryInfer(m.Receiver)) is { Decl.Name: "BorrowedSlice" } && OldMemoryElementCall(m) is { } older)
             throw Err(m.Pos, older);
         if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
@@ -5481,11 +5517,42 @@ public sealed partial class FunctionGen
         if (unbound.Count == 0) return;
         for (int i = 0; i < args.Count && i + firstArgParam < r.Params.Count; i++)
         {
-            if (Infer(args[i]) is { } at) Unify(r.Params[i + firstArgParam].Type, at, env, unbound);
-            else UnifyArrayCount(r.Params[i + firstArgParam].Type, args[i], env, unbound);
+            if (Infer(args[i]) is { } at)
+            {
+                // A preset in read-only data viewed by a `@T` or a `@[T]` parameter binds from what it views.
+                var param = r.Params[i + firstArgParam].Type;
+                if (args[i] is PresetRef { AsView: false } preset && at is not PtrType
+                    && param is { Name: "PointedCell" or "PointedSlice", Path: null, Args: [TypeArgType viewed] }
+                    && ResolvePresetQuiet(preset) is { InMemory: true })
+                {
+                    if (param.Name == "PointedCell") Unify(viewed.Type, at, env, unbound);
+                    else if (at is ArrayType items) Unify(viewed.Type, items.Elem, env, unbound);
+                    continue;
+                }
+                Unify(param, at, env, unbound);
+            }
+            else
+            {
+                // Where nothing else names a literal's type, a string literal is a `@[Byte]` and an array literal an
+                // `Items[T, _]`, T from its typed elements.
+                if (DefaultLiteralType(args[i]) is { } literal) Unify(r.Params[i + firstArgParam].Type, literal, env, unbound);
+                UnifyArrayCount(r.Params[i + firstArgParam].Type, args[i], env, unbound);
+            }
         }
         if (expected is not null) Unify(r.ReturnType, expected, env, unbound);
         _c.BindDefaults(r, env);
+    }
+
+    /// The type a literal has where nothing names one: a string literal is a `@[Byte]`, an array literal an `Items[T, N]`,
+    /// T the type of its first element that has one, N its count. Null when no element has a type of its own (`[1, 2]`)
+    /// or the count isn't known.
+    private DType? DefaultLiteralType(Expr arg)
+    {
+        if (arg is StrLit text) return BytesType(text.Pos);
+        if (arg is not ArrayLit { IsTuple: false } lit) return null;
+        if (lit.Elements.Select(InferQuiet).FirstOrDefault(t => t is not null) is not { } elem || Entities.Holds(elem)) return null;
+        try { return new ArrayType(elem, _c.Elements(lit, _env).Count, isSlots: false); }
+        catch (CompileError) { return null; }
     }
 
     /// An array literal, whose type comes from where it goes, still says how many values it has: `[3, 1, 2]` passed to
@@ -5758,12 +5825,11 @@ public sealed partial class FunctionGen
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
         // write through their receiver are refused on one by name.
-        if (sig.Decl.Name is "poke" or "poke_volatile" or "setitem" or "shift_left" or "shift_right" or "copy"
-            && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
-            throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
-        if (sig.Decl.Name is "poke_into" or "store_into" or "copy_into" or "poke_at" && plan.Receiver is not null && plan.Args.Count >= 1
-            && PresetArrayRoot(plan.Args[0]) is { } destRoot)
-            throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
+        if (WritesThroughReceiver(sig.Decl.Name) && plan.Receiver is { } place && ReadOnlyOrigin(place) is var (root, origin))
+            throw ReadOnlyWrite(plan.Pos, root, origin);
+        if (WritesThroughFirstArgument(sig.Decl.Name) && plan.Receiver is not null && plan.Args.Count >= 1
+            && ReadOnlyOrigin(plan.Args[0]) is var (destRoot, destOrigin))
+            throw ReadOnlyWrite(plan.Pos, destRoot, destOrigin);
         // An assembly routine is checked as assembly on its own, so a generic body being checked only types its call.
         if (sig.IsAsm && _c.Prechecking) return new Val(sig.Ret is VoidType ? "" : "poison", sig.Ret);
         if (sig.IsAsm && !sig.IsNaked)

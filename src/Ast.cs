@@ -58,6 +58,9 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 public sealed record TypeArgAnnotation(Annotation Annotation) : TypeArg { public override string ToString() => $"@{Annotation.Name}"; }
 /// A buildtime integer expression as a generic argument: `max(sizeof[A](), sizeof[B]())` in `Array[Byte, …]`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
+/// `_` as the count of `Items[T, _]`: the count the literal a binding or a preset is given has. The parser puts that
+/// count in its place, so one left over is a `_` with no literal to count.
+public sealed record TypeArgInferred(Pos Pos) : TypeArg { public override string ToString() => "_"; }
 
 // ── Declarations ────────────────────────────────────────────────────────────
 
@@ -514,6 +517,10 @@ public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos)
 {
     /// The module of a qualified preset without an owner type: `System` in `System/PI`.
     public string? Path { get; init; }
+
+    /// A preset in memory (an Items, a record) seen through its address, read-only: where a `@T` or a `@[T]` of it
+    /// is taken, and as the receiver of a routine on `@T`. The builder sets it, it is never written.
+    public bool AsView { get; init; }
 }
 
 /// `recv.name(args)`.

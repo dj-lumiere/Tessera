@@ -794,22 +794,51 @@ public sealed partial class Compiler
         if (c.IsSpan)
         {
             if (c.Value is StrLit)
-            {
-                if (c.IsGlobal)
-                    throw new CompileError(c.Value.Pos, $"a string literal is read-only, and a global is written: preset {c.Name}: {t} <- \"...\"");
-                SpanInitializer(c.Value, t, env);
-            }
-            else PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
+                throw new CompileError(c.Value.Pos, $"a string literal is read-only, and a global is written: global {c.Name}: &Items[Byte, _] <- \"...\"");
+            PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
             return;
         }
-        if (!c.IsStorage && t is ArrayType)
-            throw new CompileError(c.Pos, $"an array preset lives in memory: preset {c.Name}: @{t} <- [...]");
         if (c.IsStorage)
         {
             if (c.Value is not null) PresetInitializer(c.Value, t, env);
+            return;
         }
+        CheckPresetType(c, t);
+        // An Items, a record, a tuple or a routine value is put in the program's read-only data, its fields from
+        // constants; a number, a Bool or a choice value is folded where it is used.
+        if (PresetInMemory(t)) PresetInitializer(c.Value!, t, env);
         else PresetConst(c, t, self, c.Pos);
     }
+
+    /// Whether a preset of type `t` is put in read-only data (an Items, a record, a tuple, a routine value) rather
+    /// than folded where it is used (a number, a Bool, a choice or flags value, a bit pattern like B128, a Duration).
+    public static bool PresetInMemory(DType t) =>
+        t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null && !IsDuration(t);
+
+    /// A preset's type is a value type: no entity, and no address (a `@T`, a `@[T]`, a place), which is a global's.
+    private void CheckPresetType(PresetDecl c, DType t)
+    {
+        if (Entities.Holds(t))
+            throw new CompileError(c.Type.Pos, $"a preset is a value, and {t} is an entity, which lives in one place: "
+                + $"keep it in a global, global {c.Name}: &{t} <- value");
+        if (AddressIn(t, []) is { } address)
+            throw new CompileError(c.Type.Pos, $"a preset is a value the build knows, and {t} holds an address ({address}): "
+                + $"an address is a global's, global {c.Name}: &{t} <- value");
+    }
+
+    /// The first address type a value of `t` holds (a `@T`, a `@[T]`), or null. An `Addr` is an address as a number,
+    /// and a routine value names a routine, so neither counts.
+    private string? AddressIn(DType t, HashSet<string> seen) => t switch
+    {
+        PtrType { Pointee: null } => null,
+        PtrType => t.ToString(),
+        RecordType span when IsCoreSpan(span, out _) => t.ToString(),
+        ArrayType a => AddressIn(a.Elem, seen),
+        VectorType v => AddressIn(v.Elem, seen),
+        RecordType r when seen.Add(r.Key) => Fields(r).Select(f => AddressIn(f.Type, seen)).FirstOrDefault(a => a is not null),
+        VariantType v when seen.Add(v.Key) => v.Branches.Select(b => AddressIn(b, seen)).FirstOrDefault(a => a is not null),
+        _ => null,
+    };
 
     /// `@threadlocal` gives each thread its own copy of a global. A preset is read-only, so the threads can share one,
     /// and a target without an operating system has no threads to give copies to.
@@ -1618,6 +1647,10 @@ public sealed partial class Compiler
         _ => "",
     };
 
+    /// The build error for an `Items[T, _]` whose `_` has no literal to take its count from.
+    public const string InferredCountMessage =
+        "'_' is the count of an array or string literal, and this place has none to count: write the count, or give the binding or the preset the literal, xs: Items[S64, _] = [1, 2, 3]";
+
     /// The integer value of an Array length or other integer generic argument.
     private long ConstInt(TypeArg arg, TypeEnv env, Pos pos)
     {
@@ -1625,6 +1658,7 @@ public sealed partial class Compiler
         {
             case TypeArgInt i: return AsCount(i.Value, pos);
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
+            case TypeArgInferred blank: throw new CompileError(blank.Pos, InferredCountMessage);
             case TypeArgType { Type: { Member: not null } member }:
                 return EvalConstInt(new PresetRef(member with { Member = null }, member.Member, pos), env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
@@ -1770,6 +1804,7 @@ public sealed partial class Compiler
                     TypeArgType ta => ResolveTypeInner(ta.Type, env),
                     TypeArgInt ti => new ConstArg(ti.Value),
                     TypeArgExpr te => EvalConstArg(te.Expr, env, kind as ChoiceType),
+                    TypeArgInferred blank => throw new CompileError(blank.Pos, InferredCountMessage),
                     _ => throw new CompileError(pos, $"invalid generic argument for '{owner}'"),
                 };
             }
@@ -2267,6 +2302,23 @@ public sealed partial class Compiler
         return name;
     }
 
+    private readonly Dictionary<string, string> _literalData = [];
+
+    /// An array literal of constants viewed where it is written (`xs: @[S64] = [1, 2, 3]`): a private constant in the
+    /// program's read-only data, one per distinct literal.
+    public string LiteralData(ArrayLit lit, ArrayType t, TypeEnv env)
+    {
+        string init = PresetInitializer(lit, t, env);
+        if (Prechecking) return "@precheck";
+        string key = $"{t.Llvm} {init}";
+        if (_literalData.TryGetValue(key, out var name)) return name;
+        EnsureTypeDefined(t);
+        name = $"@.literal.{_literalData.Count}";
+        _literalData[key] = name;
+        _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {init}");
+        return name;
+    }
+
     /// The memory under `preset NAME: PointedSlice[T] <- [...]` or `global NAME: PointedSlice[T] <- [...]`: an Array of the literal's
     /// elements, as many as it has.
     public ArrayType SpanStorage(PresetDecl c, DType span, TypeEnv env)
@@ -2298,6 +2350,8 @@ public sealed partial class Compiler
         // `.hollow()` (or `T.hollow()`) is the all-zero value, which every type has.
         if (IsHollowCall(e)) return "zeroinitializer";
         e = AsRecordLit(e, env);
+        if (t is ArrayType { Elem: IntType { Kind: IntKind.Byte or IntKind.Char } } text && e is StrLit s)
+            return TextInitializer(s, text);
         if (t is ArrayType a)
         {
             if (e is not ArrayLit { IsTuple: false } lit) throw new CompileError(e.Pos, $"expected an array literal for {a}: [...]");
@@ -2317,6 +2371,28 @@ public sealed partial class Compiler
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
     }
 
+    /// A string literal as the constant `Items[Byte, N]` (its UTF-8 bytes) or `Items[Char, N]` (its characters) of a
+    /// preset or a global, whose count must be the literal's.
+    private static string TextInitializer(StrLit s, ArrayType a)
+    {
+        bool chars = a.Elem is IntType { Kind: IntKind.Char };
+        List<long> values = chars
+            ? (CodePoints(s.Value) ?? throw new CompileError(s.Pos, $"{a} holds characters, and this string has a \\x byte above 7F, "
+                + "which is no character: write the character itself or \\uXXXXXX, or keep the bytes in an Items[Byte, _]"))
+                .Select(c => (long)c).ToList()
+            : SourceText.Utf8(s.Value).Select(b => (long)b).ToList();
+        if (values.Count != a.Count)
+        {
+            int bytes = Utf8Length(s.Value);
+            string sizes = CodePoints(s.Value) is { } cps
+                ? $"{bytes} byte{(bytes == 1 ? "" : "s")} in UTF-8 and {cps.Count} character{(cps.Count == 1 ? "" : "s")}"
+                : $"{bytes} byte{(bytes == 1 ? "" : "s")} (a \\x byte above 7F is no character)";
+            throw new CompileError(s.Pos, $"{a} holds {a.Count} {(chars ? "Char" : "Byte")}{(a.Count == 1 ? "" : "s")}, and this string is {sizes}");
+        }
+        int bits = ((IntType)a.Elem).Bits;
+        return "[" + string.Join(", ", values.Select(v => $"{a.Elem.Llvm} {SignedForm(v, bits)}")) + "]";
+    }
+
     /// A PointedSlice known when the program is linked: a string literal's bytes, or another PointedSlice preset or global. Null for
     /// anything else, which then goes in as a record literal.
     private string? SpanInitializer(Expr e, DType span, TypeEnv env)
@@ -2328,6 +2404,12 @@ public sealed partial class Compiler
                 throw new CompileError(e.Pos, $"a string literal is a @[Byte], and this is a {span}");
             return $"{{ ptr {StringGlobal(s.Value)}, {Count.Llvm} {Utf8Length(s.Value)} }}";
         }
+        // A preset Items in read-only data, viewed: its address and its count.
+        if (e is PresetRef { Owner: null } named && IsCoreSpan(span, out var viewedElem)
+            && FindPreset("", named.Name, env.File, named.Pos, named.Path) is { IsStorage: false } valuePreset
+            && ResolveType(valuePreset.Type, new TypeEnv(valuePreset.File)) is ArrayType { IsSlots: false } items
+            && items.Elem.Equals(viewedElem))
+            return $"{{ ptr {PresetStorageGlobal(valuePreset, items, new TypeEnv(valuePreset.File))}, {Count.Llvm} {items.Count} }}";
         if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)
         {
             if (target.AnnotationNamed("threadlocal") is not null)
@@ -2355,6 +2437,12 @@ public sealed partial class Compiler
     private string PointerInitializer(Expr e, DType t, TypeEnv env)
     {
         if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
+        // A preset in read-only data: its address, a view.
+        if (t is PtrType { Pointee: { } viewed } && e is PresetRef { Owner: null } named
+            && FindPreset("", named.Name, env.File, named.Pos, named.Path) is { IsStorage: false } valuePreset
+            && ResolveType(valuePreset.Type, new TypeEnv(valuePreset.File)) is var valueType && PresetInMemory(valueType)
+            && valueType.Equals(viewed))
+            return PresetStorageGlobal(valuePreset, valueType, new TypeEnv(valuePreset.File));
         if (t is PtrType && e is PresetRef { Owner: null } r
             && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { } target
             && target is { IsStorage: true, IsSpan: false })
