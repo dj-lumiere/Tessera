@@ -2033,8 +2033,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// The one line after `=>` of a statement arm: a leave, a call, or (the old form) `continue` for "go on after the
-    /// when", which is an arm with nothing in it, and a block's name, which becomes a jump.
+    /// The one line after `=>` of a statement arm: a leave, a call, a fill of a place that is already there, or (the
+    /// old form) `continue` for "go on after the when", which is an arm with nothing in it, and a block's name, which
+    /// becomes a jump.
     private Stmt? ParseArmStmt(int col)
     {
         var pos = Cur.Pos;
@@ -2058,8 +2059,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (RecoveryNext() && Cur.Text == "try") return new ExprStmt(ParseUnary(), pos);
         var call = ParsePostfix();
+        // `is None => me.next <- Node.construct(v) from HEAP`: a fill of a place that is already there, like a call.
+        if (Accept(TokenKind.LeftArrow))
+            return new FillStmt(call, AtManager(ParseExpr()), pos);
         if (call is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
-            throw new CompileError(pos, "the line of an arm is a call, a return, a jump, a break, or a continue");
+            throw new CompileError(pos, "the line of an arm is a call, a fill (place <- value from manager), a return, a jump, "
+                + "a break, or a continue: to bind a name, write the arm's lines under it, after =>");
         return new ExprStmt(call, pos);
     }
 

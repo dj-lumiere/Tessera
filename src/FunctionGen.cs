@@ -2018,6 +2018,10 @@ public sealed partial class FunctionGen
                             EvalAny(d.Value);
                         break;
                     }
+                    // A value whose type can't be found (an unknown name, a field its type doesn't have) gets the
+                    // error that says why, from evaluating it, before the build is stopped here.
+                    if (InferQuiet(d.Value) == null)
+                        EvalAny(d.Value);
                     throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }

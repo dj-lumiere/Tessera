@@ -682,8 +682,8 @@ routine start() -> None
 - **`when` as a statement.** `when` alone takes condition arms (`n < 10 => ...`), tested in order, the first that
   holds taken. `when v` takes value arms: constants (`1, 2 =>`, `b'+', b'-' =>`, `Shape.CIRCLE =>`), observations of
   a variant (`is S64 as n =>`, `is None =>`, `is A, is B =>`), `else =>`, and `else as rest =>`. The one line after
-  `=>` is a call, `return`, `break`, `continue`, or `nothing` (go on after the `when`), or the arm takes its lines
-  under it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member
+  `=>` is a call, a fill of a field (`me.next <- Node.construct(v) from HEAP`), `return`, `break`, `continue`, or
+  `nothing` (go on after the `when`), or the arm takes its lines under it (a binding, `x: &T <- ...`, needs them). Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member
   (a flags value has no `when v`: test it with `has` in a condition `when`),
   a variant `when` without `else` observes every branch. There are no range patterns: test ranges with a chained
   comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
