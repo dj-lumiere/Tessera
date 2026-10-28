@@ -2166,15 +2166,6 @@ public sealed partial class FunctionGen
 
     // ── Places ──────────────────────────────────────────────────────────────
 
-    /// The preset in memory a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
-    private PresetRef? PresetArrayRoot(Expr place) => AsStride(AsField(AsIndexed(place))) switch
-    {
-        FieldExpr f => PresetArrayRoot(f.Base),
-        IndexExpr ix => PresetArrayRoot(ix.Base),
-        PresetRef r when ResolvePreset(r) is { IsReadOnly: true } => r,
-        _ => null,
-    };
-
     /// Is `e` a place chain rooted at a pointer: `p.f`, `p[i]`, `p.f[i].g`?
     private bool IsPlaceChain(Expr e) => AsStride(e) switch
     {
@@ -4348,9 +4339,10 @@ public sealed partial class FunctionGen
 
     // ── Consts, choice members, routine values ────────────────────────────────
 
-    /// `InMemory`: a preset value in read-only data, which can also be viewed through its address (PresetRef.AsView).
+    /// `InMemory`: a preset value in read-only data, read in place by the routines on its address. `Viewable`: a preset,
+    /// whose read-only address (PresetRef.AsView) is taken where a `@T` of it goes.
     private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false, bool IsReadOnly = false,
-        bool InMemory = false);
+        bool InMemory = false, bool Viewable = false);
 
     private PresetInfo? ResolvePreset(PresetRef r)
     {
@@ -4437,10 +4429,18 @@ public sealed partial class FunctionGen
             {
                 _c.EnsureTypeDefined(t);
                 return new Val(EmitTmp($"load {t.Llvm}, ptr {_c.PresetStorageGlobal(c, t, env)}"), t);
-            }, IsReadOnly: true, InMemory: true);
+            }, IsReadOnly: true, InMemory: true, Viewable: true);
+        }
+        // A number, a Bool or a choice preset is folded where it is read. Where its address is taken, its value is put
+        // in read-only data once, like every other preset's.
+        if (asView)
+        {
+            var view = new PtrType(t);
+            return new PresetInfo(view, _ => new Val(_c.PresetStorageGlobal(c, t, env), view), IsReadOnly: true);
         }
         // Every other preset is a constant the builder folded (ConstFold.cs), the same at each use.
-        return new PresetInfo(t, _ => new Val(Compiler.ConstLlvm(_c.PresetConst(c, t, self, c.Pos)), t));
+        return new PresetInfo(t, _ => new Val(Compiler.ConstLlvm(_c.PresetConst(c, t, self, c.Pos)), t), IsReadOnly: true,
+            Viewable: true);
     }
 
     private Val EvalPresetRef(PresetRef r, DType expected)
@@ -5155,6 +5155,11 @@ public sealed partial class FunctionGen
             return PlanCall(new NsCallExpr(new TypeRef(counted.Name, [], m.Pos) { Known = counted }, "count", [], [], m.Pos), expected);
         // A preset in read-only data is the receiver of a routine on `@T` through its address (`TABLE.getitem(i)` reads
         // it in place), and of a routine on `T` as the value. Shown, it writes its value.
+        // A number, a Bool or a choice preset's `getview()` is its read-only address.
+        if (m is { Name: "getview", Args.Count: 0, TypeArgs.Count: 0, Receiver: PresetRef { AsView: false } scalar }
+            && ResolvePresetQuiet(scalar) is { Viewable: true, InMemory: false, Type: var scalarType })
+            return PlanMethod(new MethodCallExpr(scalar with { AsView = true }, "to", [new TypeRef(scalarType.Name, [], m.Pos) { Known = new PtrType(scalarType) }],
+                [], m.Pos), expected);
         if (m.Receiver is PresetRef { AsView: false } preset && m.Name is not ("represent_into" or "diagnose_into")
             && ResolvePresetQuiet(preset) is { InMemory: true })
         {
@@ -5523,7 +5528,7 @@ public sealed partial class FunctionGen
                 var param = r.Params[i + firstArgParam].Type;
                 if (args[i] is PresetRef { AsView: false } preset && at is not PtrType
                     && param is { Name: "PointedCell" or "PointedSlice", Path: null, Args: [TypeArgType viewed] }
-                    && ResolvePresetQuiet(preset) is { InMemory: true })
+                    && ResolvePresetQuiet(preset) is { Viewable: true })
                 {
                     if (param.Name == "PointedCell") Unify(viewed.Type, at, env, unbound);
                     else if (at is ArrayType items) Unify(viewed.Type, items.Elem, env, unbound);

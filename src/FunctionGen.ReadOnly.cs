@@ -13,7 +13,7 @@ public sealed partial class FunctionGen
     private Val? PresetViewOf(PresetRef r, DType expected)
     {
         if (r.AsView || expected is not PtrType && !Compiler.IsCoreSpan(expected, out _)) return null;
-        if (ResolvePresetQuiet(r) is not { InMemory: true, Type: var t }) return null;
+        if (ResolvePresetQuiet(r) is not { Viewable: true, Type: var t }) return null;
         var view = r with { AsView = true };
         if (expected is PtrType { Pointee: { } pointee } && pointee.Equals(t)) return EvalPresetRef(view, expected);
         if (Compiler.IsCoreSpan(expected, out var elem) && t is ArrayType { IsSlots: false } items && items.Elem.Equals(elem))
@@ -26,7 +26,7 @@ public sealed partial class FunctionGen
         arg is PresetRef { AsView: false } r
         && (expected is PtrType { Pointee: { } pointee } && pointee.Equals(actual)
             || Compiler.IsCoreSpan(expected, out var elem) && actual is ArrayType { IsSlots: false } items && items.Elem.Equals(elem))
-        && ResolvePresetQuiet(r) is { InMemory: true };
+        && ResolvePresetQuiet(r) is { Viewable: true };
 
     /// `xs: @[S64] = [1, 2, 3]` or `xs: @Items[S64, 3] = [1, 2, 3]`: an array literal viewed where it is written.
     /// Every element a constant puts the literal in read-only data, and the view sees it there. With a variable among
@@ -113,7 +113,16 @@ public sealed partial class FunctionGen
         PresetRef r => Err(pos, $"'{r.Name}' is a preset; its memory is read-only: to change the values, copy them into "
             + $"a place first, copy: &{(ResolvePresetQuiet(r)?.Type is { } t ? (t is PtrType { Pointee: { } held } ? held : t).ToString() : "T")} <- {r.Name}"),
         ValueRef v => Err(pos, $"'{v.Name}' views {origin}, which is read-only data: a view taken with '=' of a literal or "
-            + "a preset only reads. To change the values, copy them into a place first, copy: &Items[T, _] <- [...]"),
+            + $"a preset only reads. To change the values, copy them into a place first, {CopyHint(v)}"),
         _ => Err(pos, $"this writes into {origin}, which is read-only data"),
+    };
+
+    /// The place a read-only view's values are copied into to change them: `copy: &S64 <- v.peek()` for a `@S64`,
+    /// `copy: &Items[S64, _] <- [...]` for a `@[S64]`.
+    private string CopyHint(ValueRef v) => InferQuiet(v) switch
+    {
+        PtrType { Pointee: { } held } => $"copy: &{held} <- {v.Name}.peek()",
+        { } span when Compiler.IsCoreSpan(span, out var elem) => $"copy: &Items[{elem}, _] <- [...]",
+        _ => "copy: &T <- ...",
     };
 }

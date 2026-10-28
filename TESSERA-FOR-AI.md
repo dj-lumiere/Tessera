@@ -546,7 +546,9 @@ routine start() -> None
   value`, of a value type: a number, `Bool`, a choice or flags value, a record, a tuple, an `Items[...]`, a routine
   value. `preset NAME: &T <- value`, `<-`, an address type (`@T`, `@[T]`) and a type that holds an address
   (`Items[@[Byte], 2]`) are build errors that point to `global`, the static memory that has a place and addresses. A
-  number, `Bool` or choice preset is folded where it is used and has no address. Its value may use operators like a
+  number, `Bool` or choice preset is folded where it is read, and where its address is taken (`n: @U64 = N`, a `@U64`
+  parameter, `N.getview()`) its value is put in read-only data: every preset is a read-only place whose name reads as
+  its value. Its value may use operators like a
   body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type argument where a count goes: `Items[Byte,
   (BITS + 7) // 8]` with `needs BITS: U64`. An `Items`, record, tuple or routine-value preset is put in read-only data:
   `preset TABLE: Items[U32, _] = [...]`, `preset GREETING: Items[Byte, _] = "hello"`, `preset ORIGIN: Point = (x: 3, y:
