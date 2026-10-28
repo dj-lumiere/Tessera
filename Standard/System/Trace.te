@@ -57,6 +57,16 @@ record TraceFrame
     line: U32
     column: U32
 
+### The frames a walk of the trace copies, and where they go: frames `skip` up to `skip + want`, counting from the
+### innermost, into `out`.
+record TraceCopy
+    ### The frames the walk passes before copying.
+    skip: U64
+    ### The frames it copies.
+    want: U64
+    ### Where they go, or hollow to copy none.
+    out: @TraceFrame
+
 ### A thread's trace: its innermost frames, a ring indexed by depth modulo TRACE_CAPACITY, and the number of frames it
 ### is in.
 secret record TraceStack
@@ -246,8 +256,9 @@ routine failure_note(previous: U32) -> U32
     entry.previous.poke(previous)
     entry.depth.poke(depth)
 
+    frames: @TraceFrame = entry.frames.getview().to[@TraceFrame]()
     each back in 0 til depth.min(FAILURE_FRAMES).min(TRACE_CAPACITY)
-        entry.frames.getview().to[@TraceFrame]().stride(back).poke(trace_frame(back))
+        frames.stride(back).poke(trace_frame(back))
     then
         return seq
 
@@ -280,8 +291,8 @@ routine failure_note(previous: U32) -> U32
     slot: U64 = table.next.peek()
     entry: @FailureTrace = table.entries.getview().to[@FailureTrace]().stride(slot)
     kept: U64 = FAILURE_FRAMES.min(TRACE_CAPACITY)
-    depth: U64 = trace_walk(start: frame_address(), fault_pc: .hollow(), skip: 0, want: kept,
-        out: entry.frames.getview().to[@TraceFrame](), early: true)
+    copy: TraceCopy = (skip: 0, want: kept, out: entry.frames.getview().to[@TraceFrame]())
+    depth: U64 = trace_walk(start: frame_address(), fault_pc: .hollow(), copy, early: true)
 
     table.next.poke((slot + 1) % FAILURE_TRACES)
     entry.seq.poke(seq)
@@ -336,8 +347,9 @@ needs TWriter: typename, Writer[TWriter]
             break
         entry3: @FailureTrace = entry2
 
+        frames: @TraceFrame = entry3.frames.getview().to[@TraceFrame]()
         each back in 0 til entry3.depth.peek().min(FAILURE_FRAMES).min(TRACE_CAPACITY)
-            at: TraceFrame = entry3.frames.getview().to[@TraceFrame]().stride(back).peek()
+            at: TraceFrame = frames.stride(back).peek()
             name: @[Byte] = at.name.getview()
             file: @[Byte] = at.file.getview()
             out.write("\n  {back}: at {name} ({file}:{at.line}")
@@ -481,8 +493,8 @@ routine fault_pc() -> Addr
 @noinline
 @trace("stack")
 routine trace_depth() -> U64
-    return trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), skip: 0, want: 0,
-        out: .hollow(), early: false)
+    copy: TraceCopy = (skip: 0, want: 0, out: .hollow())
+    return trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), copy, early: false)
 
 ### A frame of the running flow's trace, counting from the innermost: 0 is the routine that crashed, or that called
 ### the standard library routine that did, 1 its caller, and so on. Never inlined, like trace_depth.
@@ -493,8 +505,8 @@ routine trace_depth() -> U64
 routine trace_frame(back: U64) -> TraceFrame
     frame: &TraceFrame <- (name: "", file: "", line: 0, column: 0)
 
-    trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), skip: back, want: 1, out: frame,
-        early: true)
+    copy: TraceCopy = (skip: back, want: 1, out: frame)
+    trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), copy, early: true)
     return frame.load()
 
 ### Where a walk of this flow starts: the frame a fault interrupted, or the caller's own.
@@ -578,25 +590,21 @@ secret routine last_at_or_below(base: U64, count: U64, stride: U64, value: U64) 
             else => low - 1
 
 ### Walks the running flow's frames from the frame record at `start`, innermost first (in a build that reads its
-### trace from the stack: the table must be there), and copies frames `skip` up to
-### `skip + want` into `out`. A fault's interrupted instruction `fault_pc` (hollow for none) gives the innermost
+### trace from the stack: the table must be there), and copies the frames `copy` names. A fault's interrupted instruction `fault_pc` (hollow for none) gives the innermost
 ### frame, the traced routine it is in, with no line. The innermost frame of a shared stop takes the crash's place.
 ### :param start: The first frame record.
 ### :param fault_pc: The instruction a fault interrupted, or hollow.
-### :param skip: The frames to pass before copying.
-### :param want: The frames to copy.
-### :param out: Where they go, or hollow to copy none.
+### :param copy: The frames to copy and where they go.
 ### :param early: True to stop once the frames wanted are copied: the count is then not the whole depth.
 ### :returns: The number of frames walked: the trace's depth when `early` is false.
-routine trace_walk(start: Addr, fault_pc: Addr, skip: U64, want: U64, out: @TraceFrame,
-    early: Bool) -> U64
+routine trace_walk(start: Addr, fault_pc: Addr, copy: TraceCopy, early: Bool) -> U64
     total: &U64 <- 0
-    done: U64 = skip + want
+    done: U64 = copy.skip + copy.want
 
     if fault_pc.is_not_hollow()
         routine_frame: S64 = trace_routine_at(ptrtoint[Addr, U64](fault_pc))
         if routine_frame >= 0
-            put_frame(index: total.load(), frame: routine_frame.to[U64](), skip, want, out)
+            put_frame(index: total.load(), frame: routine_frame.to[U64](), copy)
             (total.load() + 1).store_into(total)
     loop with fp: U64 = ptrtoint[Addr, U64](start)
         if fp == 0 or (fp & 7) != 0 or (early and total.load() >= done)
@@ -611,29 +619,39 @@ routine trace_walk(start: Addr, fault_pc: Addr, skip: U64, want: U64, out: @Trac
             first: U64 = inttoptr[U64, @U32](row).peek().to[U64]()
             count: U64 = inttoptr[U64, @U32](row + 4).peek().to[U64]()
             each k in 0 til count
-                put_frame(index: total.load(), frame: first + k, skip, want, out)
+                put_frame(index: total.load(), frame: first + k, copy)
                 (total.load() + 1).store_into(total)
         if next <= fp
             break
         continue with fp: next
     return total.load()
 
+### Where the crash being reported on this thread happened, hollow until Crash.raise notes it.
+### :returns: The address of its SourceLocation, or hollow.
+@target(os: not "none")
+secret routine crash_place() -> Addr
+    return CRASH_PLACE.peek()
+
+### Hollow: a target without an operating system keeps no crash place, so a shared stop's frame keeps no column.
+### :returns: Hollow.
+@target(os: "none")
+secret routine crash_place() -> Addr
+    return .hollow()
+
 ### Copies frame `frame` of TRACE_FRAMES into `out` when it is frame `index` of the walk and among the ones wanted. The
 ### innermost frame of a shared stop takes the line and column of the crash being reported.
 ### :param index: Its place in the walk, 0 for the innermost.
 ### :param frame: Its index in TRACE_FRAMES.
-### :param skip: The frames the walk passes before copying.
-### :param want: The frames it copies.
-### :param out: Where they go, or hollow.
-secret routine put_frame(index: U64, frame: U64, skip: U64, want: U64, out: @TraceFrame) -> None
-    if out.is_hollow() or index < skip or index >= skip + want
+### :param copy: The frames the walk copies and where they go.
+secret routine put_frame(index: U64, frame: U64, copy: TraceCopy) -> None
+    if copy.out.is_hollow() or index < copy.skip or index >= copy.skip + copy.want
         return
     at: TraceFrame = TRACE_FRAMES.to[@TraceFrame]().stride(frame).peek()
-    target: @TraceFrame = out.stride(index - skip)
+    target: @TraceFrame = copy.out.stride(index - copy.skip)
     target.poke(at)
     if not (at.column == PLACE_COLUMN)
         return
-    place: Addr = CRASH_PLACE.peek()
+    place: Addr = crash_place()
     if place.is_hollow() or index != 0
         target.column.poke(0)
         return

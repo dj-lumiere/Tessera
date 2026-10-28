@@ -1,0 +1,54 @@
+# wait_all_finished on the lists of fiber tickets: a List[Fiber[U64]] on the thread that drives FIBERS runs the fibers
+# until their work is done, and a List[PassableFiber[None]] waits until the pool's threads have run every piece of
+# work. The results stay in the tickets until give_back_all ends them.
+
+import Collections
+import Fiber
+import Hosted
+
+### A total that every piece of work adds to.
+record Tally
+    total: Unbroken[U64]
+
+### Adds 1 to the total after a short nap.
+### :param tally: The total, shared by every thread.
+routine add_one(tally: @Tally) -> None
+    waitfor(5ms)
+    tally.total.fetch_add(1)
+    return
+
+### Adds 1 to the total after a short nap, and gives the step it was handed.
+### :param tally: The total, shared by every thread.
+### :param step: The value given back.
+### :returns: `step`.
+routine add_one_and_give(tally: @Tally, step: U64) -> U64
+    waitfor(2ms)
+    tally.total.fetch_add(1)
+    return step
+
+routine start() -> None
+    tally: &Tally <- Tally(total: .construct(value: 0))
+    adding: Work[None] = add_one.to[Work](tally: tally)
+    fibers: &List[Fiber[U64]] <- .construct(manager: HEAP)
+    each i in 1 to 3 with step: U64 = 1
+        f: Fiber[U64] <- FIBERS.get_fiber[U64]()
+        work: Work[U64] = add_one_and_give.to[Work](tally: tally, step: step)
+        f.put_work(work)
+        fibers.add_last(steal f)
+        continue with step: step + 1
+    fibers.wait_all_finished()
+    Console.show("fibers: total {tally.total.peek()}, finished {fibers.getslot(0).check_finished()}")
+    fibers.give_back_all()
+    drop fibers
+
+    pool: &ThreadPoolManager <- .construct(threads: 2)
+    passing: &List[PassableFiber[None]] <- .construct(manager: HEAP)
+    each i in 1 to 3
+        j: PassableFiber[None] <- pool.get_passable_fiber[None]()
+        j.put_work(adding)
+        passing.add_last(steal j)
+    passing.wait_all_finished()
+    Console.show("passable fibers: total {tally.total.peek()}")
+    passing.give_back_all()
+    drop passing
+    return
