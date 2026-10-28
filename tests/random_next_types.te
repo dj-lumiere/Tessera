@@ -1,0 +1,86 @@
+# next[T]() for every type it takes, at seed 2026: the first three draws, then the smallest and largest of 20000 more
+# (an integer type reaches both ends of its range, a float stays in [0, 1)), and how 20000 draws of U8, B32, and B64
+# spread over eight equal buckets. RazorForge's random_next_types_api fixture prints the same lines for the same seed.
+# OsEntropy draws the same types from the operating system.
+
+import Hosted
+import Random
+
+preset SEED: U64 = 2026
+preset DRAWS: U64 = 20000
+
+### Writes the first three draws of a T from a fresh generator and the extremes of 20000 more.
+### :typeparam T: The type drawn.
+### :param name: The type's name for the line.
+routine extremes[T](name: @[Byte]) -> None
+needs T: typename, Comparable[T], Representable[T]
+    rng: &Xoshiro256 <- .from_seed(SEED)
+    a: T = rng.next[T]()
+    b: T = rng.next[T]()
+    c: T = rng.next[T]()
+    low: &T <- a
+    high: &T <- a
+
+    each i in 0 til DRAWS
+        v: T = rng.next[T]()
+        if v < low.load()
+            v.poke_into(low)
+        if v > high.load()
+            v.poke_into(high)
+    Console.show("{name}: {a} {b} {c}, min {low.load()}, max {high.load()}")
+    return
+
+### Writes eight counts, one per bucket.
+### :param name: What the buckets split.
+### :param counts: The counts.
+routine show_counts(name: @[Byte], counts: @Items[U64, 8]) -> None
+    Console.show("{name}:", end: "")
+
+    each k: U64 in 0 til 8
+        Console.show(" {counts[k]}", end: "")
+    Console.show("")
+    return
+
+### Writes how many of 20000 U8, B32, and B64 draws fall in each eighth of their range.
+routine eighths() -> None
+    bytes: &Xoshiro256 <- .from_seed(SEED)
+    singles: &Xoshiro256 <- .from_seed(SEED)
+    doubles: &Xoshiro256 <- .from_seed(SEED)
+    byte_counts: &Items[U64, 8] <- [0, 0, 0, 0, 0, 0, 0, 0]
+    single_counts: &Items[U64, 8] <- [0, 0, 0, 0, 0, 0, 0, 0]
+    double_counts: &Items[U64, 8] <- [0, 0, 0, 0, 0, 0, 0, 0]
+
+    each i in 0 til DRAWS
+        b: U64 = (bytes.next[U8]() >> 5).to[U64]()
+        (byte_counts[b] + 1).poke_into(byte_counts.getslot(b))
+        s: U64 = (singles.next[B32]() * 8).floor().to[U64]()
+        (single_counts[s] + 1).poke_into(single_counts.getslot(s))
+        d: U64 = (doubles.next[B64]() * 8).floor().to[U64]()
+        (double_counts[d] + 1).poke_into(double_counts.getslot(d))
+    show_counts(name: "U8 eighths", counts: byte_counts)
+    show_counts(name: "B32 eighths", counts: single_counts)
+    show_counts(name: "B64 eighths", counts: double_counts)
+    return
+
+routine start() -> None
+    extremes[U8](name: "U8")
+    extremes[U16](name: "U16")
+    extremes[U32](name: "U32")
+    extremes[U64](name: "U64")
+    extremes[U128](name: "U128")
+    extremes[S8](name: "S8")
+    extremes[S16](name: "S16")
+    extremes[S32](name: "S32")
+    extremes[S64](name: "S64")
+    extremes[S128](name: "S128")
+    extremes[B32](name: "B32")
+    extremes[B64](name: "B64")
+    eighths()
+    single: B32 = OsEntropy.next[B32]()
+    double: B64 = OsEntropy.next[B64]()
+    in_unit: Bool = single >= 0 and single < 1 and double >= 0 and double < 1
+    Console.show("Entropy floats in [0, 1): {in_unit}")
+    first: U128 = OsEntropy.next[U128]()
+    second: U128 = OsEntropy.next[U128]()
+    Console.show("Entropy U128 draws differ: {first != second}")
+    return

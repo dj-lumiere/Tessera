@@ -12,8 +12,9 @@
 #   Xoshiro256.from_entropy()     256 secret random bits from the source the hash key comes from (HashKey.te): the
 #                                 OS's random source, a CPU random number instruction, or the program's own
 #
-# Draws: next() (U64), next_u32() (the high 32 bits of a draw), next_b64() ([0, 1) from the top 53 bits), and
-# below(bound) (an unbiased U64 in [0, bound)). This file is also the body RazorForge's and Suflae's `Random` call
+# Draws: next[T]() for an integer T (U8 to U128, S8 to S128) is that type over its full range (the high bits of a draw,
+# two draws for 128 bits, the first the high half), and for B32 / B64 a value in [0, 1) (the top 24 / 53 bits of a
+# draw). below(bound) is an unbiased U64 in [0, bound). This file is also the body RazorForge's and Suflae's `Random` call
 # through Ingrid, so the streams of a seed are part of its contract: changing a formula here changes theirs.
 
 module Random
@@ -22,6 +23,8 @@ module Random
 secret preset GOLDEN_GAMMA: U64 = 0x9E3779B97F4A7C15
 ### 2^-53, the weight of the lowest of the 53 bits a [0, 1) draw keeps.
 secret preset UNIT_STEP: B64 = B64.from_bits(0x3CA0000000000000)
+### 2^-24, the weight of the lowest of the 24 bits a B32 [0, 1) draw keeps.
+secret preset UNIT_STEP_B32: B32 = B32.from_bits(0x33800000)
 
 ### The state of a xoshiro256** generator: four 64-bit words, never all zero.
 record Xoshiro256
@@ -50,6 +53,15 @@ routine splitmix64(x: U64) -> U64
 routine unit_b64(bits: U64) -> B64
     top: B64 = (bits >> 11).to[B64]()
     return top * UNIT_STEP
+
+### The float in [0, 1) that 64 random bits stand for: their top 24 bits times 2^-24, exact, so every multiple of 2^-24
+### below 1 is equally likely.
+### :param bits: The random bits.
+### :returns: A value in [0, 1).
+@inline
+routine unit_b32(bits: U64) -> B32
+    top: B32 = (bits >> 40).to[B32]()
+    return top * UNIT_STEP_B32
 
 ### A generator from its four state words, as the reference code starts one.
 ### :param s0: State word 0.
@@ -111,25 +123,81 @@ routine Xoshiro256.step() -> Me
     s0: U64 = me.s0 ^ s3
     return (s0: s0, s1: s1, s2: s2 ^ t, s3: s3.rotl(45))
 
-### The next 64 random bits, stepping the generator.
+### The next 64 random bits, stepping the generator: `rng.next[U64]()`.
 ### :returns: A uniform U64.
 @inline
-routine @Xoshiro256.next() -> U64
+routine @Xoshiro256.next[U64]() -> U64
     state: Me = me.peek()
     state.step().poke_into(me)
     return state.output()
 
-### The next 32 random bits: the high half of a 64-bit draw.
+### The next S64 over its full range: the bits of one draw.
+### :returns: A uniform S64.
+@inline
+routine @Xoshiro256.next[S64]() -> S64
+    return me.next[U64]().to_wrap[S64]()
+
+### The next U8 over its full range: the high 8 bits of a draw.
+### :returns: A uniform U8.
+@inline
+routine @Xoshiro256.next[U8]() -> U8
+    return (me.next[U64]() >> 56).to_wrap[U8]()
+
+### The next U16 over its full range: the high 16 bits of a draw.
+### :returns: A uniform U16.
+@inline
+routine @Xoshiro256.next[U16]() -> U16
+    return (me.next[U64]() >> 48).to_wrap[U16]()
+
+### The next U32 over its full range: the high 32 bits of a draw.
 ### :returns: A uniform U32.
 @inline
-routine @Xoshiro256.next_u32() -> U32
-    return (me.next() >> 32).to[U32]()
+routine @Xoshiro256.next[U32]() -> U32
+    return (me.next[U64]() >> 32).to_wrap[U32]()
+
+### The next S8 over its full range: the high 8 bits of a draw.
+### :returns: A uniform S8.
+@inline
+routine @Xoshiro256.next[S8]() -> S8
+    return (me.next[U64]() >> 56).to_wrap[S8]()
+
+### The next S16 over its full range: the high 16 bits of a draw.
+### :returns: A uniform S16.
+@inline
+routine @Xoshiro256.next[S16]() -> S16
+    return (me.next[U64]() >> 48).to_wrap[S16]()
+
+### The next S32 over its full range: the high 32 bits of a draw.
+### :returns: A uniform S32.
+@inline
+routine @Xoshiro256.next[S32]() -> S32
+    return (me.next[U64]() >> 32).to_wrap[S32]()
+
+### The next U128 over its full range: two draws, the first the high 64 bits.
+### :returns: A uniform U128.
+@inline
+routine @Xoshiro256.next[U128]() -> U128
+    high: U64 = me.next[U64]()
+    low: U64 = me.next[U64]()
+    return (high.to[U128]() << 64) | low.to[U128]()
+
+### The next S128 over its full range: the bits of `next[U128]()`.
+### :returns: A uniform S128.
+@inline
+routine @Xoshiro256.next[S128]() -> S128
+    return me.next[U128]().to_wrap[S128]()
 
 ### The next double in [0, 1), from the top 53 bits of a draw (`unit_b64`).
 ### :returns: A uniform B64 in [0, 1).
 @inline
-routine @Xoshiro256.next_b64() -> B64
-    return unit_b64(me.next())
+routine @Xoshiro256.next[B64]() -> B64
+    return unit_b64(me.next[U64]())
+
+### The next float in [0, 1), from the top 24 bits of a draw (`unit_b32`).
+### :returns: A uniform B32 in [0, 1).
+@inline
+routine @Xoshiro256.next[B32]() -> B32
+    return unit_b32(me.next[U64]())
 
 ### A uniform value in [0, bound), without the bias of a draw modulo `bound`: Lemire's multiply-and-reject (2019). The
 ### high 64 bits of draw times bound are the value, and a draw whose low 64 bits fall below 2^64 mod bound is drawn
@@ -142,7 +210,7 @@ routine @Xoshiro256.below(bound: U64) -> U64
     if bound == 0
         throw UnacceptedValueError(description: "The value is not one the routine accepts.")
     loop
-        product2: U128 = me.next().mul_wide(bound)
+        product2: U128 = me.next[U64]().mul_wide(bound)
         low2: U64 = product2.to_wrap[U64]()
         if low2 < bound
             threshold: U64 = U64.sub_wrap(0, bound) % bound
