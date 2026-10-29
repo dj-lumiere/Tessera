@@ -443,6 +443,9 @@ routine start() -> None
     A user routine that grows a list it was handed (`items: @List[T]`) carries `@reshaping(items)`, one on `me`
     carries `@reshaping`. A name that isn't a parameter, or a bare `@reshaping` on a routine without `me`, is an
     error.
+  - A `for` over an emitter (`for x in xs.emitter()`, or `for x in e` with `e <- xs.emitter()`) views `xs` until
+    the loop ends, so a `@reshaping` call on `xs` in its body is an error: `'List[T].add_last' may move the memory of
+    'xs', which the for loop on line N walks`. Collect the changes and make them after the loop, or walk by position.
   - In every routine, a view (an address or a span) of memory used after a `@reshaping` call
     that may move it is an error: `'first' is a view of 'xs', and 'grow' on line N may have moved that memory`. Keep
     a position (a `U64` index) and take the view again after the call:

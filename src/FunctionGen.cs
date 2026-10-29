@@ -92,6 +92,9 @@ public sealed partial class FunctionGen
         public LBlock Then { get; } = then;
         public string ThenRegion { get; } = thenRegion;
         public bool HasWith { get; } = hasWith;
+        /// The name whose memory a `for` over an emitter walks (`xs` in `for x in xs.emitter()`), and the loop's line:
+        /// the body may not move that memory.
+        public (string Root, Pos Pos)? Walks { get; set; }
         /// Whether a `break` was written: `then` is reached even when the loop never ends on its own.
         public bool Breaks { get; set; }
         /// The carried values, in the order of their phis: name, type, and the `with` names a continue must give.
@@ -764,6 +767,10 @@ public sealed partial class FunctionGen
     /// the same thing under another name (`b = a`, a conversion).
     private readonly HashSet<string> _partViews = [];
 
+    /// The emitters of this routine (by name) and the name whose memory each walks: `e` in `e: &ListEmitter[T] <- xs.emitter()`
+    /// walks `xs`.
+    private readonly Dictionary<string, string> _emitterWalks = [];
+
     /// Whether `e` reaches into a part of what it is taken from, rather than naming that thing again.
     private static bool TakesPart(Expr e) =>
         e is not ValueRef && e is not MethodCallExpr { Name: "to" };
@@ -837,6 +844,11 @@ public sealed partial class FunctionGen
                 if (_partViews.Contains(named)) inner = named;
             }
             root = ResolveRoot(root);
+            // Rule 4 for the emitter a `for` holds: it views the memory it walks until the loop ends.
+            if (_loops.FirstOrDefault(f => f.Walks?.Root == root)?.Walks is { } walk)
+                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{root}', which the for loop on line "
+                    + $"{walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the changes and make them "
+                    + $"after the loop, or walk by position (for i in 0 til {root}.count())");
             Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos) { Inner = inner });
             if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
                 throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
@@ -1901,6 +1913,10 @@ public sealed partial class FunctionGen
     {
         _lineSource = s.Source;
         At(s.Source ?? s.Pos);
+        // `e: &ListEmitter[T] <- xs.emitter()` (or the place a `for` over `xs.emitter()` holds it in) walks `xs`.
+        if (s is BindStmt { Value: MethodCallExpr { Name: "emitter", Args.Count: 0 } emitterCall } madeBind &&
+            RootName(emitterCall.Receiver) is { } walked)
+            _emitterWalks[madeBind.Name] = ResolveRoot(walked);
         switch (s)
         {
             case BindStmt { Borrows: true } borrow:
@@ -6885,6 +6901,8 @@ public sealed partial class FunctionGen
             if (MemOn && ManagedValue(itemType!)) _memTracked.Add(l.Var!);
         }
         frame.BoxDepth = _boxScopes.Count;
+        if (l is { Kind: LoopKind.For, Source: ValueRef walkedEmitter } && _emitterWalks.TryGetValue(walkedEmitter.Name, out var walkedRoot))
+            frame.Walks = (walkedRoot, l.Pos);
         _loops.Push(frame);
         try
         {
