@@ -2498,7 +2498,14 @@ public sealed partial class FunctionGen
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
-                return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
+            {
+                var baseType = Infer(f.Base);
+                if (baseType is RecordType s) return FieldOf(s, f.Name, f.Pos).Type;
+                // A value with a type of its own that has no fields (a variant, a choice, a number) says so here, where
+                // the author wrote the read, rather than through whatever the read goes into.
+                if (baseType is not null and not PtrType) throw Err(f.Pos, $"{baseType} has no fields");
+                return null;
+            }
             case PresetRef r:
                 return InferPresetRef(r);
             case WorkExpr work:
@@ -3815,6 +3822,7 @@ public sealed partial class FunctionGen
     /// A memory cell shows itself (MemoryCellWrite), never the value it holds.
     private void WriteShown(Expr writer, Expr shown, string shower)
     {
+        UntypedLiteral(shown, shown.Pos, $"{shower}(...)");
         if (InferQuiet(shown) is { } t and not PtrType && ManagedMemory(t) is null && !IsPointedSlice(t)
             && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
             throw Err(shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
@@ -3834,6 +3842,17 @@ public sealed partial class FunctionGen
         {
             (_shownCell, _templateHole) = outer;
         }
+    }
+
+    /// A number literal written as text (a template hole, `Console.show(7)`) has nothing that gives it a type, so it
+    /// is a build error at the literal that says how to give it one.
+    private void UntypedLiteral(Expr value, Pos at, string where)
+    {
+        var literal = value is UnaryExpr { Op: "-", Operand: var operand } ? operand : value;
+        if (literal is not (IntLit or FloatLit) || Infer(value) is not null) return;
+        string type = literal is FloatLit ? "B64" : "S64";
+        throw Err(at, $"nothing says this literal's type in {where}; bind it with its type first "
+            + $"(x: {type} = {new Printer().Expr(value)}) and write that name, or write the number as text");
     }
 
     /// Whether a preset reference names a global or a preset in memory (`global COUNT: &U64`, `preset NAMES: &[U8] <- ...`):
@@ -3973,6 +3992,7 @@ public sealed partial class FunctionGen
             if (value is PresetRef { Owner: null, Path: null } unknown && ResolvePreset(unknown) is null
                 && _c.FindFree(unknown.Name, _env.File, at, null) is null)
                 throw Err(at, ScriptBinding(unknown.Name) ?? $"unknown name '{unknown.Name}'");
+            UntypedLiteral(value, at, $"{{{source.Trim()}}}");
             Flush();
             _templateHole = source.Trim();
             try
