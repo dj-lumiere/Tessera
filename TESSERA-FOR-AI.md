@@ -561,10 +561,11 @@ routine start() -> None
   the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node
   <- .hollow()`). A global's name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`,
   `K.getitem(i)`. Only a folded preset is a buildtime constant (`Items[S64, N]` with `preset N: U64 = 4`).
-  A global that holds an entity (`global G: &Noisy <- .hollow()`) is filled with `G.poke(v)`. In the routine that
-  poked it, a second poke before the value is taken out (`steal G as old inject new`) or ended (`drop G`) is a build
-  error ("'G' holds a Noisy (from line N) that hasn't ended, and this overwrites it"), as for a STACK place. A poke in
-  another routine isn't followed, and the program's end doesn't run the entity's `destruct`.
+  A global that holds an entity (`global G: &Noisy <- .hollow()`) is filled with `G.poke(v)`. A poke into an entity
+  slot (a global like that, or a STACK place `x: &Noisy`) ends what the slot held itself: once `v` is made, a slot that
+  isn't hollow (all zero, checked at run time, since any routine may fill a global) has its value's `destruct` run
+  first. `drop G` and `steal x as old` leave the slot hollow, and `steal G as old inject new` hands the old value to
+  `old`, so nothing is ended twice. The program's end doesn't run a global entity's `destruct`.
 - One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
   differ are a build error ("'abs' is declared at f.te:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
   routine has one signature"). Declare it once, with the types its C declaration has.

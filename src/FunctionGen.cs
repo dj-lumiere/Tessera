@@ -198,7 +198,6 @@ public sealed partial class FunctionGen
     private string? MemName(Expr e) => e switch
     {
         ValueRef r when _memTracked.Contains(r.Name) => r.Name,
-        PresetRef { Owner: null, Path: null } g when _memTracked.Contains(g.Name) && EntityGlobal(g) => g.Name,
         FieldExpr f when PlaceKey(f) is { } key && _memTracked.Contains(key) => key,
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: ValueRef r } when _memTracked.Contains(r.Name) => r.Name,
         _ => null,
@@ -412,6 +411,12 @@ public sealed partial class FunctionGen
         var v = t is PtrType && (Tracked(t) && !PointerOfTypeParam(r.Name) || _claimedSlots.Contains(r.Name))
             ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
             : Eval(r, expected);
+        // An entity slot is left hollow, so a later poke into it finds nothing to end.
+        if (!_cur.Terminated && EntitySlot(r) && _values.TryGetValue(r.Name, out var slot) && slot.Type is PtrType { Pointee: { } moved })
+        {
+            _c.EnsureTypeDefined(moved);
+            Line($"call void @llvm.memset.p0.{_c.Count.Llvm}(ptr {slot.Op}, i8 0, {_c.Count.Llvm} {_c.SizeAlign(moved, s.Pos).Size}, i1 false)");
+        }
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
         NoteCallerHeldEnd(r, $"steal {r.Name}", s.Pos);
         StackPlaceEnded(r);
@@ -584,13 +589,14 @@ public sealed partial class FunctionGen
             new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
         if (_cur.Terminated) return;
         // For the memory rules the place is taken out and filled again on this line: the poke below is that refill.
-        // A global that holds an entity is followed by its name once a poke here filled it.
-        if (MemOn && (PlaceKey(st.From) ?? (st.From is PresetRef ? MemName(st.From) : null)) is { } key)
+        if (MemOn && PlaceKey(st.From) is { } key)
         {
             Mem(new MemoryRules.Acquire(key, "emptied", st.Pos) { Entity = held.Name });
             Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
         }
-        EvalAny(new MethodCallExpr(st.From, "poke", [], [new StealExpr(new ValueRef(fresh, st.Inject.Pos), st.Inject.Pos)], st.Pos));
+        _injecting = true;
+        try { EvalAny(new MethodCallExpr(st.From, "poke", [], [new StealExpr(new ValueRef(fresh, st.Inject.Pos), st.Inject.Pos)], st.Pos)); }
+        finally { _injecting = false; }
     }
 
     /// Why the builder can't follow `place` once steal leaves it hollow, or null when it can: a name, a field chain from
@@ -848,9 +854,54 @@ public sealed partial class FunctionGen
         try
         {
             return _c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is { IsGlobal: true, IsSpan: false }
-                && ResolvePreset(r) is { Type: PtrType { Pointee: var held } } && held is not PtrType && Entities.Holds(held);
+                && ResolvePreset(r) is { Type: PtrType { Pointee: var held } } && held is not PtrType && Entities.Holds(held)
+                && ManagedMemory(held) is null;
         }
         catch (CompileError) { return false; }
+    }
+
+    /// Set while `steal place as old inject new` puts `new` in: the old value went to `old`, so the poke ends nothing.
+    private bool _injecting;
+
+    /// Whether a call is a `poke` into an entity slot: a STACK place of this routine (`x: &Noisy`) or a global that holds
+    /// an entity (`global G: &Noisy`), not the value a `<-` line fills its place with first.
+    private bool EntitySlotPoke(CallPlan plan, Instance sig) =>
+        sig.Decl is { Name: "poke" or "poke_volatile", IsLibrary: true } && plan.Args.Count == 1
+        && !ReferenceEquals(plan.Args[0], _claimContents) && !_injecting
+        && sig.Params[0] is PtrType { Pointee: { } held } && held is not PtrType && Entities.Holds(held)
+        && plan.Receiver is { } slot && EntitySlot(slot);
+
+    /// Whether `e` names an entity slot a poke ends the value of: a STACK place of this routine or a global that holds
+    /// an entity.
+    private bool EntitySlot(Expr e) => e switch
+    {
+        ValueRef r => _stackPlaces.ContainsKey(r.Name) && _values.TryGetValue(r.Name, out var v)
+            && v.Type is PtrType { Pointee: { } held } && held is not PtrType && Entities.Holds(held) && ManagedMemory(held) is null,
+        PresetRef g => EntityGlobal(g),
+        _ => false,
+    };
+
+    /// `x.poke(v)` into an entity slot takes care of what the slot held: once `v` is made, a slot that isn't hollow (all
+    /// zero) has its value ended with its destruct first. Checked at run time, since any routine may fill a global.
+    private void ReleaseBeforePoke(CallPlan plan, Instance sig)
+    {
+        if (_cur.Terminated || !EntitySlotPoke(plan, sig)) return;
+        var slot = plan.Receiver!;
+        // The check and the drop are the builder's, not reads the memory rules follow (the slot may be one steal ended).
+        bool muted = _memMuted;
+        _memMuted = true;
+        try
+        {
+            string hollow = EvalAny(new MethodCallExpr(slot, "holds_hollow", [], [], plan.Pos)).Op;
+            var drop = NewLBlock("pokeend");
+            var after = NewLBlock("pokeended");
+            Terminate($"br i1 {hollow}, label %{after.Label}, label %{drop.Label}");
+            _cur = drop;
+            EmitStmtCore(new DropStmt(slot, plan.Pos));
+            Terminate($"br label %{after.Label}");
+            _cur = after;
+        }
+        finally { _memMuted = muted; }
     }
 
     /// A global that holds a BorrowedCell or a BorrowedSlice lives as long as the program: it always holds one value (`.hollow()` to
@@ -1033,20 +1084,6 @@ public sealed partial class FunctionGen
     private void MemCall(CallPlan plan, Instance sig, int offset)
     {
         if (!MemOn) return;
-        // A global that holds an entity (`global G: &Noisy <- .hollow()`) is followed like a slot of this routine from
-        // its first poke here: a second poke before the first value is taken out overwrites it. What it holds when the
-        // routine starts is another routine's business, so the group needn't end before a return.
-        if (sig.Decl.Name is "poke" or "poke_volatile" && plan is { Receiver: PresetRef { Owner: null } global, Args.Count: 1 }
-            && EntityGlobal(global))
-        {
-            string? put = MemName(plan.Args[0]);
-            _memTracked.Add(global.Name);
-            Mem(new MemoryRules.Store(global.Name, put, plan.Pos));
-            if (put is null)
-                Mem(new MemoryRules.Acquire(global.Name, "put in with poke", plan.Pos)
-                    { Entity = (ResolvePreset(global)?.Type as PtrType)?.Pointee?.Name, Field = true });
-            return;
-        }
         string? receiver = plan.Receiver is null ? null : MemName(plan.Receiver);
         // A value put back into a place steal emptied: the place holds something again.
         bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && (receiver is null || _filling)
@@ -1071,13 +1108,9 @@ public sealed partial class FunctionGen
         {
             // A claim's own contents, stored where the claim stands: the claim's binding said what the slot holds.
             if (plan.Args.Count == 1 && ReferenceEquals(plan.Args[0], _claimContents)) return;
-            string? from = plan.Args.Count == 1 ? MemName(plan.Args[0]) : null;
-            Mem(new MemoryRules.Store(receiver, from, plan.Pos));
-            // A new entity put into a slot (`x.poke(Noisy.construct(n: 1))` after `x: &Noisy <- .hollow()`) is held there
-            // from now on, as one the slot was filled with: a second poke before it ends overwrites it.
-            if (from is null && plan.Args is [CallExpr or NsCallExpr or MethodCallExpr or RecordLit] && sig.Params[0] is PtrType { Pointee: var put }
-                && Entities.Holds(put) && InferQuiet(plan.Args[0]) is { } made and not PtrType)
-                Mem(new MemoryRules.Acquire(receiver, "put in with poke", plan.Pos) { Entity = Entities.HeldIn(made)?.Name ?? made.Name });
+            // A poke into an entity slot ends the value it held itself (ReleaseBeforePoke): the old group ends here.
+            if (EntitySlotPoke(plan, sig)) Mem(new MemoryRules.AutoEnd(receiver, plan.Pos));
+            Mem(new MemoryRules.Store(receiver, plan.Args.Count == 1 ? MemName(plan.Args[0]) : null, plan.Pos));
             return;
         }
         // `x.poke_into(slot)` (or `x.store_into(box)`) stores x where slot points: into a tracked slot, or away from this
@@ -2124,6 +2157,14 @@ public sealed partial class FunctionGen
                 {
                     _dropping = null;
                     _givingBack = null;
+                }
+                // An entity slot is left hollow, so a later poke into it finds nothing to end.
+                if (!_cur.Terminated && EntitySlot(d.Value))
+                {
+                    bool muted = _memMuted;
+                    _memMuted = true;
+                    try { EvalAny(new MethodCallExpr(d.Value, "zeroinit", [], [new IntLit(1, d.Pos)], d.Pos)); }
+                    finally { _memMuted = muted; }
                 }
                 StackPlaceEnded(d.Value);
                 break;
@@ -5901,6 +5942,7 @@ public sealed partial class FunctionGen
         // The E of the Optional the routine returns lives in a place of this frame, which the call fills.
         if (sig.HasOptionalPlace) args.Add(new Val(NewSlot(sig.Params[^1] is PtrType { Pointee: { } placeOf } ? placeOf : sig.Ret), sig.Params[^1]));
         CheckOptionalRefill(plan, sig, args, offset);
+        ReleaseBeforePoke(plan, sig);
         MemCall(plan, sig, offset);
         CheckStoreEscape(plan, sig);
         RecordStore(plan, sig);
