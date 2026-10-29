@@ -462,6 +462,9 @@ public sealed partial class Compiler
                 case "arith_shift_right":
                     if (b < 0 || b >= it.Bits) return new ConstVal(it, it.IsSigned && a < 0 ? -1 : 0);
                     return new ConstVal(it, it.IsSigned ? a >> (int)b : Unsigned(a, it.Bits) >> (int)b);
+                case "logical_shift_right":
+                    if (b < 0 || b >= it.Bits) return new ConstVal(it, 0);
+                    return new ConstVal(it, Wrap(Unsigned(a, it.Bits) >> (int)b, it));
                 default:
                     throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
             }
