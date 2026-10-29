@@ -515,8 +515,19 @@ public static class Derive
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} => jump named(\"{prefix}{name}\")\n");
+                // A value no member has (one a bitcast made) writes its number, never a member's name:
+                // `Status(7)`, and diagnosed the source that makes it, `bitcast[U8, Status](7)`.
+                sb.Append("            else => jump unnamed()\n");
                 sb.Append("\n    block named(text: @[Byte])\n");
                 sb.Append("        System/Text/write_str(out, text)\n");
+                sb.Append("        return\n");
+                sb.Append("\n    block unnamed()\n");
+                sb.Append(method == "diagnose_into"
+                    ? $"        System/Text/write_str(out, text: \"bitcast[{u}, {c.Name}](\")\n"
+                    : $"        System/Text/write_str(out, text: \"{c.Name}(\")\n");
+                sb.Append($"        number: {u} = bitcast[Me, {u}](me)\n");
+                sb.Append("        number.represent_into(out)\n");
+                sb.Append("        System/Text/write_str(out, text: \")\")\n");
                 sb.Append("        return\n");
                 break;
             case "eq":

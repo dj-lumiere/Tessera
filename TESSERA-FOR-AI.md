@@ -1291,7 +1291,8 @@ routine start() -> None
 - A record can't contain itself by value; go through a `PointedCell`.
 - `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): every member has a value or none
   does, and without values the members are 0, 1, 2, ... in order (some with and some without is a build error). The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
-  C's `int`, when it isn't written (`choice Light`).
+  C's `int`, when it isn't written (`choice Light`). A value no member has (`raw.bitcast[Status]()` of a number that is
+  no member's) writes its number, never a member's name: `Status(7)`, diagnosed `bitcast[U8, Status](7)`.
 - `flags Name` names a set of members, one per line, each one bit. A value has any of them on at once. Every member
   states its bit (`MINE: 3` is bit 3) or none does, and then the members are bits 0, 1, 2, ... in order (some with and
   some without is a build error). The type is a `U64` unless it is written: `flags Name: U8` takes `U8`, `U16`, `U32`, or `U64`. A bit that the
