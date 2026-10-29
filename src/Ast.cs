@@ -425,6 +425,9 @@ public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos)
 {
     public IntType Type => Bits == 8 ? IntType.Byte : IntType.Char;
 }
+/// A number literal typed by a number type's name, `S64(7)`, `B64(6.022e23)`, `U8(200)`: the literal as a value of
+/// that type, range-checked as a typed binding is. The builder makes it from a call of the type's name.
+public sealed record TypedLit(Expr Literal, DType Type, Pos Pos) : Expr(Pos);
 public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos)
 {
     /// The literal as written (`-0x1p-25`, `1e-300`), which a re-printed line keeps: a hex float stays exact.

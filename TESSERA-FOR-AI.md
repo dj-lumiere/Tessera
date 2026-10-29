@@ -896,6 +896,10 @@ routine start() -> None
   bits of a draw) and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
   `text.json_quote_into(out)` in `System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
+- A number type's name called with one number literal is that literal typed: `S64(7)`, `B64(6.022e23)`, `U8(200)`,
+  `S8(-128)`, `U16(0xFF)`, anywhere a value goes (`"{S64(7)}"`, `twice(n: S64(21))`, `S64(7).add(1)`), range-checked
+  like a typed binding (`U8(300)` is a build error). With anything but a literal (`S64(x)`) it is a build error that
+  points to `x.to[S64]()`.
 - A whole number written in base 10 also goes into a binary float place, typed by where it goes: `x: &B64 <- 0`,
   `y: B32 = 3`, `half(7)` for a `B64` parameter, `w: B128 = 12` (exact when the type holds it, else the nearest value).
   A literal with a base prefix (`0xFF`, `0b1010`) stays an integer, and a variant with an integer and a float branch
@@ -1663,7 +1667,8 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   `diagnose_into` wherever it goes.
 - `out.write("x = {x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals:
-  `"{sum2([7, 8])}"`), `{{` is a literal brace,
+  `"{sum2([7, 8])}"`, `"{text.find("world")}"`), `{{` is a literal brace,
+  a bare number literal in a hole or in `Console.show(7)` has no type and is a build error that suggests `S64(7)`,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`, `Console.output().write(...)`). It's only ever a method: there is
   no free `write(out, "...")`, and no `print` / `eprint` (the console's lines are `Console.show` / `Console.alert`).

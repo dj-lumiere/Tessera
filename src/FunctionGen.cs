@@ -2519,6 +2519,7 @@ public sealed partial class FunctionGen
             case BoolLit: return BoolType.Instance;
             case TempSlotExpr slot: return Infer(slot.Value) is { } slotted ? new PtrType(slotted) : null;
             case TypedIntLit t: return t.Type;
+            case TypedLit t: return t.Type;
             case UnitLit u: return UnitType(u);
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
@@ -2679,6 +2680,7 @@ public sealed partial class FunctionGen
                 + "or none for no member on, not a number"),
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
             TypedIntLit t => TypedConst(t),
+            TypedLit t => Eval(t.Literal, t.Type),
             UnitLit u => UnitConst(u),
             FloatLit f => EvalFloatLit(f, expected),
             BoolLit b => new Val(b.Value ? "true" : "false", BoolType.Instance),
@@ -3885,8 +3887,28 @@ public sealed partial class FunctionGen
         var literal = value is UnaryExpr { Op: "-", Operand: var operand } ? operand : value;
         if (literal is not (IntLit or FloatLit) || Infer(value) is not null) return;
         string type = literal is FloatLit ? "B64" : "S64";
-        throw Err(at, $"nothing says this literal's type in {where}; bind it with its type first "
-            + $"(x: {type} = {new Printer().Expr(value)}) and write that name, or write the number as text");
+        string written = new Printer().Expr(value);
+        throw Err(at, $"nothing says this literal's type in {where}: name it, {type}({written}), or bind it with its type "
+            + $"first (x: {type} = {written}) and write that name");
+    }
+
+    /// `S64(7)`: a number type's name called with one number literal is that literal as a value of the type. Null for
+    /// a call that is no such thing. With anything but a literal it is a build error that points to `to[T]()`.
+    private TypedLit? NumberTypeCall(CallExpr call)
+    {
+        if (call is not { TypeArgs.Count: 0, Args.Count: 1 } || call.ArgNames is { } named && named.Any(n => n is not null))
+            return null;
+        if (_c.FreeCandidates(call.Name, _env.File, call.Pos, call.Path).Count > 0) return null;
+        DType type;
+        try { type = Resolve(new TypeRef(call.Name, [], call.Pos) { Path = call.Path }); }
+        catch (CompileError) { return null; }
+        if (type is not (IntType { Kind: IntKind.Signed or IntKind.Unsigned } or FloatType)) return null;
+        var literal = call.Args[0];
+        if (literal is IntLit or FloatLit || literal is UnaryExpr { Op: "-", Operand: IntLit or FloatLit })
+            return new TypedLit(literal, type, call.Pos);
+        string shown = new Printer().Expr(literal);
+        throw Err(call.Pos, $"{call.Name}(...) types a number literal ({call.Name}(7)), and this is a value: convert it with "
+            + $"{shown}.to[{call.Name}]()");
     }
 
     /// Whether a preset reference names a global or a preset in memory (`global COUNT: &U64`, `preset NAMES: &[U8] <- ...`):
@@ -4251,6 +4273,7 @@ public sealed partial class FunctionGen
     private Expr Desugar(Expr e)
     {
         if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall) return placeCall;
+        if (e is CallExpr typeCall && NumberTypeCall(typeCall) is { } typed) return typed;
         switch (e)
         {
             case BinaryExpr { Op: "and" or "or" }:
