@@ -133,6 +133,9 @@ tessera run   <file.te>... [<target>] [--mode <mode>]  Build and run these files
 tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 tessera check [<target>] [<file.te>...]       Type-check every non-generic routine, the stdlib included
 tessera fmt   [--check] <file-or-dir>...      Format .te files in place
+tessera lint  <file-or-dir>...                Print the style warnings
+tessera docs  <source-dir> <output-dir>       Write the API reference pages of a library
+tessera lsp                                   Run the language server (for an editor)
 tessera help | version
 ```
 
