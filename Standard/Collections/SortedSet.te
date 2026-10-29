@@ -28,7 +28,7 @@ obeys Representable[SortedSet[T]] when T obeys Diagnosable
 obeys Diagnosable[SortedSet[T]] when T obeys Diagnosable
 obeys Equatable[SortedSet[T]]
 needs T obeys Comparable
-    root: @SortedSetNode[T]
+    root: @SortedSetNode[T]?
     count: U64
     manager: @MemoryManager
 
@@ -40,7 +40,7 @@ routine @SortedSetNode[T].destruct() -> None
 ### :param manager: The memory manager the set stores and later frees its memory with.
 ### :returns: A new empty SortedSet.
 common routine SortedSet[T].construct(manager: @MemoryManager) -> Me
-    return Me(root: .hollow(), count: 0, manager: manager)
+    return Me(root: None(), count: 0, manager: manager)
 
 ### A SortedSet of the values of an Items, drawing its storage from `manager`. The array is taken over: its values go
 ### into the sorted set, entity values too, a value equal to an earlier one ending there.
@@ -198,9 +198,10 @@ secret routine @SortedSet[T].eq_at(other: @Me) -> Bool
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is present.
 routine @SortedSet[T].has(key: @T) -> Bool
-    root: @SortedSetNode[T] = me.root.peek()
-    if root.is_hollow()
+    root_or_none: @SortedSetNode[T]? = me.root.peek()
+    if root_or_none.is_absent()
         return false
+    root: @SortedSetNode[T] = root_or_none.unwrap()
     loop with node: @SortedSetNode[T] = root
         i: U64 = node.find_index(key)
         count: U64 = node.count.peek()
@@ -247,7 +248,7 @@ routine @SortedSet[T].get_by_rank(rank: U64) -> T
     if rank >= count
         throw IndexOutOfBoundsError(index: rank, count)
 
-    loop with node: @SortedSetNode[T] = me.root.peek(), remaining: U64 = rank, i: U64 = 0
+    loop with node: @SortedSetNode[T] = me.root.peek().unwrap(), remaining: U64 = rank, i: U64 = 0
         node_count: U64 = node.count.peek()
         is_leaf: Bool = node.leaf.peek()
         if i >= node_count
@@ -383,8 +384,8 @@ failable routine @SortedSet[T].add(key: T) -> Bool
         drop probe
         return false
     manager: @MemoryManager = me.manager.peek()
-    root: @SortedSetNode[T] = me.root.peek()
-    if root.is_hollow()
+    root_or_none: @SortedSetNode[T]? = me.root.peek()
+    if root_or_none.is_absent()
         root2_made: @SortedSetNode[T]? = SortedSetNode[T].construct(leaf: true, manager)
         if root2_made.is_absent()
             drop probe
@@ -396,6 +397,7 @@ failable routine @SortedSet[T].add(key: T) -> Bool
         me.root.poke(root2)
         me.count.poke(1)
         return true
+    root: @SortedSetNode[T] = root_or_none.unwrap()
     root_count: U64 = root.count.peek()
     full: Bool = root_count == SORTED_SET_NODE_KEYS
     root2: @SortedSetNode[T] = when
@@ -622,10 +624,11 @@ routine @SortedSetNode[T].remove(key: @T, manager: @MemoryManager) -> Bool
 ### :param key: The element to remove, read through its place.
 ### :returns: `true` when an element was removed, `false` when it was not present.
 routine @SortedSet[T].remove(key: @T) -> Bool
-    root: @SortedSetNode[T] = me.root.peek()
+    root_or_none: @SortedSetNode[T]? = me.root.peek()
 
-    if root.is_hollow()
+    if root_or_none.is_absent()
         return false
+    root: @SortedSetNode[T] = root_or_none.unwrap()
     manager: @MemoryManager = me.manager.peek()
     if root.remove(key, manager)
         remaining_count: U64 = me.count.peek() - 1
@@ -634,7 +637,7 @@ routine @SortedSet[T].remove(key: @T) -> Bool
         if root_count == 0
             if root.leaf.peek()
                 deallocate[SortedSetNode[T]](data: root, manager)
-                me.root.poke(.hollow())
+                me.root.poke(None())
                 return true
             new_root: @SortedSetNode[T] = root.children[0]
             deallocate[SortedSetNode[T]](data: root, manager)
@@ -678,12 +681,12 @@ routine @SortedSetNode[T].free_recursive(manager: @MemoryManager) -> None
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine @SortedSet[T].destruct() -> None
-    root: @SortedSetNode[T] = me.root.peek()
-
-    if not root.is_hollow()
-        manager: @MemoryManager = me.manager.peek()
-        root.free_recursive(manager)
-    me.root.poke(.hollow())
+    when me.root.peek()
+        is @SortedSetNode[T] as root =>
+            manager: @MemoryManager = me.manager.peek()
+            root.free_recursive(manager)
+        is None => nothing
+    me.root.poke(None())
     me.count.poke(0)
     return
 

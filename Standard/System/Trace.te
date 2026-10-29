@@ -65,8 +65,8 @@ record TraceCopy
     skip: U64
     ### The frames it copies.
     want: U64
-    ### Where they go, or hollow to copy none.
-    out: @TraceFrame
+    ### Where they go, or None to copy none.
+    out: @TraceFrame?
 
 ### A thread's trace: its innermost frames, a ring indexed by depth modulo TRACE_CAPACITY, and the number of frames it
 ### is in.
@@ -308,29 +308,29 @@ routine failure_note(previous: U32) -> U32
 routine failure_note(previous: U32) -> U32
     return 0
 
-### The trace of failure `seq`, made on this thread and still remembered, or null.
+### The trace of failure `seq`, made on this thread and still remembered, or None.
 ### :param seq: The failure's number.
-### :returns: Its trace, or null.
+### :returns: Its trace, or None.
 @trace("on")
-routine failure_trace(seq: U32) -> @FailureTrace
+routine failure_trace(seq: U32) -> @FailureTrace?
     table: @FailureTable = FAILURES
 
     if seq == 0
-        return .hollow()
+        return None()
     for i in 0 til FAILURE_TRACES
         entry: @FailureTrace = table.entries.getview().to[@FailureTrace]().stride(i)
         if entry.seq.peek() == seq
             return entry
         continue
     then
-        return .hollow()
+        return None()
 
 ### No failure's trace: this build keeps none.
 ### :param seq: Unused.
-### :returns: Null.
+### :returns: None.
 @trace("off")
-routine failure_trace(seq: U32) -> @FailureTrace
-    return .hollow()
+routine failure_trace(seq: U32) -> @FailureTrace?
+    return None()
 
 ### Writes where failure `seq` was made, and where each failure it wraps was, most recent frame first: what the report
 ### of a failure nothing received adds after the crash trace. Nothing for 0 (an untraced build).
@@ -343,9 +343,10 @@ needs TWriter obeys Writer
     out.write("\nThe failure was made at:")
 
     loop with number: U32 = seq
-        entry2: @FailureTrace = failure_trace(number)
-        if entry2.is_hollow()
+        entry2_or_none: @FailureTrace? = failure_trace(number)
+        if entry2_or_none.is_absent()
             break
+        entry2: @FailureTrace = entry2_or_none.unwrap()
         entry3: @FailureTrace = entry2
 
         frames: @TraceFrame = entry3.frames.getview().to[@TraceFrame]()
@@ -494,7 +495,7 @@ routine fault_pc() -> Addr
 @noinline
 @trace("stack")
 routine trace_depth() -> U64
-    copy: TraceCopy = (skip: 0, want: 0, out: .hollow())
+    copy: TraceCopy = (skip: 0, want: 0, out: None())
     return trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), copy, early: false)
 
 ### A frame of the running flow's trace, counting from the innermost: 0 is the routine that crashed, or that called
@@ -645,10 +646,10 @@ secret routine crash_place() -> Addr
 ### :param frame: Its index in TRACE_FRAMES.
 ### :param copy: The frames the walk copies and where they go.
 secret routine put_frame(index: U64, frame: U64, copy: TraceCopy) -> None
-    if copy.out.is_hollow() or index < copy.skip or index >= copy.skip + copy.want
+    if copy.out.is_absent() or index < copy.skip or index >= copy.skip + copy.want
         return
     at: TraceFrame = TRACE_FRAMES.to[@TraceFrame]().stride(frame).peek()
-    target: @TraceFrame = copy.out.stride(index - copy.skip)
+    target: @TraceFrame = copy.out.unwrap().stride(index - copy.skip)
     target.poke(at)
     if not (at.column == PLACE_COLUMN)
         return

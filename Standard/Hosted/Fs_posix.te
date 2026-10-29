@@ -201,7 +201,7 @@ secret routine c_access(path: @Byte, mode: CInt) -> CInt
 @external("c")
 @symbol("getcwd")
 @target(os: ("linux", "macos"))
-secret routine c_getcwd(buf: @Byte, size: CSize) -> @Byte
+secret routine c_getcwd(buf: @Byte, size: CSize) -> @Byte?
 
 ### Binds the C `chdir` function: changes the working directory.
 ### :param path: The NUL-terminated path of the new working directory.
@@ -217,7 +217,7 @@ secret routine c_chdir(path: @Byte) -> CInt
 @external("c")
 @symbol("getenv")
 @target(os: ("linux", "macos"))
-secret routine c_getenv(name: CStrView) -> @Byte
+secret routine c_getenv(name: CStrView) -> @Byte?
 
 ### Binds the C `realpath` function: makes a path absolute with every link, ".", and ".." resolved.
 ### :param path: The NUL-terminated path, which must exist.
@@ -226,7 +226,7 @@ secret routine c_getenv(name: CStrView) -> @Byte
 @external("c")
 @symbol("realpath")
 @target(os: ("linux", "macos"))
-secret routine c_realpath(path: @Byte, resolved: Addr) -> @Byte
+secret routine c_realpath(path: @Byte, resolved: Addr) -> @Byte?
 
 ### Binds the C `free` function: gives back the memory `realpath` took from C's malloc.
 ### :param ptr: The block to give back. Null does nothing.
@@ -265,7 +265,7 @@ secret routine c_opendir(path: @Byte) -> Addr
 @external("c")
 @symbol("readdir64")
 @target(os: "linux")
-secret routine c_readdir(dir: Addr) -> @Byte
+secret routine c_readdir(dir: Addr) -> @Byte?
 
 ### Binds the C `readdir$INODE64` function: reads the next entry of a directory listing.
 ### :param dir: The `DIR` handle.
@@ -273,7 +273,7 @@ secret routine c_readdir(dir: Addr) -> @Byte
 @external("c")
 @symbol("readdir$INODE64")
 @target(os: "macos", arch: "x86_64")
-secret routine c_readdir(dir: Addr) -> @Byte
+secret routine c_readdir(dir: Addr) -> @Byte?
 
 ### Binds the C `readdir` function: reads the next entry of a directory listing.
 ### :param dir: The `DIR` handle.
@@ -281,7 +281,7 @@ secret routine c_readdir(dir: Addr) -> @Byte
 @external("c")
 @symbol("readdir")
 @target(os: "macos", arch: not "x86_64")
-secret routine c_readdir(dir: Addr) -> @Byte
+secret routine c_readdir(dir: Addr) -> @Byte?
 
 ### Binds the C `closedir` function: closes a directory listing.
 ### :param dir: The `DIR` handle.
@@ -1351,9 +1351,10 @@ secret routine is_dot_name(name: @Byte) -> Bool
 ### :throws: Throws `AbsentValueError` at the end of the listing, or when reading it fails.
 @target(os: ("linux", "macos"))
 failable routine @DirEmitter.emit() -> DirEntry
-    entry: @Byte = c_readdir(me.dir.peek())
-    if entry.is_hollow()
+    entry_or_none: @Byte? = c_readdir(me.dir.peek())
+    if entry_or_none.is_absent()
         throw AbsentValueError()
+    entry: @Byte = entry_or_none.unwrap()
     name: @Byte = entry.stride(dirent_name_at())
     if is_dot_name(name)
         return when check me.emit()
@@ -1432,9 +1433,10 @@ secret failable routine copied_text(p: @Byte, n: U64,
 ### :absent: When the variable is not set or is empty.
 @target(os: ("linux", "macos"))
 secret routine nonempty_env(name: CStrView) -> Optional[@Byte]
-    value: @Byte = c_getenv(name)
-    if value.is_hollow()
+    value_or_none: @Byte? = c_getenv(name)
+    if value_or_none.is_absent()
         return None()
+    value: @Byte = value_or_none.unwrap()
     if value.peek() == 0x00
         return None()
     return value
@@ -1449,7 +1451,7 @@ secret failable routine current_dir(manager: @MemoryManager) -> BorrowedSlice[By
         when check BorrowedSlice[Byte].construct(count: capacity, manager: manager)
             is BorrowedSlice[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
-                if c_getcwd(data, capacity.to[CSize]()).is_not_hollow()
+                if c_getcwd(data, capacity.to[CSize]()).is_present()
                     count: U64 = data.to[CStrView]().count()
                     buffer2.keep_first(count)
                     return buffer2
@@ -1518,9 +1520,10 @@ secret failable routine canonical_path(path: @[Byte],
 
     if not c_path(path, out: cpath.getview().to[@Byte]())
         throw path_error(path)
-    resolved: @Byte = c_realpath(cpath.getview().to[@Byte](), .hollow())
-    if resolved.is_hollow()
+    resolved_or_none: @Byte? = c_realpath(cpath.getview().to[@Byte](), .hollow())
+    if resolved_or_none.is_absent()
         throw last_error()
+    resolved: @Byte = resolved_or_none.unwrap()
     when check copied_text(p: resolved, n: resolved.to[CStrView]().count(), manager)
         is BorrowedSlice[Byte] as text =>
             c_free(resolved)

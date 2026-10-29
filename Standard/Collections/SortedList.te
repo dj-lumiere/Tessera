@@ -35,7 +35,7 @@ obeys Diagnosable[SortedList[T]] when T obeys Diagnosable
 obeys Equatable[SortedList[T]] when T obeys Equatable
 needs T obeys Comparable
 obeys ViewingIndexable[SortedList[T], T]
-    root: @SortedListNode[T]
+    root: @SortedListNode[T]?
     count: U64
     manager: @MemoryManager
 
@@ -47,7 +47,7 @@ routine @SortedListNode[T].destruct() -> None
 ### :param manager: The memory manager the list stores and later frees its memory with.
 ### :returns: A new empty SortedList.
 common routine SortedList[T].construct(manager: @MemoryManager) -> Me
-    return Me(root: .hollow(), count: 0, manager: manager)
+    return Me(root: None(), count: 0, manager: manager)
 
 ### A SortedList of the values of an Items, drawing its storage from `manager`. The array is taken over: its values go
 ### into the sorted list, entity values too.
@@ -205,7 +205,7 @@ failable routine @SortedList[T].getslot(order: U64) -> @T
     if order >= count
         throw IndexOutOfBoundsError(index: order, count)
 
-    loop with node: @SortedListNode[T] = me.root.peek(), remaining: U64 = order
+    loop with node: @SortedListNode[T] = me.root.peek().unwrap(), remaining: U64 = order
         if node.leaf.peek()
             at: @T = node.values.getslot(remaining)
             return at
@@ -442,8 +442,8 @@ secret routine @SortedList[T].insert_at(order: U64, value: T) -> Bool
     count: U64 = me.count.peek()
     if order <= count
         manager: @MemoryManager = me.manager.peek()
-        root: @SortedListNode[T] = me.root.peek()
-        if root.is_hollow()
+        root_or_none: @SortedListNode[T]? = me.root.peek()
+        if root_or_none.is_absent()
             root2_made: @SortedListNode[T]? = SortedListNode[T].construct(leaf: true, manager)
             if root2_made.is_absent()
                 drop value
@@ -455,6 +455,7 @@ secret routine @SortedList[T].insert_at(order: U64, value: T) -> Bool
             me.root.poke(root2)
             me.count.poke(1)
             return true
+        root: @SortedListNode[T] = root_or_none.unwrap()
         root_count: U64 = root.count.peek()
         full: Bool = root_count == SORTED_LIST_NODE_VALUES
         root2: @SortedListNode[T] = when
@@ -638,7 +639,7 @@ routine @SortedList[T].remove(order: U64) -> T
     count: U64 = me.count.peek()
     if order < count
         manager: @MemoryManager = me.manager.peek()
-        root: @SortedListNode[T] = me.root.peek()
+        root: @SortedListNode[T] = me.root.peek().unwrap()
         value: &T <- root.remove(order, manager)
         remaining_count: U64 = me.count.peek() - 1
         remaining_count.poke_into(me.count)
@@ -646,7 +647,7 @@ routine @SortedList[T].remove(order: U64) -> T
             root_count: U64 = root.count.peek()
             if root_count == 0
                 deallocate[SortedListNode[T]](data: root, manager)
-                me.root.poke(.hollow())
+                me.root.poke(None())
                 return steal value
             return steal value
         root_count: U64 = root.count.peek()
@@ -679,12 +680,12 @@ routine @SortedListNode[T].free_recursive(manager: @MemoryManager) -> None
 ### Ends every element (drop), frees every node of the tree through the memory manager, and resets the list to empty.
 @track_caller
 routine @SortedList[T].destruct() -> None
-    root: @SortedListNode[T] = me.root.peek()
-
-    if not root.is_hollow()
-        manager: @MemoryManager = me.manager.peek()
-        root.free_recursive(manager)
-    me.root.poke(.hollow())
+    when me.root.peek()
+        is @SortedListNode[T] as root =>
+            manager: @MemoryManager = me.manager.peek()
+            root.free_recursive(manager)
+        is None => nothing
+    me.root.poke(None())
     me.count.poke(0)
     return
 

@@ -82,7 +82,7 @@ obeys Writer[CrashSink]
 record CrashMessage
     text: @[Byte]
     error: Addr
-    writer: Callable[(Addr, @CrashSink), None]
+    writer: Callable[(Addr, @CrashSink), None]?
     failure: U32
 
 ### The slot of the reporting routine: its address, and CRASH_SLOT_SET when a routine was put there.
@@ -127,7 +127,7 @@ routine @CrashSink.write_bytes(data: @Byte, count: U64) -> None
 ### :param text: The message.
 ### :returns: The new value.
 common routine CrashMessage.of_text(text: @[Byte]) -> Me
-    return Me(text, error: .hollow(), writer: .hollow(), failure: 0)
+    return Me(text, error: .hollow(), writer: None(), failure: 0)
 
 ### Writes the message to `out`: the text, or the crashable's message.
 ### :param out: The sink the message goes to.
@@ -138,7 +138,7 @@ routine @CrashMessage.write_into(out: @CrashSink) -> None
         text: @[Byte] = me.text.peek()
         out.write("{text}")
         return
-    writer: Callable[(Addr, @CrashSink), None] = me.writer.peek()
+    writer: Callable[(Addr, @CrashSink), None] = me.writer.peek().unwrap()
     writer.call(error, out)
     return
 
@@ -195,20 +195,25 @@ secret routine mark_cut(used: U64) -> None
 ### message (written where the routine asks, `message.text()` for Crash's buffer), and its place, and reads the crash
 ### trace with trace_depth and trace_frame (mark it @untraced so its own frame isn't on it). It runs once, and stopping
 ### follows when it returns. It takes no memory from a general memory manager (a build error otherwise).
-### :param report: The reporting routine, or `.hollow()` for the default one.
-### :returns: The routine that was in the slot, `.hollow()` for the default: pass it back to put it back.
-common routine Crash.report_with(report: Callable[(@[Byte], @CrashMessage, @SourceLocation), None]) -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]
-    before: Callable[(@[Byte], @CrashMessage, @SourceLocation), None] = Me.reporter()
-    CRASH_SLOT.report.poke(report.addr())
+### :param report: The reporting routine, or None for the default one.
+### :returns: The routine that was in the slot, None for the default: pass it back to put it back.
+common routine Crash.report_with(report: Callable[(@[Byte], @CrashMessage, @SourceLocation), None]?) -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]?
+    before: Callable[(@[Byte], @CrashMessage, @SourceLocation), None]? = Me.reporter()
+    report_at: Addr = when report
+        is Callable[(@[Byte], @CrashMessage, @SourceLocation), None] as given => given.addr()
+        is None => Addr.hollow()
+    CRASH_SLOT.report.poke(report_at)
     CRASH_SLOT.set.poke(CRASH_SLOT_SET)
     return before
 
 ### The routine in the slot of the reporting routine.
-### :returns: The routine, `.hollow()` for the default one.
-common routine Crash.reporter() -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]
-    if not (CRASH_SLOT.set.peek() == CRASH_SLOT_SET)
-        return .hollow()
-    return bitcast(CRASH_SLOT.report.peek())
+### :returns: The routine, None for the default one.
+common routine Crash.reporter() -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]?
+    at: Addr = CRASH_SLOT.report.peek()
+    if not (CRASH_SLOT.set.peek() == CRASH_SLOT_SET) or at.is_hollow()
+        return None()
+    held: Callable[(@[Byte], @CrashMessage, @SourceLocation), None] = bitcast(at)
+    return held
 
 ### Reports a crash with the routine in the slot (or the default one), then stops the program. The first crash
 ### reports, a crash while it reports skips the report, and a crash on another thread meanwhile waits for the stop.
@@ -221,11 +226,9 @@ common routine Crash.raise(name: @[Byte], message: @CrashMessage, place: @Source
     if not crash_enter()
         Me.stop()
     note_crash_place(place)
-    report: Callable[(@[Byte], @CrashMessage, @SourceLocation), None] = Me.reporter()
-    if report.addr().is_hollow()
-        default_crash_report(name, message, place)
-    else
-        report.call(name, message, place)
+    when Me.reporter()
+        is Callable[(@[Byte], @CrashMessage, @SourceLocation), None] as report => report.call(name, message, place)
+        is None => default_crash_report(name, message, place)
     Me.stop()
 
 ### Stops the program after a crash: exits with status 82. Without an operating system it is Crash_freestanding.te's: a

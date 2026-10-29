@@ -32,7 +32,7 @@ obeys Diagnosable[SortedDict[TKey, TValue]] when TKey obeys Diagnosable, TValue 
 obeys Equatable[SortedDict[TKey, TValue]] when TValue obeys Equatable
 needs TKey obeys Comparable
 obeys KeyFindable[SortedDict[TKey, TValue], TKey, TValue]
-    root: @SortedDictNode[TKey, TValue]
+    root: @SortedDictNode[TKey, TValue]?
     count: U64
     manager: @MemoryManager
 
@@ -49,7 +49,7 @@ routine @SortedDictNode[TKey, TValue].destruct() -> None
 ### :param manager: The memory manager the dict stores and later frees its memory with.
 ### :returns: A new empty SortedDict.
 common routine SortedDict[TKey, TValue].construct(manager: @MemoryManager) -> Me
-    return Me(root: .hollow(), count: 0, manager: manager)
+    return Me(root: None(), count: 0, manager: manager)
 
 ### A SortedDict of the values of an Items, drawing its storage from `manager`. The array is taken over: its values go
 ### into the sorted dict, entity values too, each a key and its value (a later key equal to an earlier one replaces its value).
@@ -149,10 +149,11 @@ routine @SortedDictNode[TKey, TValue].find_index(key: @TKey) -> U64
 ### :returns: The entry's node and its index there.
 ### :absent: When the key is not present.
 secret routine @SortedDict[TKey, TValue].find_spot(key: @TKey) -> Optional[SortedDictSpot[TKey, TValue]]
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
-    if root.is_hollow()
+    root_or_none: @SortedDictNode[TKey, TValue]? = me.root.peek()
+    if root_or_none.is_absent()
         return None()
 
+    root: @SortedDictNode[TKey, TValue] = root_or_none.unwrap()
     loop with node: @SortedDictNode[TKey, TValue] = root
         i: U64 = node.find_index(key)
         count: U64 = node.count.peek()
@@ -299,7 +300,7 @@ secret routine @SortedDict[TKey, TValue].locate_rank(rank: U64) -> SortedDictSpo
     if rank >= count
         throw IndexOutOfBoundsError(index: rank, count)
 
-    loop with node: @SortedDictNode[TKey, TValue] = me.root.peek(), remaining: U64 = rank, i: U64 = 0
+    loop with node: @SortedDictNode[TKey, TValue] = me.root.peek().unwrap(), remaining: U64 = rank, i: U64 = 0
         node_count: U64 = node.count.peek()
         is_leaf: Bool = node.leaf.peek()
         if i >= node_count
@@ -461,7 +462,7 @@ routine @SortedDictNode[TKey, TValue].insert_nonfull(key: TKey, value: TValue,
 @reshaping
 failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
     probe: &TKey <- steal key
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
+    root_or_none: @SortedDictNode[TKey, TValue]? = me.root.peek()
 
     when try me.getslot(probe)
         is @TValue as old =>
@@ -470,7 +471,7 @@ failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> 
             old.poke(steal value)
             return
         is None => nothing
-    if root.is_hollow()
+    if root_or_none.is_absent()
         manager: @MemoryManager = me.manager.peek()
         first_node_made: @SortedDictNode[TKey, TValue]? = SortedDictNode[TKey, TValue].construct(
             leaf: true, manager)
@@ -486,6 +487,7 @@ failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> 
         me.root.poke(first_node)
         me.count.poke(1)
         return
+    root: @SortedDictNode[TKey, TValue] = root_or_none.unwrap()
     manager: @MemoryManager = me.manager.peek()
     root_count: U64 = root.count.peek()
     full: Bool = root_count == SORTED_DICT_NODE_KEYS
@@ -741,10 +743,11 @@ routine @SortedDictNode[TKey, TValue].remove(key: @TKey, manager: @MemoryManager
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 @reshaping
 routine @SortedDict[TKey, TValue].remove(key: @TKey) -> Bool
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
+    root_or_none: @SortedDictNode[TKey, TValue]? = me.root.peek()
 
-    if root.is_hollow()
+    if root_or_none.is_absent()
         return false
+    root: @SortedDictNode[TKey, TValue] = root_or_none.unwrap()
     manager: @MemoryManager = me.manager.peek()
     if root.remove(key, manager)
         remaining_count: U64 = me.count.peek() - 1
@@ -753,7 +756,7 @@ routine @SortedDict[TKey, TValue].remove(key: @TKey) -> Bool
         if root_count == 0
             if root.leaf.peek()
                 deallocate[SortedDictNode[TKey, TValue]](data: root, manager)
-                me.root.poke(.hollow())
+                me.root.poke(None())
                 return true
             new_root: @SortedDictNode[TKey, TValue] = root.children[0]
             deallocate[SortedDictNode[TKey, TValue]](data: root, manager)
@@ -799,12 +802,12 @@ routine @SortedDictNode[TKey, TValue].free_recursive(manager: @MemoryManager) ->
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine @SortedDict[TKey, TValue].destruct() -> None
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
-
-    if not root.is_hollow()
-        manager: @MemoryManager = me.manager.peek()
-        root.free_recursive(manager)
-    me.root.poke(.hollow())
+    when me.root.peek()
+        is @SortedDictNode[TKey, TValue] as root =>
+            manager: @MemoryManager = me.manager.peek()
+            root.free_recursive(manager)
+        is None => nothing
+    me.root.poke(None())
     me.count.poke(0)
     return
 

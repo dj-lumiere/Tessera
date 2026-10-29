@@ -126,7 +126,8 @@ routine start() -> None
   named like a keyword (`for`, `return`, `inf`, `nan`, ...) is written between backticks: `` `for` ``
   The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
-  passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
+  passes where an `Addr` is expected; the other way takes `a.to[@T]()`, which crashes with `UnacceptedValueError`
+  on the zero address, or `a.to[@T?]()`, which gives None for it (take it apart with `when`). An `Addr` moves by a `ByteSize` with `+%` /
   `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
   check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `PointedCell[T]` is
   written (`@@Byte`, `@Items[@S32, 3]`); it keeps its name only where routines are declared on it or called through
@@ -237,7 +238,8 @@ routine start() -> None
   through a pointer, its first address and `COUNT`, a `SliceWriter`, a `CStrView`), and `getview().to[@T]()` is the
   first element's address. `@[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` / `reallocate[T](p, count,
-  manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `give_back`.
+  manager)` (each gives an `Addr`, zero when the manager has no memory: check it, then `at.to[@T]()`) /
+  `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `give_back`.
   `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and `src.copy_into(dst, count)` is the same
   copy from the source's side. On a `@Items[T, COUNT]` or `@Slots[T, COUNT]` (or any type with its own `copy`) the type's routine wins, so
   generic code over `@T` uses `src.copy_into(dst, count)`.
@@ -1215,7 +1217,7 @@ routine start() -> None
   code, the choice's first member (the build doesn't check it). Inside, code uses failable routines, not `Result`.
 - **The `Crash` service** (System, one per program) reports a crash and a failure nothing received, then
   stops. `Crash.report_with(routine.to[Callable]())` puts a reporting routine in its slot and returns the one before
-  (`.hollow()` for the default), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
+  (a `Callable?`, None for the default; `Crash.report_with(None())` puts the default back), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
   @SourceLocation) -> None`, mark it `@untraced` so its own frame isn't on the trace it reads with `trace_depth()` /
   `trace_frame(back)`. `message.text()` writes the message into Crash's fixed buffer (`CRASH_MESSAGE_SIZE` bytes,
   `[crash] message-size` in config.toml, default 512, a longer message cut and ended with `…`) and gives a view of it,
@@ -1253,7 +1255,7 @@ routine start() -> None
   made at:` and the frames (`  0: at load (f.te:44:34)`, innermost first), then `It wraps the failure made at:` and its
   frames for each wrapped failure. A failure made on another thread, or pushed out of the ring, prints `  (not
   remembered here: made on another thread, or later failures took its place)`. Untraced builds note nothing (number
-  0). `failure_trace(seq)` gives the `@FailureTrace` (hollow when not remembered), and
+  0). `failure_trace(seq)` gives the `@FailureTrace?` (None when not remembered), and
   `diagnose_or_name(value: v, out: w)` writes any value.
 - **Standard library guideline:** a crashable holds a few values only (a code, a count, a view of text the caller
   keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
@@ -1388,7 +1390,7 @@ routine start() -> None
   `HeapManagerByC`, `HeapManagerByCAligned`, `HeapManagerByCheckedHeap`, `PageManagerByOs` (the old `CHeapManager`,
   `AlignedHeapManager`, `CheckedHeapManager`, `OsPageManager` are build errors naming the new name). A manager with no
   memory to give throws `OutOfMemoryError`, and a memory manager callback that crashes reports the line it was called
-  from with `memory_manager_call_place()` (the old `MemoryAllocationError` and `allocator_call_place` are build errors
+  from with `memory_manager_call_place()` (a `@SourceLocation?`, None outside such a call) (the old `MemoryAllocationError` and `allocator_call_place` are build errors
   naming the new name).
 - Every manager is an `entity` (`MemoryManager`, `StackManager`, `HeapManagerByC`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
