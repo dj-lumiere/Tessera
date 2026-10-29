@@ -1407,7 +1407,7 @@ public sealed partial class FunctionGen
         }
     }
 
-    private static string ParamOp(string block, string param) => $"%p.{block}.{IrName(param)}";
+    private static string ParamOp(string block, string param) => $"%p.{IrName(block)}.{IrName(param)}";
 
     private string Tmp() => $"%t{_tmp++}";
 
@@ -1783,14 +1783,23 @@ public sealed partial class FunctionGen
 
     private string LocalOp(string name)
     {
-        string op = InHead ? $"%h.{IrName(name)}" : $"%v.{_blockName}.{IrName(name)}";
+        string op = InHead ? $"%h.{IrName(name)}" : $"%v.{IrName(_blockName)}.{IrName(name)}";
         if (_opNames.Add(op)) return op;
         for (int i = 2; ; i++)
             if (_opNames.Add($"{op}.{i}")) return $"{op}.{i}";
     }
 
-    /// A value's name in IR: the name as written. A `#` inside a name, which LLVM names can't hold, becomes `$`.
-    private static string IrName(string name) => name;
+    /// A value's name in IR: the name as written when LLVM can hold it as is (ASCII letters, digits, `_` and `.`).
+    /// A backtick name can hold any character, so every other byte of its UTF-8 form becomes `$` and two hex digits
+    /// (`first place` is `first$20place`). `$` itself is written `$24`, so two different names never meet.
+    private static string IrName(string name)
+    {
+        if (name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.')) return name;
+        var sb = new System.Text.StringBuilder();
+        foreach (byte b in System.Text.Encoding.UTF8.GetBytes(name))
+            sb.Append(char.IsAsciiLetterOrDigit((char)b) || b is (byte)'_' or (byte)'.' ? ((char)b).ToString() : $"${b:X2}");
+        return sb.ToString();
+    }
 
     /// The payload names a `when`'s arms bound that the lines after it don't see, with the reason, said when one is
     /// used.
