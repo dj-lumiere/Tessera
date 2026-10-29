@@ -1391,8 +1391,9 @@ public sealed partial class Compiler
             // `None` is the one type for nothing: as a return type (and a Callable's), nothing comes back, elsewhere it
             // is the record with the one value `None()`.
             case "None" when allowVoid: NoArgs(); return VoidType.Instance;
-            case "Void": throw new CompileError(t.Pos, "nothing is written None, not Void");
-            case "Unit": throw new CompileError(t.Pos, "the type with one value is written None, not Unit");
+            // A program may declare a type of either name (`choice Unit`), and then the name is that type.
+            case "Void" when !DeclaresType(t, env): throw new CompileError(t.Pos, "nothing is written None, not Void");
+            case "Unit" when !DeclaresType(t, env): throw new CompileError(t.Pos, "the type with one value is written None, not Unit");
             case "Addr": NoArgs(); return new PtrType(null);
             case "PointedCell":
                 return t.Args switch
@@ -1447,6 +1448,13 @@ public sealed partial class Compiler
         }
 
         return ResolveDeclaredType(t, env);
+    }
+
+    /// Whether a record, variant or choice of the name `t` names is declared where `t` is written.
+    private bool DeclaresType(TypeRef t, TypeEnv env)
+    {
+        return FindChoice(t.Name, env.File, t.Pos, t.Path) is not null || FindRecord(t.Name, env.File, t.Pos, t.Path) is not null ||
+               FindVariant(t.Name, env.File, t.Pos, t.Path) is not null;
     }
 
     /// A record, variant, or choice by name (or an alias for one), or a preset used as a generic argument.
