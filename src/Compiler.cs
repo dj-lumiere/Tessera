@@ -2263,6 +2263,10 @@ public sealed partial class Compiler
                 // An Optional is an address: the E it points at is defined where its place is.
                 if (_definedTypes.Add(optional.Key)) EnsureTypeDefined(optional.Leaves[0]);
                 break;
+            case VariantType { IsNullable: true } nullable:
+                // `@T?` / `Callable?` is the address itself.
+                if (_definedTypes.Add(nullable.Key)) EnsureTypeDefined(nullable.Leaves[0]);
+                break;
             case VariantType v:
             {
                 if (_definingTypes.Contains(v.Key)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");

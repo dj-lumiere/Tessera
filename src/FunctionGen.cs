@@ -3231,6 +3231,8 @@ public sealed partial class FunctionGen
             Line($"store {value.Type.Llvm} {value.Op}, ptr {place}");
             return new Val(place, vt);
         }
+        // `@T?` and `Callable?` are the address itself: None is null.
+        if (vt.IsNullable) return new Val(vt.LeafIndex(value.Type) == 0 ? value.Op : "null", vt);
         uint id = vt.LeafId(value.Type);
         string tag = FailureTag(value.Type, vt, id, made ?? _decl.Pos);
         string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {vt.TagLlvm} {tag}, 0");
@@ -3570,7 +3572,7 @@ public sealed partial class FunctionGen
     private void EmitVariantWhen(WhenStmt w, Val v, VariantType vt, Func<WhenArm, Action?, string> armBlock,
         List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
-        string tag = EmitTmp(vt.IsAddressed ? $"icmp ne ptr {v.Op}, null" : $"extractvalue {vt.Llvm} {v.Op}, 0");
+        string tag = EmitTmp(vt.IsAddressed || vt.IsNullable ? $"icmp ne ptr {v.Op}, null" : $"extractvalue {vt.Llvm} {v.Op}, 0");
         string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
@@ -3761,6 +3763,8 @@ public sealed partial class FunctionGen
         string value;
         if (branch is VariantType union && vt.LeafIndex(union) < 0 && (union.Decl.IsAnonymous || union.Leaves.All(Crashing.IsCrashable)))
             value = CopyVariant(vt, slot, union);
+        else if (vt.IsNullable)
+            value = vt.LeafIndex(branch) == 0 ? EmitTmp($"load {branch.Llvm}, ptr {slot}") : "zeroinitializer";
         else if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
         {
             _c.EnsureTypeDefined(branch);

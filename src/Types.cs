@@ -297,7 +297,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
-    public override string Llvm => IsAddressed ? "ptr" : $"%\"{Key}\"";
+    public override string Llvm => IsAddressed || IsNullable ? "ptr" : $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
     /// Each branch's type, in the declaration's order.
@@ -317,6 +317,10 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     /// Whether this is an `Optional[E]`, a flagged Optional whose `T` holds an entity: one address, `ptr`, of the place the
     /// E lives in, null for None. The place is the frame of the routine whose call made the Optional.
     public bool IsAddressed => IsFlagged && Entities.Holds(Leaves[0]);
+
+    /// Whether this is an Optional of an address that is never null itself, `@T?` or `Callable[...]?`: the address alone,
+    /// `ptr`, null for None. A value of it is the T's own pointer, so it costs nothing over the T and passes to C as one.
+    public bool IsNullable => IsFlagged && !IsAddressed && Leaves[0].Repr is PtrType { Pointee: not null } or CallableType;
 
     /// The tag's LLVM type: `i1` for a flagged Optional, else `i64`.
     public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;

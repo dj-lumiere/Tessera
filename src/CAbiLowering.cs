@@ -38,7 +38,7 @@ public sealed partial class Compiler
     public bool IsAggregate(DType t) => t.Repr switch
     {
         RecordType r when r.Decl.AnnotationNamed("llvm") is not null => false,
-        VariantType { IsAddressed: true } => false,
+        VariantType { IsAddressed: true } or VariantType { IsNullable: true } => false,
         RecordType or VariantType or ArrayType => SizeAlign(t, default).Size > 0,
         _ => false,
     };
@@ -144,7 +144,7 @@ public sealed partial class Compiler
                 for (long k = 0; k < v.Count; k++) AddLeaves(v.Elem, at + k * step, acc, pos);
                 break;
             }
-            case VariantType { IsAddressed: true }:
+            case VariantType { IsAddressed: true } or VariantType { IsNullable: true }:
                 acc.Add(new Leaf(at, SizeAlign(new PtrType(null), pos).Size, 'p', "ptr"));
                 break;
             case VariantType { IsFlagged: true } flagged:

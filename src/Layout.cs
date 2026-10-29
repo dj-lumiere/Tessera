@@ -146,7 +146,7 @@ public sealed partial class Compiler
             }
             case RecordType { TransparentField: { } field }:
                 return SizeAlign(field, pos);
-            case VariantType { IsAddressed: true }:
+            case VariantType { IsAddressed: true } or VariantType { IsNullable: true }:
                 return SizeAlign(new PtrType(null), pos);
             case VariantType v:
             {
