@@ -723,14 +723,72 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         return Convert.ToInt64(hex, 16);
     }
 
+    /// Whether a `"` inside a `{...}` hole of a string starts a string literal of the hole's expression
+    /// (`"{text.find("world")}"`): it does after `(`, `,`, `[` or `:`, where an argument or an element begins. Anywhere
+    /// else it ends the outer string, so `"{"` stays a one-brace string. The printer asks the same question.
+    public static bool OpensHoleString(char previous) => previous is '(' or ',' or '[' or ':';
+
+    /// The index of the `}` that closes the hole opening at `open` in a string's value, or -1: braces nest, and a string
+    /// literal inside the hole (`{text.find("}")}`) is skipped whole.
+    public static int HoleEnd(string text, int open)
+    {
+        int depth = 0;
+        for (int j = open; j < text.Length; j++)
+        {
+            if (text[j] == '"')
+            {
+                for (j++; j < text.Length && text[j] != '"'; j++)
+                    if (text[j] == '\\') j++;
+                continue;
+            }
+            if (text[j] == '{') depth++;
+            else if (text[j] == '}' && --depth == 0) return j;
+        }
+        return -1;
+    }
+
     private Token ReadString(Pos pos)
+    {
+        // A string literal inside a hole is kept as written (its quotes and escapes) for the hole's own parse. When the
+        // line ends before such a string is closed, the braces were only text, and the string is read again without holes.
+        int i = _i, col = _col;
+        try
+        {
+            return ReadString(pos, holes: true);
+        }
+        catch (CompileError)
+        {
+            (_i, _col) = (i, col);
+            return ReadString(pos, holes: false);
+        }
+    }
+
+    private Token ReadString(Pos pos, bool holes)
     {
         Advance();
         var sb = new StringBuilder();
+        int depth = 0;
+        char previous = ' ';
         while (true)
         {
             if (_i >= src.Length || Peek() == '\n') throw new CompileError(pos, "unterminated string literal");
             char c = Peek();
+            if (holes && c == '{' && depth == 0 && Peek(1) == '{')
+            {
+                sb.Append("{{");
+                Advance();
+                Advance();
+                continue;
+            }
+            if (holes && c == '{') depth++;
+            else if (holes && c == '}' && depth > 0) depth--;
+            else if (holes && c == '"' && depth > 0 && OpensHoleString(previous))
+            {
+                ReadHoleString(sb, pos);
+                previous = '"';
+                continue;
+            }
+            if (depth > 0 && c != ' ') previous = c;
             Advance();
             if (c == '"') break;
             if (c != '\\') { sb.Append(c); continue; }
@@ -746,5 +804,23 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             });
         }
         return new Token(TokenKind.Str, sb.ToString(), pos);
+    }
+
+    /// Copies a string literal inside a hole, from its opening quote to its closing one, as written.
+    private void ReadHoleString(StringBuilder sb, Pos pos)
+    {
+        sb.Append('"');
+        Advance();
+        while (true)
+        {
+            if (_i >= src.Length || Peek() == '\n') throw new CompileError(pos, "unterminated string literal");
+            char c = Peek();
+            sb.Append(c);
+            Advance();
+            if (c == '"') return;
+            if (c != '\\' || _i >= src.Length || Peek() == '\n') continue;
+            sb.Append(Peek());
+            Advance();
+        }
     }
 }

@@ -162,7 +162,7 @@ public static class ChainLint
                 continue;
             }
             if (text[i] != '{') continue;
-            int end = MatchingBrace(text, i);
+            int end = Lexer.HoleEnd(text, i);
             if (end < 0) return;
             var at = new Pos(s.Pos.File, s.Pos.Line, s.Pos.Col + 2 + i);
             try
@@ -174,16 +174,5 @@ public static class ChainLint
             catch (CompileError) { }
             i = end;
         }
-    }
-
-    private static int MatchingBrace(string text, int open)
-    {
-        int depth = 0;
-        for (int j = open; j < text.Length; j++)
-        {
-            if (text[j] == '{') depth++;
-            else if (text[j] == '}' && --depth == 0) return j;
-        }
-        return -1;
     }
 }

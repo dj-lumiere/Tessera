@@ -262,7 +262,7 @@ public sealed class Printer
             case FloatLit f:
                 return f.Text ?? FloatText(f.Value);
             case StrLit s:
-                return Quote(s.Value);
+                return QuoteTemplate(s.Value);
             case UnitLit u:
                 return u.Text;
             case BoolLit b:
@@ -454,6 +454,51 @@ public sealed class Printer
                             || char.IsAsciiDigit(name[0]))
             ? $"`{name}`"
             : name;
+
+    /// A string as written, with each string literal inside a `{...}` hole kept as written
+    /// (`"{text.find("world")}"`), as the lexer reads it. When that spelling would read back as another value, every
+    /// quote is escaped instead.
+    public static string QuoteTemplate(string s)
+    {
+        if (!s.Contains('{') || !s.Contains('"')) return Quote(s);
+        var sb = new StringBuilder("\"");
+        int depth = 0;
+        char previous = ' ';
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '{' && depth == 0 && i + 1 < s.Length && s[i + 1] == '{')
+            {
+                sb.Append("{{");
+                i++;
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}' && depth > 0) depth--;
+            else if (c == '"' && depth > 0 && Lexer.OpensHoleString(previous))
+            {
+                int close = i + 1;
+                while (close < s.Length && s[close] != '"') close += s[close] == '\\' ? 2 : 1;
+                if (close >= s.Length) return Quote(s);
+                sb.Append(s, i, close - i + 1);
+                i = close;
+                previous = '"';
+                continue;
+            }
+            if (depth > 0 && c != ' ') previous = c;
+            sb.Append(Quote(c.ToString())[1..^1]);
+        }
+        string written = sb.Append('"').ToString();
+        try
+        {
+            var tokens = new Lexer("", written).Lex();
+            if (tokens.Count > 0 && tokens[0].Kind == TokenKind.Str && tokens[0].Text == s
+                && tokens.Skip(1).All(t => t.Kind is TokenKind.Newline or TokenKind.Eof))
+                return written;
+        }
+        catch (CompileError) { }
+        return Quote(s);
+    }
 
     public static string Quote(string s)
     {

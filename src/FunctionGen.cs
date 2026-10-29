@@ -3958,7 +3958,7 @@ public sealed partial class FunctionGen
                 continue;
             }
             // The hole ends at its matching '}'.
-            int end = MatchingBrace(s, i);
+            int end = Lexer.HoleEnd(s, i);
             if (end < 0) throw Err(template.Pos, "a '{' in a write string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
