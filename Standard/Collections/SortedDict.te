@@ -14,7 +14,7 @@ secret preset SORTED_DICT_NODE_MIN_KEYS: U64 = SORTED_DICT_NODE_KEYS.add(1).div_
 ### :typeparam TKey: The key type.
 ### :typeparam TValue: The value type.
 secret entity SortedDictNode[TKey, TValue]
-needs TKey: typename, TValue: typename, Comparable[TKey]
+needs TKey obeys Comparable
     leaf: Bool
     count: U64
     subtree_count: U64
@@ -27,10 +27,10 @@ needs TKey: typename, TValue: typename, Comparable[TKey]
 ### :typeparam TValue: The value type.
 entity SortedDict[TKey, TValue]
 obeys Destructible[SortedDict[TKey, TValue]]
-obeys Representable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
-obeys Diagnosable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
-obeys Equatable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename, Equatable[TValue]
-needs TKey: typename, TValue: typename, Comparable[TKey]
+obeys Representable[SortedDict[TKey, TValue]] when TKey obeys Diagnosable, TValue obeys Diagnosable
+obeys Diagnosable[SortedDict[TKey, TValue]] when TKey obeys Diagnosable, TValue obeys Diagnosable
+obeys Equatable[SortedDict[TKey, TValue]] when TValue obeys Equatable
+needs TKey obeys Comparable
 obeys KeyFindable[SortedDict[TKey, TValue], TKey, TValue]
     root: @SortedDictNode[TKey, TValue]
     count: U64
@@ -38,20 +38,17 @@ obeys KeyFindable[SortedDict[TKey, TValue], TKey, TValue]
 
 ### Where an entry lives: its node and its index there.
 secret record SortedDictSpot[TKey, TValue]
-needs TKey: typename, TValue: typename
     node: @SortedDictNode[TKey, TValue]
     index: U64
 
 ### Releases nothing: the dict ends a node's keys and values and frees the node itself (`free_recursive`).
 routine @SortedDictNode[TKey, TValue].destruct() -> None
-needs TKey: typename, TValue: typename
     return
 
 ### Creates an empty SortedDict that draws its storage from `manager`. Nothing is allocated until the first insertion.
 ### :param manager: The memory manager the dict stores and later frees its memory with.
 ### :returns: A new empty SortedDict.
 common routine SortedDict[TKey, TValue].construct(manager: @MemoryManager) -> Me
-needs TKey: typename, TValue: typename
     return Me(root: .hollow(), count: 0, manager: manager)
 
 ### A SortedDict of the values of an Items, drawing its storage from `manager`. The array is taken over: its values go
@@ -65,7 +62,7 @@ needs TKey: typename, TValue: typename
 @expensive("borrows memory")
 common routine SortedDict[TKey, TValue].of[COUNT](values: Items[(TKey, TValue), COUNT],
     manager: @MemoryManager) -> Me
-needs TKey: record, TValue: record, COUNT: U64
+needs RecordType TKey, RecordType TValue, U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[(TKey, TValue)] <- List[(TKey, TValue)].of(values: steal values, manager: manager)
 
@@ -81,14 +78,12 @@ needs TKey: record, TValue: record, COUNT: U64
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
 routine @SortedDict[TKey, TValue].count() -> U64
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     return count
 
 ### Whether the dict holds no entries.
 ### :returns: `true` when the count is `0`.
 routine @SortedDict[TKey, TValue].is_empty() -> Bool
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     return count == 0
 
@@ -97,7 +92,6 @@ needs TKey: typename, TValue: typename
 ### :param manager: The memory manager to take the node from.
 ### :returns: The node, or null when the memory manager fails.
 common routine SortedDictNode[TKey, TValue].construct(leaf: Bool, manager: @MemoryManager) -> @Me
-needs TKey: typename, TValue: typename
     node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
@@ -110,7 +104,6 @@ needs TKey: typename, TValue: typename
 ### The number of entries in the subtree below this node.
 ### :returns: The node's subtree count, or `0` for a null node.
 routine @SortedDictNode[TKey, TValue].subtree_count() -> U64
-needs TKey: typename, TValue: typename
     if me.is_hollow()
         return 0
     count: U64 = me.subtree_count.peek()
@@ -118,7 +111,6 @@ needs TKey: typename, TValue: typename
 
 ### Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine @SortedDictNode[TKey, TValue].recount() -> None
-needs TKey: typename, TValue: typename
     leaf: Bool = me.leaf.peek()
     count: U64 = me.count.peek()
     sum: &U64 <- .hollow()
@@ -144,7 +136,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to locate.
 ### :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
 routine @SortedDictNode[TKey, TValue].find_index(key: @TKey) -> U64
-needs TKey: typename, TValue: typename
     until i >= me.count.peek() with i: U64 = 0
         cmp: S32 = key.compare(me.keys.getslot(i))
         if cmp <= 0
@@ -158,7 +149,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The entry's node and its index there.
 ### :absent: When the key is not present.
 secret routine @SortedDict[TKey, TValue].find_spot(key: @TKey) -> Optional[SortedDictSpot[TKey, TValue]]
-needs TKey: typename, TValue: typename
     root: @SortedDictNode[TKey, TValue] = me.root.peek()
     if root.is_hollow()
         return None()
@@ -178,7 +168,6 @@ needs TKey: typename, TValue: typename
 ### :returns: A copy of the value.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @SortedDict[TKey, TValue].getitem(key: @TKey) -> TValue
-needs TKey: typename, TValue: typename
     slot: @TValue = when check me.getslot(key)
         is @TValue as at => at
     return slot.peek()
@@ -188,7 +177,6 @@ needs TKey: typename, TValue: typename
 ### :returns: A copy of the value.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @SortedDict[TKey, TValue].getitem(key: TKey) -> TValue
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     found: Check[TValue] = check me.getitem(probe)
@@ -204,7 +192,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The value's address.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @SortedDict[TKey, TValue].getslot(key: @TKey) -> @TValue
-needs TKey: typename, TValue: typename
     when me.find_spot(key)
         is SortedDictSpot[TKey, TValue] as spot =>
             node: @SortedDictNode[TKey, TValue] = spot.node
@@ -219,7 +206,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The value's address.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @SortedDict[TKey, TValue].getslot(key: TKey) -> @TValue
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     found: Check[@TValue] = check me.getslot(probe)
@@ -233,14 +219,14 @@ needs TKey: typename, TValue: typename
 ### :param other: The dict to compare with.
 ### :returns: True when the counts match and every pair has an equal key and an equal value.
 routine @SortedDict[TKey, TValue].eq(other: @Me) -> Bool
-needs TKey: typename, TValue: typename, Equatable[TValue]
+needs TValue obeys Equatable
     return me.eq_at(other)
 
 ### `eq`, through pointers to the two dicts.
 ### :param other: The dict to compare with.
 ### :returns: True when the counts match and every pair has an equal key and an equal value.
 secret routine @SortedDict[TKey, TValue].eq_at(other: @Me) -> Bool
-needs TKey: typename, TValue: typename, Equatable[TValue]
+needs TValue obeys Equatable
     a: &SortedDictEmitter[TKey, TValue] <- .hollow()
     b: &SortedDictEmitter[TKey, TValue] <- .hollow()
 
@@ -274,7 +260,6 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
 ### :param key: The key to look for.
 ### :returns: `true` when an equal key is in the map.
 routine @SortedDict[TKey, TValue].has_key(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     when me.find_spot(key)
         is SortedDictSpot[TKey, TValue] => return true
         is None => return false
@@ -283,7 +268,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: `true` when an equal key is in the map.
 routine @SortedDict[TKey, TValue].has_key(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     there: Bool = me.has_key(probe)
@@ -295,7 +279,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: `true` when `has_key` would be `false`.
 routine @SortedDict[TKey, TValue].lacks_key(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     there: Bool = me.has_key(key)
     return not there
 
@@ -303,7 +286,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: `true` when `has_key` would be `false`.
 routine @SortedDict[TKey, TValue].lacks_key(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     there: Bool = me.has_key(steal key)
     return not there
 
@@ -313,7 +295,6 @@ needs TKey: typename, TValue: typename
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 @track_caller
 secret routine @SortedDict[TKey, TValue].locate_rank(rank: U64) -> SortedDictSpot[TKey, TValue]
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     if rank >= count
         throw IndexOutOfBoundsError(index: rank, count)
@@ -344,7 +325,7 @@ needs TKey: typename, TValue: typename
 ### :returns: The key and its value.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine @SortedDict[TKey, TValue].get_by_rank(rank: U64) -> KVPair[TKey, TValue]
-needs TKey: record, TValue: record
+needs RecordType TKey, RecordType TValue
     spot: SortedDictSpot[TKey, TValue] = me.locate_rank(rank)
     node: @SortedDictNode[TKey, TValue] = spot.node
     key: TKey = node.keys[spot.index]
@@ -356,7 +337,6 @@ needs TKey: record, TValue: record
 ### :returns: The value's address.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine @SortedDict[TKey, TValue].value_ptr_by_rank(rank: U64) -> @TValue
-needs TKey: typename, TValue: typename
     spot: SortedDictSpot[TKey, TValue] = me.locate_rank(rank)
     node: @SortedDictNode[TKey, TValue] = spot.node
     value: @TValue = node.values.getview().to[@TValue]().stride(spot.index)
@@ -369,7 +349,6 @@ needs TKey: typename, TValue: typename
 ### :returns: True when it split, false when the memory manager failed (before anything moved).
 @reshaping
 routine @SortedDictNode[TKey, TValue].split_child(index: U64, manager: @MemoryManager) -> Bool
-needs TKey: typename, TValue: typename
     left: @Me = me.children[index]
     leaf: Bool = left.leaf.peek()
     right: @Me = Me.construct(leaf, manager)
@@ -438,7 +417,6 @@ needs TKey: typename, TValue: typename
 @reshaping
 routine @SortedDictNode[TKey, TValue].insert_nonfull(key: TKey, value: TValue,
     manager: @MemoryManager) -> Bool
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     if me.leaf.peek()
@@ -482,7 +460,6 @@ needs TKey: typename, TValue: typename
 @track_caller
 @reshaping
 failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
     root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
@@ -540,7 +517,6 @@ needs TKey: typename, TValue: typename
 ### :param index: The position of the entry within the leaf.
 ### :returns: The removed value.
 routine @SortedDictNode[TKey, TValue].remove_leaf_at(index: U64) -> TValue
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     me.keys.shift_left(start: index, end: count)
     old: &TValue <- me.values.take_at(index, end: count)
@@ -557,7 +533,6 @@ needs TKey: typename, TValue: typename
 ### Rotates one entry from child `i - 1` through the parent into the front of child `i`, so child `i` gains an entry. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
 routine @SortedDictNode[TKey, TValue].borrow_from_left(i: U64) -> None
-needs TKey: typename, TValue: typename
     separator: U64 = i - 1
     left: @Me = me.children[separator]
     child: @Me = me.children[i]
@@ -585,7 +560,6 @@ needs TKey: typename, TValue: typename
 ### Rotates one entry from child `i + 1` through the parent into the end of child `i`, so child `i` gains an entry. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
 routine @SortedDictNode[TKey, TValue].borrow_from_right(i: U64) -> None
-needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
     right: @Me = me.children[i + 1]
     child_count: U64 = child.count.peek()
@@ -612,7 +586,6 @@ needs TKey: typename, TValue: typename
 ### :param i: The index of the left child of the pair.
 ### :param manager: The memory manager that frees the merged node.
 routine @SortedDictNode[TKey, TValue].merge_children(i: U64, manager: @MemoryManager) -> None
-needs TKey: typename, TValue: typename
     left: @Me = me.children[i]
     right: @Me = me.children[i + 1]
     left_count: U64 = left.count.peek()
@@ -643,7 +616,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 @track_caller
 routine @SortedDictNode[TKey, TValue].ensure_min(i: U64, manager: @MemoryManager) -> U64
-needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
     child_count: U64 = child.count.peek()
     if child_count >= SORTED_DICT_NODE_MIN_KEYS
@@ -680,7 +652,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The removed largest key.
 routine @SortedDictNode[TKey, TValue].take_max_key(out_value: @TValue,
     manager: @MemoryManager) -> TKey
-needs TKey: typename, TValue: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
         index: U64 = count - 1
@@ -700,7 +671,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The removed smallest key.
 routine @SortedDictNode[TKey, TValue].take_min_key(out_value: @TValue,
     manager: @MemoryManager) -> TKey
-needs TKey: typename, TValue: typename
     if me.leaf.peek()
         key: &TKey <- steal me.keys.getslot(0)
         out_value.poke(me.remove_leaf_at(0))
@@ -717,7 +687,6 @@ needs TKey: typename, TValue: typename
 ### :param manager: The memory manager used when nodes merge.
 ### :returns: `true` when the key was found and removed, `false` otherwise.
 routine @SortedDictNode[TKey, TValue].remove(key: @TKey, manager: @MemoryManager) -> Bool
-needs TKey: typename, TValue: typename
     slot: U64 = me.find_index(key)
 
     count: U64 = me.count.peek()
@@ -770,7 +739,6 @@ needs TKey: typename, TValue: typename
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 @reshaping
 routine @SortedDict[TKey, TValue].remove(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     if root.is_hollow()
@@ -797,7 +765,6 @@ needs TKey: typename, TValue: typename
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 @reshaping
 routine @SortedDict[TKey, TValue].remove(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     removed: Bool = me.remove(probe)
@@ -809,7 +776,6 @@ needs TKey: typename, TValue: typename
 ### internal node has `count` keys and `count + 1` children.
 ### :param manager: The memory manager the nodes came from.
 routine @SortedDictNode[TKey, TValue].free_recursive(manager: @MemoryManager) -> None
-needs TKey: typename, TValue: typename
     for i in 0 til me.count.peek()
         drop me.keys.getslot(i)
         drop me.values.getslot(i)
@@ -831,7 +797,6 @@ needs TKey: typename, TValue: typename
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine @SortedDict[TKey, TValue].destruct() -> None
-needs TKey: typename, TValue: typename
     root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     if not root.is_hollow()
@@ -847,7 +812,7 @@ needs TKey: typename, TValue: typename
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @SortedDict[TKey, TValue].represent_into[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     me.write_entries(out)
     return
 
@@ -855,7 +820,7 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @SortedDict[TKey, TValue].diagnose_into[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     me.write_entries(out)
     return
 
@@ -863,7 +828,7 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 secret routine @SortedDict[TKey, TValue].write_entries[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     if me.is_empty()
         # {} is the empty set, so the empty map writes the colon
         write_str(out, text: "{:}")

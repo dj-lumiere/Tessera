@@ -10,10 +10,9 @@ module Collections
 ### :typeparam T: The element type.
 entity List[T]
 obeys Destructible[List[T]]
-obeys Equatable[List[T]] when T: typename, Equatable[T]
-obeys Representable[List[T]] when T: typename, Diagnosable[T]
-obeys Diagnosable[List[T]] when T: typename, Diagnosable[T]
-needs T: typename
+obeys Equatable[List[T]] when T obeys Equatable
+obeys Representable[List[T]] when T obeys Diagnosable
+obeys Diagnosable[List[T]] when T obeys Diagnosable
 obeys ViewingIndexable[List[T], T], ModifyingIndexable[List[T], T]
     storage: BorrowedSlice[T]
     count: U64
@@ -22,7 +21,6 @@ obeys ViewingIndexable[List[T], T], ModifyingIndexable[List[T], T]
 ### :param manager: The memory manager the list stores and later frees its memory with.
 ### :returns: A new empty List.
 common routine List[T].construct(manager: @MemoryManager) -> Me
-needs T: typename
     return Me(storage: BorrowedSlice[T].construct(count: 0, manager: manager), count: 0)
 
 ### A List of the values of an Items, in order, drawing its storage from `manager`. Its values go into the list.
@@ -34,7 +32,7 @@ needs T: typename
 @track_caller
 @expensive("borrows memory")
 common routine List[T].of[COUNT](values: Items[T, COUNT], manager: @MemoryManager) -> Me
-needs T: record, COUNT: U64
+needs RecordType T, U64 COUNT
     list: &Me <- Me.construct(manager)
 
     # one place at least, so the array always has memory to go into
@@ -54,7 +52,7 @@ needs T: record, COUNT: U64
 @track_caller
 @expensive("borrows memory")
 common routine List[T].of[COUNT](values: Slots[T, COUNT], manager: @MemoryManager) -> Me
-needs T: typename, COUNT: U64
+needs U64 COUNT
     list: &Me <- Me.construct(manager)
 
     # one place at least, so the array always has memory to go into
@@ -67,14 +65,12 @@ needs T: typename, COUNT: U64
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the list is empty.
 routine @List[T].count() -> U64
-needs T: typename
     count: U64 = me.count.peek()
     return count
 
 ### Whether the list holds no elements.
 ### :returns: `true` when the count is `0`.
 routine @List[T].is_empty() -> Bool
-needs T: typename
     return me.count.peek() == 0
 
 ### Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
@@ -84,7 +80,6 @@ needs T: typename
 @expensive("reallocates to exactly the capacity asked for")
 @reshaping
 failable routine @List[T].reserve(capacity: U64) -> None
-needs T: typename
     if me.make_capacity(capacity)
         return
     throw OutOfMemoryError()
@@ -94,7 +89,6 @@ needs T: typename
 ### :returns: True when the buffer is big enough, false when the memory manager failed (the list is left as it was).
 @reshaping
 secret routine @List[T].make_capacity(capacity: U64) -> Bool
-needs T: typename
     old_capacity: U64 = me.storage.count.peek()
     if old_capacity >= capacity
         return true
@@ -108,7 +102,6 @@ needs T: typename
 @track_caller
 @reshaping
 routine @List[T].ensure_capacity(wanted: U64) -> None
-needs T: typename
     if me.make_room(wanted)
         return
     throw OutOfMemoryError()
@@ -119,7 +112,6 @@ needs T: typename
 ### :returns: True when the buffer is big enough, false when the memory manager failed (the list is left as it was).
 @reshaping
 secret routine @List[T].make_room(wanted: U64) -> Bool
-needs T: typename
     capacity: U64 = me.storage.count.peek()
 
     if capacity >= wanted
@@ -143,7 +135,6 @@ needs T: typename
 @track_caller
 @reshaping
 failable routine @List[T].add_last(value: T) -> None
-needs T: typename
     count: U64 = me.count.peek()
     wanted: U64 = count + 1
     if not me.make_room(wanted)
@@ -159,7 +150,6 @@ needs T: typename
 ### :returns: The removed element.
 ### :throws: Throws `AbsentValueError` when the list is empty.
 failable routine @List[T].remove_last() -> T
-needs T: typename
     count: U64 = me.count.peek()
 
     if count == 0
@@ -176,7 +166,6 @@ needs T: typename
 ### :returns: A copy of the element.
 ### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
 failable routine @List[T].getitem(index: U64) -> T
-needs T: typename
     count: U64 = me.count.peek()
     if index >= count
         throw IndexOutOfBoundsError(index, count)
@@ -190,7 +179,6 @@ needs T: typename
 ### :returns: The element's address.
 ### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
 failable routine @List[T].getslot(index: U64) -> @T
-needs T: typename
     count: U64 = me.count.peek()
     if index >= count
         throw IndexOutOfBoundsError(index, count)
@@ -201,12 +189,15 @@ needs T: typename
 ### its place.
 ### :param index: The zero-based position to write.
 ### :param value: The value to store, taken over.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
 @track_caller
-routine @List[T].setitem(index: U64, value: T) -> None
-needs T: typename
-    drop me.getslot(index)
-    me.getslot(index).poke(steal value)
+failable routine @List[T].setitem(index: U64, value: T) -> None
+    count: U64 = me.count.peek()
+    if index >= count
+        throw IndexOutOfBoundsError(index, count)
+    data: @T = me.storage.data.peek()
+    drop data.stride(index)
+    data.stride(index).poke(steal value)
     return
 
 ### Exchanges the elements at `first` and `second` in place. Each element is moved, never copied, so entity elements
@@ -216,14 +207,12 @@ needs T: typename
 ### :throws: Crashes with `IndexOutOfBoundsError` when `first >= count` or `second >= count`.
 @track_caller
 routine @List[T].swap(first: U64, second: U64) -> None
-needs T: typename
     me.getview().swap(first, second)
     return
 
 ### The elements, borrowed: valid until the list grows, shrinks, or is destructed.
 ### :returns: A span of the `count` elements.
 routine @List[T].getview() -> @[T]
-needs T: typename
     return @[T].construct(data: me.storage.data.peek(), count: me.count.peek())
 
 ### The `count` elements from `start`, borrowed, checked against the list's count.
@@ -233,14 +222,12 @@ needs T: typename
 ### :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
 @track_caller
 routine @List[T].getslice(start: U64, count: U64) -> @[T]
-needs T: typename
     part: @[T] = me.getview().getslice(start, count)
     return part
 
 ### Removes every element (each is ended, drop) by resetting the count to `0`. The buffer and its capacity are kept
 ### for reuse.
 routine @List[T].clear() -> None
-needs T: typename
     first: @T = me.storage.data.peek()
     for i in 0 til me.count.peek()
         drop first.stride(i)
@@ -251,7 +238,7 @@ needs T: typename
 ### :param other: The list to compare with.
 ### :returns: `true` when the counts match and every element pair is equal.
 routine @List[T].eq(other: @Me) -> Bool
-needs T: typename, Equatable[T]
+needs T obeys Equatable
     la: U64 = me.count.peek()
     pa: @T = me.storage.data.peek()
     pb: @T = other.storage.data.peek()
@@ -273,7 +260,6 @@ needs T: typename, Equatable[T]
 ### :note: Does nothing on a hollow list (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @List[T].destruct() -> None
-needs T: typename
     if me.storage.manager.peek().is_hollow()
         return
     first: @T = me.storage.data.peek()
@@ -326,7 +312,7 @@ routine @List[Byte].to[CStrView]() -> CStrView
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @List[T].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     write_str(out, text: "[")
     for i in 0 til me.count()
         if i != 0
@@ -339,7 +325,7 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @List[T].diagnose_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     write_str(out, text: "[")
     for i in 0 til me.count()
         if i != 0

@@ -550,7 +550,7 @@ routine start() -> None
   parameter, `N.getview()`) its value is put in read-only data: every preset is a read-only place whose name reads as
   its value. Its value may use operators like a
   body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type argument where a count goes: `Items[Byte,
-  (BITS + 7) // 8]` with `needs BITS: U64`. An `Items`, record, tuple or routine-value preset is put in read-only data:
+  (BITS + 7) // 8]` with `needs U64 BITS`. An `Items`, record, tuple or routine-value preset is put in read-only data:
   `preset TABLE: Items[U32, _] = [...]`, `preset GREETING: Items[Byte, _] = "hello"`, `preset ORIGIN: Point = (x: 3, y:
   4)`. Its name is its value (`copy: Items[U32, 4] = TABLE`, `ORIGIN.x`), a routine on `@T` reads it in place
   (`TABLE.getitem(i)`, `TABLE[2]`, `TABLE.getview()`), and it is viewed where a `@T` or a `@[T]` of it goes (`v: @[U32]
@@ -772,7 +772,7 @@ routine start() -> None
   pairings `DurationAddable` / `ClampingDurationAddable` / `DurationSubtractable` (Moment), `WrappingOffsetAddable` /
   `WrappingOffsetSubtractable` (Addr: `a +% n` / `a -% n` with a `ByteSize`, `b -% a` the distance), `Scalable[T, TFactor]`, `ScalarDivisible[T, TDivisor]`, `ScalarFloorDivisible[T, TDivisor]`,
   `RatioDivisible[T, TRatio]` (`Duration // Duration` is an `S64`). The routine without the `obeys` is a build error
-  naming the line to write, and in a generic body `needs T: Addable[T]` gives `a + b`. `!=` is `not a.eq(b)` and
+  naming the line to write, and in a generic body `needs T obeys Addable` gives `a + b`. `!=` is `not a.eq(b)` and
   `<` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` / `le` / `gt` / `ge`, which the operator
   calls (the integers for speed, the floats' `lt` .. `ge` because `compare` says 0 for NaN, and a NaN `!=` is true).
   A literal on the left takes the right side's type
@@ -816,20 +816,31 @@ routine start() -> None
 - Range checks are chained comparisons: `b'0' <= c <= b'9'` is the closed `[lo, hi]`, `0 <= i < len` the half-open
   `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain).
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target, and so is a count
-  parameter (`COUNT: U64`).
-- **Type kinds.** `needs T: typename` takes any type. `needs T: record` takes a type whose values hold nothing with
-  a release duty (no entity, `&T`, `&[T]`, or value holding one): what a record holds by value (Records, below), and
-  what an `Items` holds. An entity argument is a build error at the type or the call. In a generic body a
-  `typename` parameter given where a `record` one is needed is a build error that names `T: record` and where to add
-  it. A routine on a type takes the type's `record` kinds without restating them.
-- **Value type parameters.** `needs P: U256` declares a parameter that takes a value, of any integer type up to
+  parameter (`needs U64 COUNT`).
+- **Needs lines.** A type parameter written in the declaration's `[T]` takes any type and needs no line (`routine
+  same[T](x: T) -> T`, `record Pair[A, B]`, `routine @List[T].push(...)`). A `needs` line writes the kind first, then
+  the name: `needs RecordType T`, `needs U64 COUNT`, `needs MemoryOrder O`. A protocol constraint names the parameter,
+  then `obeys` and the protocols, without the protocol's own first argument: `needs T obeys Comparable` (the protocol
+  `Comparable[T]`), `needs T obeys Hashable, Comparable`, and a protocol with more arguments keeps the others:
+  `needs TEmitter obeys Emitter[S64]` (`Emitter[TEmitter, S64]`). Several items go on one line separated by commas
+  (`needs RecordType TKey, RecordType TValue`, `needs T obeys Diagnosable, TWriter obeys Writer`). `needs AnyType T`
+  lists a parameter of any type where nothing else does: the owner of a routine on every type (`routine
+  TFrom.bitcast[TTo]() -> TTo` with `needs AnyType TFrom`), a top-level conformance's parameters (`obeys
+  Representable[@T] when AnyType T`), or a parameter with a default. The old `T: typename`, `N: U64` and a bare
+  `Equatable[T]` are build errors that name the line to write.
+- **Type kinds.** A parameter with no kind, or `AnyType`, takes any type. `RecordType T` takes a type whose values
+  hold nothing with a release duty (no entity, `&T`, `&[T]`, or value holding one): what a record holds by value
+  (Records, below), and what an `Items` holds. An entity argument is a build error at the type or the call. In a
+  generic body a parameter of any type given where a `RecordType` one is needed is a build error that names `needs
+  RecordType T` and where to add it. A routine on a type takes the type's `RecordType` kinds without restating them.
+- **Value type parameters.** `needs U256 P` declares a parameter that takes a value, of any integer type up to
   `U256` / `S256`. The argument keeps every bit of that type (`Field[18446744073709551557]`, `Offset[-5]` with
-  `needs D: S64`, and `Field[1]` and `Field[18446744073709551617]` are two types), and a value the type doesn't hold
-  is a build error (`Small[300]` with `needs P: U8`). In the body the name is a value of that type, a receiver
+  `needs S64 D`, and `Field[1]` and `Field[18446744073709551617]` are two types), and a value the type doesn't hold
+  is a build error (`Small[300]` with `needs U8 P`). In the body the name is a value of that type, a receiver
   included (`L.trailing_zeros()`, `P.to_wrap[U64]()`). A call names one like a type argument, as a number, an
   expression, a value parameter in scope or a preset (`first[4](a)`, `count[N + 1]()`, `first[K](x)`,
   `b.times[7]()`), and passing a type there, or a number where a type goes, is a build error.
-- **A value type parameter can be a choice.** `needs O: MemoryOrder` takes a member of the choice. The argument is
+- **A value type parameter can be a choice.** `needs MemoryOrder O` takes a member of the choice. The argument is
   the member, bare or with its choice (`Cell[RELAXED]`, `x.f[MemoryOrder.RELAXED](1)`): the parameter names the
   choice, so the bare name is enough there, and a preset, a type or a value parameter of the same name hides it. A
   choice-typed preset works too (`f[USUAL]()`). Members are told apart in type identity and in symbols (`Cell[RELAXED]`
@@ -842,17 +853,16 @@ routine start() -> None
   choice and its members, and so is a member where a number or a type goes. A flags type can't be a value
   parameter's kind (a value of one has any set of its members on): that is a build error too.
 - **Type arguments can have defaults.** A `needs` line gives one after the kind, where a binding writes its value:
-  `needs O: MemoryOrder = SEQ_CST`, `needs T: typename = U64`, `needs N: U64 = 4`, `needs A: typename, B: typename =
-  A` (a default may name a parameter before it). The form is the binding's `name: Type = value`, so the line reads the
-  way a binding does and the kind stays written. A use that leaves out trailing arguments takes the defaults: `Cell`
+  `needs MemoryOrder O = SEQ_CST`, `needs AnyType T = U64`, `needs U64 N = 4`, `needs AnyType B = A` (a default may
+  name a parameter before it). The kind stays written, then the name, then `=` and the default. A use that leaves out trailing arguments takes the defaults: `Cell`
   is `Cell[SEQ_CST]`, `f(1)` is `f[SEQ_CST](1)`, and the two spellings are one type and one instance. The parameters
   with a default come after every one without (a build error otherwise, since a use leaves out only trailing
   arguments). A routine on a type can't give the type's parameter a default (the type's own needs line does), and
   protocols and conformances take none. Inference wins over a default: a parameter the call doesn't write takes what
   the arguments or the place the result goes give it (`kind_of(narrow)` with `narrow: S8` is `kind_of[S8]`, `made:
   Cell[ACQUIRE] = cell()` is `cell[ACQUIRE]`), and only a parameter nothing gives takes its default. A default may be
-  a buildtime `if c then a else b` over the parameters before it, its `else` another such `if` (`needs S: MemoryOrder =
-  SEQ_CST, F: MemoryOrder = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S`): where a choice
+  a buildtime `if c then a else b` over the parameters before it, its `else` another such `if` (`needs MemoryOrder S =
+  SEQ_CST, MemoryOrder F = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S`): where a choice
   member goes, a bare member name is that member.
 - **`build_error("text")`** is a line that is a build error where an instance reaches it. A `when` or an `if` on a
   value type parameter goes straight to the side it takes, so a `build_error` on another side is never reached and
@@ -991,13 +1001,13 @@ routine start() -> None
   routine on it, wherever the routine is declared (an extension routine in another module
   included): a constraint is a fact about the type, said where the type is declared. So a
   routine on a record lists its type parameters and only the constraints it adds: `SortedDict[TKey, TValue].has_key`
-  calls `key.compare(...)` with `needs TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
-  `Equatable[TValue]`. The same goes for an `obeys ... when` on the type: it lists only the conditions that
-  conformance adds (`obeys Equatable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename,
-  Equatable[TValue]`, no `Comparable[TKey]`). Don't restate the record's. A free generic routine has no record, so it lists everything its
-  body uses: `needs T: typename, Comparable[T]`. Put a constraint on the record only when every use of the type
-  needs it (the keyed collections' `Comparable[TKey]` / `HashEquatable[TKey]`, `PriorityQueue`'s `Comparable[TPriority]`), and
-  element constraints only some routines need on those routines (`List[T].eq` adds `Equatable[T]`), since a record's
+  calls `key.compare(...)` with no needs line, and `SortedDict.eq` adds just
+  `needs TValue obeys Equatable`. The same goes for an `obeys ... when` on the type: it lists only the conditions that
+  conformance adds (`obeys Equatable[SortedDict[TKey, TValue]] when TValue obeys Equatable`, no `TKey obeys
+  Comparable`). Don't restate the record's. A free generic routine has no record, so it lists everything its
+  body uses: `needs T obeys Comparable`. Put a constraint on the record only when every use of the type
+  needs it (the keyed collections' `TKey obeys Comparable` / `TKey obeys HashEquatable`, `PriorityQueue`'s `TPriority obeys Comparable`), and
+  element constraints only some routines need on those routines (`List[T].eq` adds `T obeys Equatable`), since a record's
   `needs` limits which instances can exist at all. The builder checks a record's constraints when its type is
   formed and a routine's when a call instantiates it.
 - **A generic body is checked against its constraints before any instantiation.** The constraints in force are the
@@ -1014,7 +1024,7 @@ routine start() -> None
   integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Emitter`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   protocol only through an `obeys` (on its record, or a top-level `obeys C[X]` line), and the builder checks the
-  declared routines' signatures. Conditional conformance: `obeys Equatable[BorrowedCell[T]] when T: typename, Equatable[T]`.
+  declared routines' signatures. Conditional conformance: `obeys Equatable[BorrowedCell[T]] when T obeys Equatable`.
   `Reversed[T]` (Core) is a `T` whose `compare` is flipped (`Reversed[S64].construct(5)`): Comparable, Equatable,
   Hashable, Representable, and Diagnosable when `T` is.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
@@ -1028,7 +1038,7 @@ routine start() -> None
   Box[2].get`) beats `Box[L].get` for a `Box[2]`, and one with a choice member named (`routine Cell[RELAXED].load`
   or `Cell[MemoryOrder.RELAXED].load`) beats `Cell[O].load` for a `Cell[RELAXED]`; two that each name a different argument (`Pair[2, B].get` and
   `Pair[A, 3].get` on a `Pair[2, 3]`) are ambiguous. A receiver type argument may nest the routine's type parameter:
-  `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
+  `routine @List[Thread[T]].wait_all_finished()` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
   routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
   include the other's and more (`T.to[MemoryManager]` with `PageManageable[T]` over the one with
@@ -1097,7 +1107,7 @@ routine start() -> None
 
 - **One error kind: the crashable.** `crashable NotFoundError` declares a failure: a record of a few plain values
   (numbers, choices, views such as `@[Byte]`: no BorrowedSlice, BorrowedCell or entity, a build error) that writes `routine
-  NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter: typename, Writer[TWriter]`). The builder
+  NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter obeys Writer`). The builder
   writes its `name()` (the type's name) and makes it obey `Crashable`. The names are RazorForge's crashables, so a
   failure reads the same in both languages.
 - **`throw` in a failable routine gives the failure to the caller.** A routine that can fail is declared `failable
@@ -1394,10 +1404,10 @@ routine start() -> None
   nothing with a release duty: numbers, `Bool`, choices, records, and addresses (`@T`, `@[T]`, `Addr`). An entity, a
   `BorrowedCell` / `BorrowedSlice` (`&T`, `&[T]`, entities too), or a value holding one in a record is a build error
   that says to declare the holder `entity` (or hold a pointer). A release duty sits with the place (`&T`), and a value
-  carries one only when it holds a place. A generic record that holds a type parameter by value declares it `needs T:
-  record` (the parameter takes only a type whose values hold nothing with a release duty): `record Weighted[T]` with
-  `value: T` and `needs T: typename` is a build error that names `T: record`, and `Weighted[List[S64]]` is a build
-  error at the type. A generic routine that forms such a record from its own `T` declares `T: record` too. A tuple
+  carries one only when it holds a place. A generic record that holds a type parameter by value declares it `needs
+  RecordType T` (the parameter takes only a type whose values hold nothing with a release duty): `record Weighted[T]` with
+  `value: T` and no needs line is a build error that names `needs RecordType T`, and `Weighted[List[S64]]` is a build
+  error at the type. A generic routine that forms such a record from its own `T` declares `RecordType T` too. A tuple
   item can't be an entity either, and a variant follows its branches. A record or tuple item that is a
   pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the place it came
   from still holds it.
@@ -1659,7 +1669,7 @@ keeps the memory manager, so the collection can be used again. Every collection 
 `of(values: Items[T, N], manager: @MemoryManager)`, the manager always named (there is no default-heap `of`): `xs:
 &List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, RotatableList, SortedList, Set, SortedSet,
 PriorityQueue (`Items[(TPriority, TElement), N]`), BitList (`Items[Bool, N]`), Dict and SortedDict (`Items[(TKey,
-TValue), N]`) have it, the `Items` one for elements with nothing to give back (`needs T: record`). List,
+TValue), N]`) have it, the `Items` one for elements with nothing to give back (`needs RecordType T`). List,
 RotatableList, SortedList, Set and SortedSet also have `of(values: Slots[T, N], manager:)` for any element: the Slots is
 taken over, so entity values go in themselves, not copies (`List[List[S64]].of(values: [List[S64].of(values: [7],
 manager: HEAP), List[S64].construct(HEAP)], manager: HEAP)`). A literal argument is an `Items` when its elements hold
@@ -1674,7 +1684,8 @@ span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
 `remove`, and `remove_entry` are failable, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
-gives `Optional[T]`. `setitem` and `swap` still crash. Each insertion and `reserve` is failable: it throws
+gives `Optional[T]`. `setitem` (on `List`, `RotatableList`, `BitList`, `Bits` and a file storage) is failable too and throws
+`IndexOutOfBoundsError`, and `swap` still crashes. Each insertion and `reserve` is failable: it throws
 `OutOfMemoryError` when the memory can't grow (a size in bytes past U64 included) and leaves the collection unchanged, so a bare call stops there and
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Optional`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
@@ -1684,7 +1695,7 @@ says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Items[T, COUNT]` | a record, `needs T: record`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getview()` (through a pointer, the view of every element), `getslice`, `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
+| `Items[T, COUNT]` | a record, `needs RecordType T`: `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getview()` (through a pointer, the view of every element), `getslice`, `shift_left`, `shift_right`, `copy`, `take_at(index, end)` (takes the element out and closes the gap) | index |
 | `Slots[T, COUNT]` | an entity, any `T`, the same `[COUNT x T]` layout: `[a, b]` literal (`s: &Slots[Counter, 2] <- [...]`), `getslot`, `getitem` (records only), `swap`, `getview()`, `getslice`, `shift_left`, `shift_right`, `copy`, `take_at`, `destruct_all` (no `destruct`: `drop`, and the builder's give back of a STACK place, drop each element, the last first, and a Slots of plain values ends as one) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
 | `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
@@ -1692,7 +1703,7 @@ says `@reshaping(name)`.
 | `Set[T]` | `add`, `has` / `lacks`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `getslot`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet[T]` | `add`, `has` / `lacks`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `getslot` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`T: Comparable[T]`) | ascending |
+| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `getslot` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`needs T obeys Comparable`) | ascending |
 | `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` (the element moves out) / `first` (a copy), `first_slot` / `priority_slot` (the top's places), `remove_entry` / `first_entry` (a `PriorityEntry` record with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
 Every collection represents and diagnoses the same way, in Tessera source form with each element diagnosed (strings
@@ -2348,7 +2359,7 @@ decide what `[...]` after it is. Before `(` it is a routine's or type's argument
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Optional[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
-PascalCase: `Dict[TKey, TValue]`, `Emitter[TItem, TEmitter]`,
+PascalCase: `Dict[TKey, TValue]`, `Emitter[TEmitter, TItem]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver
 type's, and the receiver type's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `PointedCell[T].to[@TPointee]`. A value (const) parameter is named like a

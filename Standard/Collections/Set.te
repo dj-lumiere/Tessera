@@ -22,10 +22,10 @@ secret preset SET_SLOT_TOMBSTONE: U64 = SET_SLOT_EMPTY.sub(1)
 ### :typeparam T: The element type, which must provide hashing and equality.
 entity Set[T]
 obeys Destructible[Set[T]]
-obeys Representable[Set[T]] when T: typename, Diagnosable[T]
-obeys Diagnosable[Set[T]] when T: typename, Diagnosable[T]
-obeys Equatable[Set[T]] when T: typename
-needs T: typename, HashEquatable[T]
+obeys Representable[Set[T]] when T obeys Diagnosable
+obeys Diagnosable[Set[T]] when T obeys Diagnosable
+obeys Equatable[Set[T]]
+needs T obeys HashEquatable
     keys: BorrowedSlice[T]
     hashes: BorrowedSlice[U64]
     entry_states: BorrowedSlice[U8]
@@ -37,7 +37,6 @@ needs T: typename, HashEquatable[T]
 ### :param manager: The memory manager the set stores and later frees its memory with.
 ### :returns: A new empty Set.
 common routine Set[T].construct(manager: @MemoryManager) -> Me
-needs T: typename
     return Me(keys: BorrowedSlice[T].construct(count: 0, manager: manager),
         hashes: BorrowedSlice[U64].construct(count: 0, manager: manager),
         entry_states: BorrowedSlice[U8].construct(count: 0, manager: manager),
@@ -53,7 +52,7 @@ needs T: typename
 @track_caller
 @expensive("borrows memory")
 common routine Set[T].of[COUNT](values: Items[T, COUNT], manager: @MemoryManager) -> Me
-needs T: record, COUNT: U64
+needs RecordType T, U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
@@ -77,7 +76,7 @@ needs T: record, COUNT: U64
 @track_caller
 @expensive("borrows memory")
 common routine Set[T].of[COUNT](values: Slots[T, COUNT], manager: @MemoryManager) -> Me
-needs T: typename, COUNT: U64
+needs U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
@@ -94,14 +93,12 @@ needs T: typename, COUNT: U64
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
 routine @Set[T].count() -> U64
-needs T: typename
     count: U64 = me.count.peek()
     return count
 
 ### Whether the set holds no elements.
 ### :returns: `true` when the count is `0`.
 routine @Set[T].is_empty() -> Bool
-needs T: typename
     count: U64 = me.count.peek()
     return count == 0
 
@@ -110,7 +107,6 @@ needs T: typename
 ### :param hash: The hash of `key`.
 ### :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
 routine @Set[T].slot(key: @T, hash: U64) -> U64
-needs T: typename
     first_tombstone: &U64 <- SET_SLOT_EMPTY
 
     capacity: U64 = me.slots.count.peek()
@@ -151,7 +147,6 @@ needs T: typename
 ### :param key: The element to look for.
 ### :returns: The index of the element's entry, or `SET_SLOT_EMPTY` when it is absent.
 routine @Set[T].find(key: @T) -> U64
-needs T: typename
     capacity: U64 = me.slots.count.peek()
     if capacity == 0
         return SET_SLOT_EMPTY
@@ -167,14 +162,12 @@ needs T: typename
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is live.
 routine @Set[T].has(key: @T) -> Bool
-needs T: typename
     return me.find(key) != SET_SLOT_EMPTY
 
 ### Whether `key` is in the set.
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is live.
 routine @Set[T].has(key: T) -> Bool
-needs T: typename
     probe: &T <- steal key
 
     there: Bool = me.has(probe)
@@ -186,7 +179,6 @@ needs T: typename
 ### :param key: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine @Set[T].lacks(key: @T) -> Bool
-needs T: typename
     there: Bool = me.has(key)
     return not there
 
@@ -194,7 +186,6 @@ needs T: typename
 ### :param key: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine @Set[T].lacks(key: T) -> Bool
-needs T: typename
     probe: &T <- steal key
 
     there: Bool = me.has(probe)
@@ -207,14 +198,12 @@ needs T: typename
 ### :param other: The set to compare with.
 ### :returns: True when the two hold the same elements.
 routine @Set[T].eq(other: @Me) -> Bool
-needs T: typename
     return me.eq_at(other)
 
 ### `eq`, through pointers to the two sets.
 ### :param other: The set to compare with.
 ### :returns: True when the two hold the same elements.
 secret routine @Set[T].eq_at(other: @Me) -> Bool
-needs T: typename
     la: U64 = me.count.peek()
     lb: U64 = other.count.peek()
     if la == lb
@@ -240,7 +229,6 @@ needs T: typename
 ### :returns: True when it rehashed, false when the memory manager failed (the set is left as it was).
 @reshaping
 secret routine @Set[T].rehash(new_capacity: U64) -> Bool
-needs T: typename
     manager: @MemoryManager = me.keys.manager.peek()
     keys: &[T] <- .construct(count: 0, manager: manager)
     hashes: &[U64] <- .construct(count: 0, manager: manager)
@@ -289,7 +277,6 @@ needs T: typename
 ### :returns: True when there is room, false when the memory manager failed (the set is left as it was).
 @reshaping
 secret routine @Set[T].ensure() -> Bool
-needs T: typename
     capacity: U64 = me.slots.count.peek()
 
     if capacity == 0
@@ -305,7 +292,6 @@ needs T: typename
 ### :param hash: The element's hash, so rehash can pass the stored one instead of hashing every element again.
 ### :returns: True when a new entry was appended, false when an equal element was already live.
 routine @Set[T].add_direct(key: T, hash: U64) -> Bool
-needs T: typename
     probe: &T <- steal key
     slot: U64 = me.slot(key: probe, hash)
 
@@ -336,7 +322,6 @@ needs T: typename
 @track_caller
 @reshaping
 failable routine @Set[T].add(key: T) -> Bool
-needs T: typename
     hash: U64 = key.hash()
 
     if not me.ensure()
@@ -350,7 +335,6 @@ needs T: typename
 ### :param key: The element to remove.
 ### :returns: `true` when an element was removed, `false` when it was not present.
 routine @Set[T].remove(key: @T) -> Bool
-needs T: typename
     capacity: U64 = me.slots.count.peek()
     if capacity == 0
         return false
@@ -374,7 +358,6 @@ needs T: typename
 ### :param key: The element to remove.
 ### :returns: `true` when an element was removed, `false` when it was not present.
 routine @Set[T].remove(key: T) -> Bool
-needs T: typename
     probe: &T <- steal key
 
     removed: Bool = me.remove(probe)
@@ -388,7 +371,6 @@ needs T: typename
 ### :note: Does nothing on a hollow instance (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @Set[T].destruct() -> None
-needs T: typename
     keys: @T = me.keys.data.peek()
     states: @U8 = me.entry_states.data.peek()
     for i in 0 til me.entries_count.peek()
@@ -409,7 +391,7 @@ needs T: typename
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @Set[T].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     me.write_elements(out)
     return
 
@@ -417,7 +399,7 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @Set[T].diagnose_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     me.write_elements(out)
     return
 
@@ -425,7 +407,7 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 secret routine @Set[T].write_elements[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     keys: @T = me.keys.data.peek()
     states: @U8 = me.entry_states.data.peek()
 

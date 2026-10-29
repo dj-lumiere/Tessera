@@ -86,17 +86,17 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
     public bool Implicit { get; init; }
 }
 
-/// `needs T: typename, N: U64, Equatable[T]` or `obeys Equatable[Option[T]] when Equatable[T]`. Kind is "require" for
+/// `needs U64 N, T obeys Equatable` or `obeys Equatable[Option[T]] when T obeys Equatable`. Kind is "require" for
 /// a needs line and "conform" for an obeys line. Tokens keeps the raw text; the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {
-    /// needs: the declared parameters and their kinds (`T: typename`, `N: U64`).
+    /// needs: the declared parameters and their kinds (`AnyType T`, `U64 N`).
     public List<(string Name, TypeRef Kind, Pos Pos)> Params { get; init; } = [];
     /// needs: the protocol constraints; obeys: the protocols obeyed.
     public List<TypeRef> Concepts { get; init; } = [];
     /// obeys: the conditions after `when`, under which the conformance holds.
     public List<TypeRef> When { get; init; } = [];
-    /// needs: the default a parameter declares after its kind (`T: typename = U64`, `O: MemoryOrder = SEQ_CST`), by
+    /// needs: the default a parameter declares after its kind (`AnyType T = U64`, `MemoryOrder O = SEQ_CST`), by
     /// the parameter's name. A use that leaves out the trailing arguments takes these.
     public Dictionary<string, TypeArg> Defaults { get; init; } = [];
 }

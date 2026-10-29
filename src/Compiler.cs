@@ -153,6 +153,7 @@ public sealed partial class Compiler
                     break;
             }
         }
+        AddImplicitOwnerParams();
         foreach (var m in _userModules) CheckModuleCollision(m);
         foreach (var imp in _imports)
         {
@@ -260,7 +261,7 @@ public sealed partial class Compiler
                         string what = loose.Count > 0 ? string.Join(" and ", loose) : f.Type.ToString();
                         throw new CompileError(f.Pos, $"record '{valueRecord.Name}' holds {f.Type} in '{f.Name}', and a record "
                             + $"holds nothing with a release duty, while {what} may be an entity or hold one: "
-                            + (loose.Count > 0 ? $"declare needs {string.Join(", ", loose.Select(n => n + ": record"))}, or " : "")
+                            + (loose.Count > 0 ? $"declare needs {string.Join(", ", loose.Select(n => "RecordType " + n))}, or " : "")
                             + $"declare it entity {valueRecord.Name}");
                     }
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
@@ -313,6 +314,7 @@ public sealed partial class Compiler
     /// A routine the builder writes once the declarations are in (a type's destruct), registered as a declared one is.
     private void AddDerivedRoutine(RoutineDecl r)
     {
+        r = WithImplicitOwnerParams(r);
         _lifeRoutines.Add(r);
         if (!Selected(r)) return;
         if (IsBlanketOwner(r)) Add(_blanket, r.Name, r);
@@ -447,21 +449,79 @@ public sealed partial class Compiler
         list.Add(value);
     }
 
-    /// `routine TFrom.bitcast[TTo](...) require TFrom: typename`: the owner is a type parameter, so the routine applies to
+    /// `routine TFrom.bitcast[TTo](...)` with `needs AnyType TFrom`: the owner is a type parameter, so the routine applies to
     /// every type.
     private static bool IsBlanketOwner(RoutineDecl r) =>
         r.Owner is { Args.Count: 0 } o && ClauseTypeParams(r.Clauses).Contains(o.Name);
 
-    /// Names declared `X: typename` in require clauses.
-    private static HashSet<string> ClauseTypeParams(List<Clause> clauses)
+    /// Names a needs line declares type parameters (`AnyType X`, `RecordType X`).
+    private static HashSet<string> ClauseTypeParams(List<Clause> clauses) =>
+        clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params).Where(p => IsTypeKind(p.Kind))
+            .Select(p => p.Name).ToHashSet();
+
+    /// A routine on a type with the type parameters its owner's arguments and its own `[...]` name and no needs line
+    /// declares added as parameters of any type: `T` in `routine @List[T].push(...)` and in `routine
+    /// @List[Thread[T]].wait_all_finished()`, `A` in `routine @Thread[T].put_callable[A](...)`, `U` in `routine
+    /// PointedCell[T].to[@U]()`. A name that is a type (`Byte` in `List[Byte].write_bytes`, `S64` in
+    /// `S32.to[S64]`) or a member of the choice the slot is declared with (`RELAXED` in `Cell[RELAXED].load`) is not one.
+    private RoutineDecl WithImplicitOwnerParams(RoutineDecl r)
     {
-        var names = new HashSet<string>();
-        foreach (var c in clauses.Where(c => c.Kind == "require"))
-            for (int i = 0; i + 2 < c.Tokens.Count; i++)
-                if (c.Tokens[i].Kind == TokenKind.Ident && c.Tokens[i + 1].Kind == TokenKind.Colon
-                    && c.Tokens[i + 2].Text is "typename" or "record")
-                    names.Add(c.Tokens[i].Text);
-        return names;
+        if (r.Owner is not { } owner || (owner.Args.Count == 0 && r.Fixed.Count == 0)) return r;
+        var declared = r.Clauses.SelectMany(c => c.Params).Select(p => p.Name).ToHashSet();
+        var found = new List<(string, TypeRef, Pos)>();
+        // Read the way an owner's arguments are read elsewhere (ClauseTypeParamsOrOwnerArg): a declared type of any
+        // module, or a type the target decides (CChar, CSize).
+        bool NamesType(string name) => DeclaresType(name) || Target.ResolveTargetType(name) is not null;
+        void Visit(TypeRef t, bool top, HashSet<string> skip)
+        {
+            if (t.Member is not null || t.Known is not null) return;
+            if (t.Args.Count == 0)
+            {
+                if (t.Path is not null || t.Name is "None" or "Bool" or "Addr" or "Me" || IntType.FromName(t.Name) is not null
+                    || NamesType(t.Name) || declared.Contains(t.Name) || skip.Contains(t.Name) || found.Any(f => f.Item1 == t.Name)) return;
+                if (top && IsOwnerMember(r, t.Name)) return;
+                if (_presets.ContainsKey(("", t.Name))) return;
+                found.Add((t.Name, TypeRef.Simple("typename", t.Pos), t.Pos));
+                return;
+            }
+            foreach (var a in t.Args.OfType<TypeArgType>()) Visit(a.Type, false, skip);
+        }
+        foreach (var a in owner.Args.OfType<TypeArgType>()) Visit(a.Type, true, []);
+        int ownerFound = found.Count;
+        // The routine's own `[...]` past the owner's: parameters of their own unless they name a type.
+        var ownerNames = owner.Args.OfType<TypeArgType>().SelectMany(a => TypeNames(a.Type)).Append(owner.Name).ToHashSet();
+        foreach (var t in r.Fixed) Visit(t, false, ownerNames);
+        if (found.Count == 0) return r;
+        var own = found.Skip(ownerFound).Select(f => f.Item1).ToList();
+        var clauses = new List<Clause>([.. r.Clauses, new Clause("require", []) { Params = found }]);
+        if (own.Count == 0) return r with { Clauses = clauses };
+        // `put_callable[A, B]`: every one a parameter, so the routine is generic over them and fixes nothing.
+        if (r.Fixed.All(t => t is { Args.Count: 0, Path: null, Member: null } && own.Contains(t.Name)))
+            return r with { Clauses = clauses, TypeParams = [.. r.Fixed.Select(t => t.Name)], Fixed = [] };
+        return r with { Clauses = clauses, TypeParams = [.. r.TypeParams, .. own.Where(n => !r.TypeParams.Contains(n))] };
+    }
+
+    private static IEnumerable<string> TypeNames(TypeRef t) =>
+        new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => TypeNames(a.Type)));
+
+    /// Every routine on a type with the type parameters its owner's arguments name (WithImplicitOwnerParams), in each
+    /// table that holds it. The declarations the parser made stay as they are: a parsed file is shared by builds.
+    private void AddImplicitOwnerParams()
+    {
+        var replaced = new Dictionary<RoutineDecl, RoutineDecl>(ReferenceEqualityComparer.Instance);
+        foreach (var r in _allRoutines)
+            if (WithImplicitOwnerParams(r) is var w && !ReferenceEquals(w, r)) replaced[r] = w;
+        if (replaced.Count == 0) return;
+        RoutineDecl Swap(RoutineDecl r) => replaced.GetValueOrDefault(r, r);
+        void SwapAll(List<RoutineDecl> list)
+        {
+            for (int i = 0; i < list.Count; i++) list[i] = Swap(list[i]);
+        }
+        SwapAll(_allRoutines);
+        SwapAll(_userRoutines);
+        SwapAll(_lifeRoutines);
+        foreach (var list in _methods.Values) SwapAll(list);
+        foreach (var list in _blanket.Values) SwapAll(list);
     }
 
     /// The `@target` forms of one routine agree on whether it is failable: a call of it is written once for every
@@ -1414,7 +1474,7 @@ public sealed partial class Compiler
                         + $"elements in a Slots[{elemType.Name}, ...], an entity with the same layout");
                 if (t.Name == "Items" && MayHoldReleaseDuty(elemType))
                     throw new CompileError(t.Pos, $"an Items is a record, which holds nothing with a release duty, and its "
-                        + $"elements are {elemType.Name}, which may be an entity: declare {RecordKindFix(elemType)}: record, or "
+                        + $"elements are {elemType.Name}, which may be an entity: declare needs RecordType {RecordKindFix(elemType)}, or "
                         + $"keep them in a Slots[{elemType.Name}, ...]");
                 return new ArrayType(elemType, ConstInt(count, env, t.Pos), isSlots: t.Name == "Slots");
             }
@@ -1709,8 +1769,8 @@ public sealed partial class Compiler
     private static long AsCount(BigInteger value, Pos pos) =>
         value < long.MinValue || value > long.MaxValue ? throw new CompileError(pos, $"{value} is too large here") : (long)value;
 
-    /// The type a `needs` line declares a value parameter with: an integer type (`U256` of `needs P: U256`) or a choice
-    /// (`MemoryOrder` of `needs O: MemoryOrder`). Null for a type parameter, a name the lines don't declare, or a kind
+    /// The type a `needs` line declares a value parameter with: an integer type (`U256` of `needs U256 P`) or a choice
+    /// (`MemoryOrder` of `needs MemoryOrder O`). Null for a type parameter, a name the lines don't declare, or a kind
     /// that is neither. A flags type is a build error: a value of one has any set of its members on, so it is no one
     /// member a `when` can pick.
     public DType? ValueKind(List<Clause> clauses, string name, string file)
@@ -1736,7 +1796,7 @@ public sealed partial class Compiler
         return null;
     }
 
-    /// Whether a `needs` line declares `name` a type parameter (`T: typename`).
+    /// Whether a `needs` line declares `name` a type parameter (`AnyType T`).
     public static bool DeclaresTypename(List<Clause> clauses, string name) =>
         clauses.Any(c => c.Params.Any(p => p.Name == name && IsTypeKind(p.Kind)));
 
@@ -1747,11 +1807,11 @@ public sealed partial class Compiler
     /// Whether a kind is `record`: the parameter takes a type with no release duty.
     public static bool IsRecordKind(TypeRef kind) => kind is { Name: "record", Args.Count: 0, Path: null };
 
-    /// Whether a `needs` line declares `name` with the kind `record` (`T: record`).
+    /// Whether a `needs` line declares `name` with the kind `record` (`RecordType T`).
     public static bool DeclaresRecordKind(List<Clause> clauses, string name) =>
         clauses.Any(c => c.Kind == "require" && c.Params.Any(p => p.Name == name && IsRecordKind(p.Kind)));
 
-    /// Whether a `needs` line declares `name` a value parameter, of any kind (`N: U64`, `O: MemoryOrder`).
+    /// Whether a `needs` line declares `name` a value parameter, of any kind (`U64 N`, `MemoryOrder O`).
     public static bool DeclaresValue(List<Clause> clauses, string name) =>
         clauses.Any(c => c.Params.Any(p => p.Name == name && !IsTypeKind(p.Kind)));
 
@@ -1871,7 +1931,7 @@ public sealed partial class Compiler
 
     /// A value type argument written as an expression (`N + 1`, `MemoryOrder.RELAXED`, a preset): an integer, or a
     /// member of a choice when the expression folds to one.
-    /// Where a member of `choice` goes (a default of `needs F: MemoryOrder`), a bare member name is that member.
+    /// Where a member of `choice` goes (a default of `needs MemoryOrder F`), a bare member name is that member.
     public ConstArg EvalConstArg(Expr e, TypeEnv env, ChoiceType? choice = null)
     {
         var v = Fold(e, choice, env);

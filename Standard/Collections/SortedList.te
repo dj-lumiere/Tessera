@@ -20,7 +20,6 @@ secret preset NODE_MIN: U64 = SORTED_LIST_NODE_VALUES.add(1).div_trunc(2)
 ### One node of a {SortedList[T]} B-tree: up to `SORTED_LIST_NODE_VALUES` values inline, and for internal nodes the child pointers. An internal node keeps no separator values, and its `count` is its child count. A leaf's `count` is its value count. `subtree_count` is the total values below the node. It is an entity, so an entity element can live in it: the list makes and frees nodes, and its values move in and out with steal.
 ### :typeparam T: The element type.
 secret entity SortedListNode[T]
-needs T: typename
     leaf: Bool
     count: U64
     subtree_count: U64
@@ -31,10 +30,10 @@ needs T: typename
 ### :typeparam T: The element type, ordered by its `Comparable` conformance.
 entity SortedList[T]
 obeys Destructible[SortedList[T]]
-obeys Representable[SortedList[T]] when T: typename, Diagnosable[T]
-obeys Diagnosable[SortedList[T]] when T: typename, Diagnosable[T]
-obeys Equatable[SortedList[T]] when T: typename, Equatable[T]
-needs T: typename, Comparable[T]
+obeys Representable[SortedList[T]] when T obeys Diagnosable
+obeys Diagnosable[SortedList[T]] when T obeys Diagnosable
+obeys Equatable[SortedList[T]] when T obeys Equatable
+needs T obeys Comparable
 obeys ViewingIndexable[SortedList[T], T]
     root: @SortedListNode[T]
     count: U64
@@ -42,14 +41,12 @@ obeys ViewingIndexable[SortedList[T], T]
 
 ### Releases nothing: the list ends a node's values and frees the node itself (`free_recursive`).
 routine @SortedListNode[T].destruct() -> None
-needs T: typename
     return
 
 ### Creates an empty SortedList that draws its storage from `manager`. Nothing is allocated until the first insertion.
 ### :param manager: The memory manager the list stores and later frees its memory with.
 ### :returns: A new empty SortedList.
 common routine SortedList[T].construct(manager: @MemoryManager) -> Me
-needs T: typename
     return Me(root: .hollow(), count: 0, manager: manager)
 
 ### A SortedList of the values of an Items, drawing its storage from `manager`. The array is taken over: its values go
@@ -62,7 +59,7 @@ needs T: typename
 @track_caller
 @expensive("borrows memory")
 common routine SortedList[T].of[COUNT](values: Items[T, COUNT], manager: @MemoryManager) -> Me
-needs T: record, COUNT: U64
+needs RecordType T, U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
@@ -86,7 +83,7 @@ needs T: record, COUNT: U64
 @track_caller
 @expensive("borrows memory")
 common routine SortedList[T].of[COUNT](values: Slots[T, COUNT], manager: @MemoryManager) -> Me
-needs T: typename, COUNT: U64
+needs U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
@@ -103,14 +100,12 @@ needs T: typename, COUNT: U64
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the list is empty.
 routine @SortedList[T].count() -> U64
-needs T: typename
     count: U64 = me.count.peek()
     return count
 
 ### Whether the list holds no elements.
 ### :returns: `true` when the count is `0`.
 routine @SortedList[T].is_empty() -> Bool
-needs T: typename
     count: U64 = me.count.peek()
     return count == 0
 
@@ -119,7 +114,6 @@ needs T: typename
 ### :param manager: The memory manager to take the node from.
 ### :returns: The node, or null when the memory manager fails.
 common routine SortedListNode[T].construct(leaf: Bool, manager: @MemoryManager) -> @Me
-needs T: typename
     node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
@@ -132,7 +126,6 @@ needs T: typename
 ### The number of values in the subtree below this node.
 ### :returns: The node's subtree count, or `0` for a null node.
 routine @SortedListNode[T].subtree_count() -> U64
-needs T: typename
     if me.is_hollow()
         return 0
     count: U64 = me.subtree_count.peek()
@@ -140,7 +133,6 @@ needs T: typename
 
 ### Recomputes this node's subtree count from its own values or from its children's counts. Call it after the node's contents change.
 routine @SortedListNode[T].recount() -> None
-needs T: typename
     leaf: Bool = me.leaf.peek()
     count: U64 = me.count.peek()
     sum: &U64 <- .hollow()
@@ -161,14 +153,14 @@ needs T: typename
 ### :param other: The list to compare with.
 ### :returns: `true` when the counts match and every element pair is equal.
 routine @SortedList[T].eq(other: @Me) -> Bool
-needs T: typename, Equatable[T]
+needs T obeys Equatable
     return me.eq_at(other)
 
 ### `eq`, through pointers to the two lists.
 ### :param other: The list to compare with.
 ### :returns: True when the counts match and every element pair is equal.
 secret routine @SortedList[T].eq_at(other: @Me) -> Bool
-needs T: typename, Equatable[T]
+needs T obeys Equatable
     a: &SortedListEmitter[T] <- .hollow()
     b: &SortedListEmitter[T] <- .hollow()
 
@@ -197,7 +189,6 @@ needs T: typename, Equatable[T]
 ### :returns: A copy of the element.
 ### :throws: Throws `IndexOutOfBoundsError` when `order >= count`.
 failable routine @SortedList[T].getitem(order: U64) -> T
-needs T: typename
     slot: @T = when check me.getslot(order)
         is @T as at => at
     return slot.peek()
@@ -208,7 +199,6 @@ needs T: typename
 ### :returns: The element's address.
 ### :throws: Throws `IndexOutOfBoundsError` when `order >= count`.
 failable routine @SortedList[T].getslot(order: U64) -> @T
-needs T: typename
     child_order: &U64 <- .hollow()
 
     count: U64 = me.count.peek()
@@ -227,7 +217,6 @@ needs T: typename
 ### :returns: A copy of the element.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine @SortedList[T].get_by_rank(rank: U64) -> T
-needs T: typename
     return me[rank]
 
 ### Puts `value` in sorted order, after every element equal to it.
@@ -236,7 +225,6 @@ needs T: typename
 @track_caller
 @reshaping
 failable routine @SortedList[T].add(value: T) -> None
-needs T: typename
     probe: &T <- steal value
 
     order: U64 = me.bound(value: probe, or_equal: true)
@@ -250,7 +238,6 @@ needs T: typename
 ### :param value: The value to rank.
 ### :returns: The count of smaller elements.
 routine @SortedList[T].rank(value: @T) -> U64
-needs T: typename
     rank: U64 = me.bound(value, or_equal: false)
     return rank
 
@@ -259,7 +246,6 @@ needs T: typename
 ### :param value: The value to rank.
 ### :returns: The count of smaller elements.
 routine @SortedList[T].rank(value: T) -> U64
-needs T: typename
     probe: &T <- steal value
 
     rank: U64 = me.bound(value: probe, or_equal: false)
@@ -271,7 +257,6 @@ needs T: typename
 ### :param value: The value to look for.
 ### :returns: `true` when an equal element is present.
 routine @SortedList[T].has(value: @T) -> Bool
-needs T: typename
     rank: U64 = me.rank(value)
 
     count: U64 = me.count.peek()
@@ -283,7 +268,6 @@ needs T: typename
 ### :param value: The value to look for.
 ### :returns: `true` when an equal element is present.
 routine @SortedList[T].has(value: T) -> Bool
-needs T: typename
     probe: &T <- steal value
 
     there: Bool = me.has(probe)
@@ -295,7 +279,6 @@ needs T: typename
 ### :param value: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine @SortedList[T].lacks(value: @T) -> Bool
-needs T: typename
     there: Bool = me.has(value)
     return not there
 
@@ -303,7 +286,6 @@ needs T: typename
 ### :param value: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine @SortedList[T].lacks(value: T) -> Bool
-needs T: typename
     there: Bool = me.has(steal value)
     return not there
 
@@ -313,7 +295,6 @@ needs T: typename
 ### :param or_equal: Whether elements equal to `value` count too.
 ### :returns: The count.
 secret routine @SortedList[T].bound(value: @T, or_equal: Bool) -> U64
-needs T: typename
     until lo >= hi with lo: U64 = 0, hi: U64 = me.count.peek()
         mid: U64 = lo + (hi - lo) // 2
         order: S32 = me.getslot(mid).compare(value)
@@ -332,7 +313,6 @@ needs T: typename
 ### :returns: True when it split, false when the memory manager failed (before anything moved).
 @reshaping
 routine @SortedListNode[T].split_child(index: U64, manager: @MemoryManager) -> Bool
-needs T: typename
     left: @Me = me.children[index]
     leaf: Bool = left.leaf.peek()
     right: @Me = Me.construct(leaf, manager)
@@ -386,7 +366,6 @@ needs T: typename
 ### :param out_local: Receives the position within the chosen child.
 ### :returns: The child's index.
 routine @SortedListNode[T].find_child(order: U64, out_local: @U64) -> U64
-needs T: typename
     loop with i: U64 = 0, remaining: U64 = order
         child2: @Me = me.children[i]
         count2: U64 = child2.subtree_count()
@@ -401,7 +380,6 @@ needs T: typename
 ### :param out_local: Receives the position within the chosen child.
 ### :returns: The child's index.
 routine @SortedListNode[T].find_child_strict(order: U64, out_local: @U64) -> U64
-needs T: typename
     loop with i: U64 = 0, remaining: U64 = order
         child2: @Me = me.children[i]
         count2: U64 = child2.subtree_count()
@@ -418,7 +396,6 @@ needs T: typename
 ###     the same elements, some nodes already split.
 @reshaping
 routine @SortedListNode[T].insert_nonfull(order: U64, value: T, manager: @MemoryManager) -> Bool
-needs T: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
         me.values.shift_right(start: order, end: count)
@@ -462,7 +439,6 @@ needs T: typename
 @track_caller
 @reshaping
 secret routine @SortedList[T].insert_at(order: U64, value: T) -> Bool
-needs T: typename
     count: U64 = me.count.peek()
     if order <= count
         manager: @MemoryManager = me.manager.peek()
@@ -511,7 +487,6 @@ needs T: typename
 ### Moves the last value (leaf) or last child (internal node) of child `i - 1` to the front of child `i`, so child `i` gains one. Subtree counts are updated.
 ### :param i: The index of the child that is short.
 routine @SortedListNode[T].borrow_from_left(i: U64) -> None
-needs T: typename
     left: @Me = me.children[i - 1]
     child: @Me = me.children[i]
     left_count: U64 = left.count.peek()
@@ -534,7 +509,6 @@ needs T: typename
 ### Moves the first value (leaf) or first child (internal node) of child `i + 1` to the end of child `i`, so child `i` gains one. Subtree counts are updated.
 ### :param i: The index of the child that is short.
 routine @SortedListNode[T].borrow_from_right(i: U64) -> None
-needs T: typename
     child: @Me = me.children[i]
     right: @Me = me.children[i + 1]
     child_count: U64 = child.count.peek()
@@ -558,7 +532,6 @@ needs T: typename
 ### :param i: The index of the left child of the pair.
 ### :param manager: The memory manager that frees the merged node.
 routine @SortedListNode[T].merge_children(i: U64, manager: @MemoryManager) -> None
-needs T: typename
     left: @Me = me.children[i]
     right: @Me = me.children[i + 1]
     left_count: U64 = left.count.peek()
@@ -585,7 +558,6 @@ needs T: typename
 ### :returns: The removed element.
 @track_caller
 routine @SortedListNode[T].remove(order: U64, manager: @MemoryManager) -> T
-needs T: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
         value: &T <- me.values.take_at(index: order, end: count)
@@ -613,7 +585,6 @@ needs T: typename
 @track_caller
 secret routine @SortedListNode[T].fill_child(slot: U64, local_order: U64,
     manager: @MemoryManager) -> (U64, U64)
-needs T: typename
     child: @Me = me.children[slot]
     child_count: U64 = child.count.peek()
     if child_count >= NODE_MIN
@@ -662,7 +633,6 @@ needs T: typename
 ### :throws: Crashes with `IndexOutOfBoundsError` when `order >= count`.
 @track_caller
 routine @SortedList[T].remove(order: U64) -> T
-needs T: typename
     count: U64 = me.count.peek()
     if order < count
         manager: @MemoryManager = me.manager.peek()
@@ -690,7 +660,6 @@ needs T: typename
 ### node uses `count` as its child count.
 ### :param manager: The memory manager the nodes came from.
 routine @SortedListNode[T].free_recursive(manager: @MemoryManager) -> None
-needs T: typename
     if me.leaf.peek()
         for i in 0 til me.count.peek()
             drop me.values.getslot(i)
@@ -708,7 +677,6 @@ needs T: typename
 ### Ends every element (drop), frees every node of the tree through the memory manager, and resets the list to empty.
 @track_caller
 routine @SortedList[T].destruct() -> None
-needs T: typename
     root: @SortedListNode[T] = me.root.peek()
 
     if not root.is_hollow()
@@ -724,7 +692,7 @@ needs T: typename
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @SortedList[T].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     iter_val: SortedListEmitter[T] = .construct(me)
     iter: &SortedListEmitter[T] <- iter_val
     diagnose_slots[T, SortedListEmitter[T], TWriter](out, iter, open: "[", close: "]")
@@ -734,7 +702,7 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @SortedList[T].diagnose_into[TWriter](out: @TWriter) -> None
-needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T obeys Diagnosable, TWriter obeys Writer
     iter_val: SortedListEmitter[T] = .construct(me)
     iter: &SortedListEmitter[T] <- iter_val
     diagnose_slots[T, SortedListEmitter[T], TWriter](out, iter, open: "[", close: "]")

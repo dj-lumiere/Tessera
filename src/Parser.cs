@@ -431,8 +431,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private bool IsClauseStart() => IsIdent("needs") || IsIdent("obeys") || IsIdent("require") || IsIdent("conform");
 
-    /// One clause line. `needs` lists parameters (`T: typename`, `N: U64`) and protocol constraints (`Equatable[T]`);
-    /// `obeys` lists protocols, optionally followed by `when` and the constraints under which it holds.
+    /// One clause line. `needs` lists parameters with their kind first (`AnyType T`, `RecordType T`, `U64 N`,
+    /// `MemoryOrder O = SEQ_CST`) and protocol constraints on a parameter (`T obeys Equatable, Hashable`, the protocol's
+    /// own first argument left out); `obeys` lists protocols, optionally followed by `when` and the constraints under
+    /// which it holds, written the same way.
     private Clause ParseClause()
     {
         var word = Next();
@@ -451,29 +453,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var defaults = new Dictionary<string, TypeArg>();
         bool AtEnd() => Is(TokenKind.Newline) || Is(TokenKind.Eof);
 
-        // `T: typename`, `N: U64` declare parameters; anything else is a concept constraint.
         void ParseRequireList(List<TypeRef> constraints)
         {
-            do
-            {
-                if (Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon)
-                {
-                    var name = Next();
-                    Next();
-                    parameters.Add((name.Text, ParseType(), name.Pos));
-                    // `O: MemoryOrder = SEQ_CST`: the default, which only a needs line declares.
-                    if (Is(TokenKind.Eq))
-                    {
-                        if (constraints == when)
-                            throw Error($"a conformance's conditions take no default: write {name.Text} without '= ...'");
-                        Next();
-                        // `F: MemoryOrder = if S == ACQ_REL then ACQUIRE else S`: a default chosen by the parameters
-                        // before it, which the builder folds.
-                        defaults[name.Text] = IsIdent("if") ? new TypeArgExpr(ParseIfValue(chained: true)) : ParseTypeArg(inClause: true);
-                    }
-                }
-                else constraints.Add(ParseType());
-            } while (Accept(TokenKind.Comma));
+            do ParseNeedsItem(constraints, parameters, defaults, constraints == when);
+            while (Accept(TokenKind.Comma));
         }
 
         if (kind == "require") ParseRequireList(concepts);
@@ -481,7 +464,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do concepts.Add(ParseType()); while (Accept(TokenKind.Comma));
             if (IsIdent("needs") || IsIdent("require"))
-                throw Error("a conformance's conditions are written with 'when': obeys Equatable[Option[T]] when T: typename, Equatable[T]");
+                throw Error("a conformance's conditions are written with 'when': obeys Equatable[Option[T]] when T obeys Equatable");
             if (IsIdent("when"))
             {
                 Next();
@@ -491,6 +474,111 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!AtEnd()) throw Error($"expected the end of the {kind} clause, found {Describe(Cur)}");
         var toks = tokens.Skip(start).Take(_i - start).ToList();
         return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when, Defaults = defaults };
+    }
+
+    /// One item of a needs line (or of a conformance's `when`): `AnyType T`, `RecordType T`, `U64 N`, `MemoryOrder O =
+    /// SEQ_CST`, or `T obeys Writer, Comparable` (each protocol takes T as its first argument: `T obeys Emittable[S64]`
+    /// is `Emittable[T, S64]`). The old `T: typename`, `N: U64` and a bare `Equatable[T]` are build errors that name the
+    /// line to write.
+    private void ParseNeedsItem(List<TypeRef> constraints, List<(string, TypeRef, Pos)> parameters,
+        Dictionary<string, TypeArg> defaults, bool inWhen)
+    {
+        // `T: typename`, `N: U64 = 4`: the old order, name first.
+        if (Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon)
+        {
+            var oldName = Next();
+            Next();
+            var oldKind = ParseType();
+            string written = oldKind is { Name: "typename", Args.Count: 0, Path: null } ? "AnyType"
+                : oldKind is { Name: "record", Args.Count: 0, Path: null } ? "RecordType"
+                : oldKind.ToString();
+            string tail = "";
+            if (Is(TokenKind.Eq))
+            {
+                var parts = new List<string>();
+                int depth = 0;
+                while (!(Is(TokenKind.Newline) || Is(TokenKind.Eof) || (depth == 0 && Is(TokenKind.Comma))))
+                {
+                    if (Is(TokenKind.LBracket) || Is(TokenKind.LParen)) depth++;
+                    if (Is(TokenKind.RBracket) || Is(TokenKind.RParen)) depth--;
+                    parts.Add(Next().Text);
+                }
+                tail = " " + string.Join(" ", parts);
+            }
+            string also = written == "AnyType" && !inWhen
+                ? $" (or no line at all: a parameter written in the declaration's [{oldName.Text}] takes any type)"
+                : "";
+            throw new CompileError(oldName.Pos, $"a needs line writes the kind before the name: {(inWhen ? "when" : "needs")} "
+                + $"{written} {oldName.Text}{tail}{also}");
+        }
+        // `T obeys Writer, Comparable` (the builder's derived routines also write a type there: `S64 obeys
+        // Diagnosable`), `AnyType T`, `U64 N`, or the old bare `Equatable[T]`.
+        var subjectAt = Cur.Pos;
+        var subject = ParseType();
+        if (IsIdent("obeys"))
+        {
+            Next();
+            var self = new TypeArgType(subject);
+            do
+            {
+                var protocol = ParseType();
+                constraints.Add(protocol with { Args = [self, .. protocol.Args] });
+            } while (Is(TokenKind.Comma) && !NeedsItemAfterComma() && Accept(TokenKind.Comma));
+            return;
+        }
+        if (!Is(TokenKind.Ident))
+        {
+            string word = inWhen ? "when" : "needs";
+            if (subject.Args is [TypeArgType { Type: var first }, .. var rest])
+            {
+                string others = rest.Count == 0 ? "" : $"[{string.Join(", ", rest)}]";
+                throw new CompileError(subjectAt, $"a protocol constraint names its parameter first: {word} {first} obeys "
+                    + $"{subject.Name}{others}");
+            }
+            throw Error($"a needs line names a kind and then the parameter ({word} AnyType T, {word} RecordType T, {word} U64 N) "
+                + $"or a parameter and the protocols it obeys ({word} T obeys Equatable), found {Describe(Cur)}");
+        }
+        var kindAt = subjectAt;
+        var kindRef = subject;
+        var name = Next();
+        TypeRef kindOf = kindRef switch
+        {
+            { Name: "AnyType", Args.Count: 0, Path: null } => TypeRef.Simple("typename", kindAt),
+            { Name: "RecordType", Args.Count: 0, Path: null } => TypeRef.Simple("record", kindAt),
+            { Name: "EntityType" or "ChoiceType" or "VariantType" or "FlagsType" or "RoutineType" or "TupleType" or "CrashableType",
+                Args.Count: 0, Path: null } =>
+                throw new CompileError(kindAt, $"a type parameter's kind is AnyType (any type) or RecordType (a type whose values "
+                    + $"hold nothing with a release duty), not {kindRef.Name}: needs AnyType {name.Text}"),
+            _ => kindRef,
+        };
+        parameters.Add((name.Text, kindOf, name.Pos));
+        // `MemoryOrder O = SEQ_CST`: the default, which only a needs line declares.
+        if (Is(TokenKind.Eq))
+        {
+            if (inWhen)
+                throw Error($"a conformance's conditions take no default: write {name.Text} without '= ...'");
+            Next();
+            // `MemoryOrder F = if S == ACQ_REL then ACQUIRE else S`: a default chosen by the parameters before it, which
+            // the builder folds.
+            defaults[name.Text] = IsIdent("if") ? new TypeArgExpr(ParseIfValue(chained: true)) : ParseTypeArg(inClause: true);
+        }
+    }
+
+    /// Whether the comma at the cursor starts another item of a needs line (`, U64 N`, `, TKey obeys Hashable`, the
+    /// old `, N: U64`) rather than the next protocol of a `T obeys A, B` list.
+    private bool NeedsItemAfterComma()
+    {
+        if (PeekTok(1).Kind != TokenKind.Ident) return false;
+        if (PeekTok(2).Kind == TokenKind.Colon) return true;
+        int at = _i;
+        try
+        {
+            _i++;
+            ParseType();
+            return Is(TokenKind.Ident);
+        }
+        catch (CompileError) { return false; }
+        finally { _i = at; }
     }
 
     /// `obeys C[X, ...] [when ...]` at top level, then `needs` lines for its type parameters.
@@ -550,7 +638,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
 
-    /// The defaults a declaration's needs lines give its parameters (`needs T: typename, O: MemoryOrder = SEQ_CST`)
+    /// The defaults a declaration's needs lines give its parameters (`needs MemoryOrder O = SEQ_CST`)
     /// come after every parameter without one, in the order the declaration lists them, since a use leaves out only
     /// trailing arguments. A default for a name the declaration doesn't list as its own (an owner's parameter in a
     /// routine on a type, which the type's own needs line declares) is a build error too.
@@ -593,15 +681,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         + $"their arguments are always written: drop the '= ...' after {name}'s kind");
     }
 
-    /// The names a routine's `require` clauses declare (`T: typename`, `N: U64`).
-    private static HashSet<string> RequiredNames(List<Clause> clauses)
+    /// The names a routine's needs lines declare: a kind's (`AnyType T`, `U64 N`), and a name that obeys a protocol
+    /// (`TWriter obeys Writer`), which is a type parameter.
+    private static HashSet<string> RequiredNames(List<Clause> clauses) =>
+        clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params).Select(p => p.Name)
+            .Concat(clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts)
+                .Select(c => c.Args.FirstOrDefault()).OfType<TypeArgType>()
+                .Where(a => a.Type is { Args.Count: 0, Path: null, Member: null }).Select(a => a.Type.Name))
+            .ToHashSet();
+
+    /// The clauses with every parameter in the declaration's `[...]` that no needs line declares added as a type
+    /// parameter of any type: `record Pair[A, B]` needs no line for A and B, as `needs AnyType A` would say.
+    private static List<Clause> WithImplicitParams(List<string> typeParams, List<Clause> clauses, Pos at)
     {
-        var names = new HashSet<string>();
-        foreach (var c in clauses.Where(c => c.Kind == "require"))
-            for (int i = 0; i + 1 < c.Tokens.Count; i++)
-                if (c.Tokens[i].Kind == TokenKind.Ident && c.Tokens[i + 1].Kind == TokenKind.Colon)
-                    names.Add(c.Tokens[i].Text);
-        return names;
+        var declared = clauses.SelectMany(c => c.Params).Select(p => p.Name).ToHashSet();
+        var implicitParams = typeParams.Where(n => !declared.Contains(n)).Distinct()
+            .Select(n => (n, TypeRef.Simple("typename", at), at)).ToList();
+        if (implicitParams.Count == 0) return clauses;
+        return [.. clauses, new Clause("require", []) { Params = implicitParams }];
     }
 
     private List<string> ParseTypeParamNames()
@@ -689,6 +786,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
         }
 
+        clauses = WithImplicitParams(typeParams, clauses, first.Pos);
         CheckDefaults(fixedArgs.Count > 0 ? [] : typeParams, clauses, $"routine '{(owner is null ? name : $"{owner}.{name}")}'");
         var source = annotations.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
         int headerEnd = _i > 0 ? tokens[_i - 1].Pos.Line : pos.Line;
@@ -836,7 +934,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var name = TypeName(Expect(TokenKind.Ident, isEntity ? "an entity name" : isCrashable ? "a crashable name" : "a record name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
-        var clauses = ParseClauses();
+        var clauses = WithImplicitParams(typeParams, ParseClauses(), name.Pos);
         CheckDefaults(typeParams, clauses, $"'{name.Text}'");
 
         // A type with no member variables has the body `nothing`, on the line under its header (and clauses).
@@ -892,7 +990,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var name = TypeName(Expect(TokenKind.Ident, "a variant name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
-        var clauses = ParseClauses();
+        var clauses = WithImplicitParams(typeParams, ParseClauses(), name.Pos);
         CheckDefaults(typeParams, clauses, $"'{name.Text}'");
 
         var branches = new List<VariantBranch>();
@@ -1130,7 +1228,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var name = TypeName(Expect(TokenKind.Ident, "a protocol name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
-        var clauses = ParseClauses();
+        var clauses = WithImplicitParams(typeParams, ParseClauses(), name.Pos);
         NoDefaults(clauses, $"protocol '{name.Text}'");
 
         // Required routines are written `routine Me.name(...)`, `routine T.name(...)` with one of the concept's

@@ -105,7 +105,6 @@ public class DocLintTests
             ### Types that can be compared.
             ### :typeparam T: The type compared.
             protocol Matching[T]
-            needs T: typename
                 ### True when the two are the same.
                 routine Me.matches(other: Me) -> Bool
             """);

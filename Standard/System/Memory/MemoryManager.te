@@ -70,7 +70,6 @@ crashable OutOfMemoryError
 ### the `&T` holds. A place from STACK is a frame slot the builder makes, with no call.
 ### :typeparam M: The manager type.
 protocol ResourceManageable[M]
-needs M: typename
     ### Borrows a place for one `T` and puts `t` in it.
     ### :typeparam T: The value's type.
     ### :param t: The value, taken over.
@@ -81,7 +80,6 @@ needs M: typename
 ### becomes the table every allocating routine takes with `m.to[MemoryManager]()`.
 ### :typeparam T: The manager type.
 protocol MemoryManageable[T]
-needs T: typename
     ### Lends `size` bytes aligned to `align` (a power of two), or returns null when it can't.
     ### :param size: The number of bytes.
     ### :param align: The alignment, a power of two.
@@ -107,7 +105,6 @@ needs T: typename
 ### :typeparam T: The manager type.
 protocol HeapManageable[T]
 obeys MemoryManageable[T]
-needs T: typename
 
 ### A memory manager that also handles pages: it reserves address space, commits pages of it, gives a reservation back,
 ### and sets what pages allow. Its table's `has_pages()` and `has_protect()` are true. A manager whose pages can't
@@ -115,7 +112,6 @@ needs T: typename
 ### :typeparam T: The manager type.
 protocol PageManageable[T]
 obeys MemoryManageable[T]
-needs T: typename
     ### Reserves `size` bytes of address space, no page of it usable yet.
     ### :param size: The number of bytes, rounded up to whole pages by the manager.
     ### :returns: The reservation's start, or null when the space can't be reserved.
@@ -149,14 +145,13 @@ obeys ResourceManageable[MemoryManager]
 @track_caller
 @expensive("allocates memory")
 routine @MemoryManager.borrow_and_fill[T](t: T) -> BorrowedCell[T]
-needs T: typename
     return BorrowedCell[T].construct(value: steal t, manager: me)
 
 ### Writes `Failed to allocate memory.`
 ### :typeparam TWriter: The type of the Writer.
 ### :param out: The Writer the message goes to.
 routine OutOfMemoryError.message_into[TWriter](out: @TWriter) -> None
-needs TWriter: typename, Writer[TWriter]
+needs TWriter obeys Writer
     out.write("Failed to allocate memory.")
     return
 
@@ -178,7 +173,7 @@ secret common routine MemoryManager.construct(borrow_fn: Callable[(Addr, U64, U6
 ### :typeparam T: The manager type.
 ### :returns: The table, which views the manager: the manager outlives every use of it.
 routine @T.to[MemoryManager]() -> MemoryManager
-needs T: typename, MemoryManageable[T]
+needs AnyType T, T obeys MemoryManageable
     return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
         reborrow_fn: forward_reborrow[T].to[Callable](),
         give_back_fn: forward_give_back[T].to[Callable](), reserve_fn: .hollow(),
@@ -189,7 +184,7 @@ needs T: typename, MemoryManageable[T]
 ### :typeparam T: The manager type.
 ### :returns: The table, which views the manager: the manager outlives every use of it.
 routine @T.to[MemoryManager]() -> MemoryManager
-needs T: typename, PageManageable[T]
+needs AnyType T, T obeys PageManageable
     return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
         reborrow_fn: forward_reborrow[T].to[Callable](),
         give_back_fn: forward_give_back[T].to[Callable](),
@@ -207,7 +202,7 @@ needs T: typename, PageManageable[T]
 ### :param align: The alignment, a power of two.
 ### :returns: The block, or null.
 secret routine forward_borrow[M](state: Addr, size: U64, align: U64) -> Addr
-needs M: typename, MemoryManageable[M]
+needs M obeys MemoryManageable
     manager: @M = state.to[@M]()
     return manager.borrow(size, align)
 
@@ -220,7 +215,7 @@ needs M: typename, MemoryManageable[M]
 ### :returns: The resized block, or null with the block left as it was.
 @reshaping(at)
 secret routine forward_reborrow[M](state: Addr, at: Addr, size: U64, align: U64) -> Addr
-needs M: typename, MemoryManageable[M]
+needs M obeys MemoryManageable
     manager: @M = state.to[@M]()
     return manager.reborrow(at, size, align)
 
@@ -229,7 +224,7 @@ needs M: typename, MemoryManageable[M]
 ### :param state: The manager's address.
 ### :param at: The block.
 secret routine forward_give_back[M](state: Addr, at: Addr) -> None
-needs M: typename, MemoryManageable[M]
+needs M obeys MemoryManageable
     manager: @M = state.to[@M]()
     manager.give_back(at)
     return
@@ -240,7 +235,7 @@ needs M: typename, MemoryManageable[M]
 ### :param size: The number of bytes.
 ### :returns: The reservation's start, or null.
 secret routine forward_reserve[M](state: Addr, size: U64) -> Addr
-needs M: typename, PageManageable[M]
+needs M obeys PageManageable
     manager: @M = state.to[@M]()
     return manager.reserve(size)
 
@@ -251,7 +246,7 @@ needs M: typename, PageManageable[M]
 ### :param size: The number of bytes.
 ### :returns: False when the pages can't be committed.
 secret routine forward_commit[M](state: Addr, at: Addr, size: U64) -> Bool
-needs M: typename, PageManageable[M]
+needs M obeys PageManageable
     manager: @M = state.to[@M]()
     return manager.commit(at, size)
 
@@ -261,7 +256,7 @@ needs M: typename, PageManageable[M]
 ### :param at: The reservation's start.
 ### :param size: The size reserved.
 secret routine forward_release[M](state: Addr, at: Addr, size: U64) -> None
-needs M: typename, PageManageable[M]
+needs M obeys PageManageable
     manager: @M = state.to[@M]()
     manager.release(at, size)
     return
@@ -274,7 +269,7 @@ needs M: typename, PageManageable[M]
 ### :param access: What the pages allow.
 ### :returns: False when the access can't be set.
 secret routine forward_protect[M](state: Addr, at: Addr, size: U64, access: PageAccess) -> Bool
-needs M: typename, PageManageable[M]
+needs M obeys PageManageable
     manager: @M = state.to[@M]()
     return manager.protect(at, size, access)
 
@@ -416,7 +411,6 @@ secret routine check_align(align: U64) -> None
 ### :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
 @expensive("allocates heap memory")
 routine allocate[T](count: U64, manager: @MemoryManager) -> @T
-needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
     raw: Addr = manager.borrow(size, align: alignof[T]())
@@ -435,7 +429,6 @@ needs T: typename
 @expensive("reallocates heap memory")
 @reshaping(ptr)
 routine reallocate[T](ptr: @T, new_count: U64, manager: @MemoryManager) -> @T
-needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * new_count
     raw: Addr = manager.reborrow(at: ptr, size, align: alignof[T]())
@@ -451,7 +444,6 @@ needs T: typename
 @track_caller
 @expensive("frees heap memory")
 routine deallocate[T](data: @T, manager: @MemoryManager) -> None
-needs T: typename
     manager.give_back(data)
     return
 
@@ -506,7 +498,6 @@ routine memory_manager_call_place() -> @SourceLocation
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: The ranges must not overlap, and no destructor or copy hook runs.
 routine PointedCell[T].copy(src: Me, count: U64) -> None
-needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
     raw_dst: Addr = me
@@ -522,7 +513,6 @@ needs T: typename
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: The ranges must not overlap, and no destructor or copy hook runs.
 routine PointedCell[T].copy_into(dst: Me, count: U64) -> None
-needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
     raw_dst: Addr = dst

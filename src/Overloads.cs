@@ -111,7 +111,7 @@ public sealed partial class Compiler
         OwnerTypeParams(r).Contains(name) && !(IntType.FromName(name) is not null || DeclaresType(name)) && !IsOwnerMember(r, name);
 
     /// Whether a bare name among a routine owner's arguments is a member of the choice its slot is declared with
-    /// (`RELAXED` in `Cell[RELAXED].load` with `needs O: MemoryOrder` on Cell), so the routine is for that member, not
+    /// (`RELAXED` in `Cell[RELAXED].load` with `needs MemoryOrder O` on Cell), so the routine is for that member, not
     /// for every value. A name the routine's own needs lines declare is a parameter.
     public bool IsOwnerMember(RoutineDecl r, string name)
     {
@@ -411,7 +411,7 @@ public sealed partial class Compiler
         return OverloadSet(visible, file, pos, $"routine 'T.{name}'");
     }
 
-    /// Whether a routine is on every type: `T.name` with `require T: typename`.
+    /// Whether a routine is on every type: `T.name` with `needs AnyType T`.
     public static bool IsBlanket(RoutineDecl r) => IsBlanketOwner(r);
 
     /// The first `require` concept of a routine that doesn't hold under `env`, as a reason; null when all hold. Unlike a

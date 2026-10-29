@@ -156,7 +156,7 @@ public static class Formatter
         return result;
     }
 
-    /// `obeys Equatable[Option[T]] when T: typename, Equatable[T]`: the conformance, and its conditions after `when`.
+    /// `obeys Equatable[Option[T]] when T obeys Equatable`: the conformance, and its conditions after `when`.
     private static (string Head, string Conditions)? SplitConformWhen(string s)
     {
         if (!s.StartsWith("obeys ")) return null;
@@ -996,10 +996,10 @@ public static class Formatter
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("needs ")))
                 end++;
             // `Me` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast[TTo](me: TFrom)` with
-            // `require T: typename`), so its header keeps T. `require` lines always name their types.
+            // `routine U64.min`); a type parameter by its needs line (`routine TFrom.bitcast[TTo](me: TFrom)` with
+            // `needs AnyType TFrom`), so its header keeps T.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("needs ")
-                && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^needs |,\s*){owner}\s*:"));
+                && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^needs |,\s*)(AnyType|RecordType)\s+{System.Text.RegularExpressions.Regex.Escape(owner)}\b"));
             // A routine on PointedCell<T> meets its owner spelled `@T`.
             string? atOwner = owner.StartsWith("PointedCell[", StringComparison.Ordinal) ? "@" + owner[12..^1] : null;
             string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);

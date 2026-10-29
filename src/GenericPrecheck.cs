@@ -8,7 +8,7 @@ namespace Tessera;
 /// else. It lowers like a pointer, which only the throwaway IR of the check ever sees.
 public sealed class ArchetypeType(string name, int id, bool isRecord = false) : DType
 {
-    /// Whether the parameter is declared `T: record`: its values hold nothing with a release duty.
+    /// Whether the parameter is declared `RecordType T`: its values hold nothing with a release duty.
     public bool IsRecord { get; } = isRecord;
     public override string Name => name;
     public override string Key => $"{name}#{id}";
@@ -29,7 +29,7 @@ public sealed class ArchetypeType(string name, int id, bool isRecord = false) : 
 /// or global.
 public sealed partial class Compiler
 {
-    /// What a value generic parameter (`COUNT: U64`) stands for while a body is checked: any count works, and a body
+    /// What a value generic parameter (`U64 COUNT`) stands for while a body is checked: any count works, and a body
     /// whose build depends on the count's value is checked again at each instantiation.
     private const long PrecheckCount = 8;
 
@@ -116,7 +116,7 @@ public sealed partial class Compiler
                     && BareMember(choice, bare.Name, new TypeEnv(r.File), bare.Pos) is { } member)
                     env.Bind(bare.Name, member);
         }
-        // An owner's parameter declared `T: record` is one in every routine on it, whatever the routine's needs say.
+        // An owner's parameter declared `RecordType T` is one in every routine on it, whatever the routine's needs say.
         if (r.Owner is { Args.Count: > 0 } kindOwner && ownerDecl is RecordDecl or VariantDecl)
         {
             var (ownerParams, ownerClauses) = ownerDecl is RecordDecl krd ? (krd.TypeParams, krd.Clauses) : (((VariantDecl)ownerDecl).TypeParams, ((VariantDecl)ownerDecl).Clauses);
@@ -172,7 +172,7 @@ public sealed partial class Compiler
                 var cd = FindConcept(c, method.File);
                 if (Conforms(cd, cargs, file, conf.Source.Pos) is not { } why) continue;
                 string wanted = Show(cd.Name, cargs);
-                string missing = _missingConstraint.GetValueOrDefault(ConformsKey(cd, cargs), wanted);
+                string missing = _missingConstraint.GetValueOrDefault(ConformsKey(cd, cargs), ShowNeeds(cd.Name, cargs));
                 throw new CompileError(conf.Source.Pos,
                     $"{claim} holds through '{method.DisplayName}', which requires {wanted}, and the "
                     + $"conformance doesn't promise it: {why}; add {missing} to the when of {claim}");
@@ -191,7 +191,7 @@ public sealed partial class Compiler
         var kinds = new Dictionary<string, TypeRef>();
         foreach (var c in clauses)
             foreach (var (name, kind, _) in c.Params)
-                // `T: record` on any line holds on all of them: a type's own needs line says it for every routine.
+                // `RecordType T` on any line holds on all of them: a type's own needs line says it for every routine.
                 if (!kinds.TryAdd(name, kind) && IsRecordKind(kind)) kinds[name] = kind;
         return kinds;
     }
@@ -348,15 +348,19 @@ public sealed partial class Compiler
             {
                 var req = c.Routines.First(q => OnParam(c, q));
                 string ownerParam = req.Owner!.Name == "Me" ? c.TypeParams[0] : req.Owner.Name;
-                return $"{c.Name}[{string.Join(", ", c.TypeParams.Select(p => p == ownerParam ? t.Name : p))}]";
+                string line = ownerParam == c.TypeParams[0]
+                    ? $"{t.Name} obeys {c.Name}{(c.TypeParams.Count > 1 ? $"[{string.Join(", ", c.TypeParams.Skip(1))}]" : "")}"
+                    : $"{c.Name}[{string.Join(", ", c.TypeParams.Select(p => p == ownerParam ? t.Name : p))}]";
+                return (c.Name, Line: line);
             })
-            .Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+            .Distinct().OrderBy(p => p.Name, StringComparer.Ordinal).ToList();
         string fix = providers.Count switch
         {
             0 => $"no concept has a routine '{method}': a value of a type parameter has only the routines of its constraints "
                  + "and the routines on every type",
-            1 => $"{providers[0]} provides it; add {providers[0]} to {scope.Fix}",
-            _ => $"{string.Join(" and ", providers)} provide it; add the one meant to {scope.Fix}",
+            1 => $"{providers[0].Name} provides it; add {providers[0].Line} to {scope.Fix}",
+            _ => $"{string.Join(" and ", providers.Select(p => p.Name))} provide it; add the one meant "
+                 + $"({string.Join(" or ", providers.Select(p => p.Line))}) to {scope.Fix}",
         };
         return new CompileError(pos, $"{scope.What} calls {method} on {value}, a {valueType.Name} ({t.Name} is a type parameter), "
             + $"and no constraint in force gives {t.Name} a routine '{method}' ({InForce(t)}); {fix}");
@@ -366,7 +370,7 @@ public sealed partial class Compiler
     /// add, and where.
     private string PrecheckFix(ConceptDecl concept, List<DType> args)
     {
-        string wanted = Show(concept.Name, args);
+        string wanted = ShowNeeds(concept.Name, args);
         string missing = _missingConstraint.GetValueOrDefault(ConformsKey(concept, args), wanted);
         return $"; add {missing} to {_precheck!.Fix}";
     }

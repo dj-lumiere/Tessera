@@ -96,7 +96,6 @@ public class RecordParamLintTests
     {
         string warning = Assert.Single(Lint("""
             protocol Blender[T]
-            needs T: typename
                 routine Me.blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
             """));
         Assert.Contains("routine 'Me.blend' takes 5 parameters", warning);

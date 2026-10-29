@@ -23,10 +23,10 @@ secret preset DICT_SLOT_TOMBSTONE: U64 = DICT_SLOT_EMPTY.sub(1)
 ### :typeparam TValue: The value type.
 entity Dict[TKey, TValue]
 obeys Destructible[Dict[TKey, TValue]]
-obeys Representable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
-obeys Diagnosable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
-obeys Equatable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Equatable[TValue]
-needs TKey: typename, TValue: typename, HashEquatable[TKey]
+obeys Representable[Dict[TKey, TValue]] when TKey obeys Diagnosable, TValue obeys Diagnosable
+obeys Diagnosable[Dict[TKey, TValue]] when TKey obeys Diagnosable, TValue obeys Diagnosable
+obeys Equatable[Dict[TKey, TValue]] when TValue obeys Equatable
+needs TKey obeys HashEquatable
 obeys KeyFindable[Dict[TKey, TValue], TKey, TValue]
     keys: BorrowedSlice[TKey]
     values: BorrowedSlice[TValue]
@@ -40,7 +40,6 @@ obeys KeyFindable[Dict[TKey, TValue], TKey, TValue]
 ### :param manager: The memory manager the dict stores and later frees its memory with.
 ### :returns: A new empty Dict.
 common routine Dict[TKey, TValue].construct(manager: @MemoryManager) -> Me
-needs TKey: typename, TValue: typename
     return Me(keys: BorrowedSlice[TKey].construct(count: 0, manager: manager),
         values: BorrowedSlice[TValue].construct(count: 0, manager: manager),
         hashes: BorrowedSlice[U64].construct(count: 0, manager: manager),
@@ -58,7 +57,7 @@ needs TKey: typename, TValue: typename
 @expensive("borrows memory")
 common routine Dict[TKey, TValue].of[COUNT](values: Items[(TKey, TValue), COUNT],
     manager: @MemoryManager) -> Me
-needs TKey: record, TValue: record, COUNT: U64
+needs RecordType TKey, RecordType TValue, U64 COUNT
     made: &Me <- Me.construct(manager)
     items: &List[(TKey, TValue)] <- List[(TKey, TValue)].of(values: steal values, manager: manager)
 
@@ -74,14 +73,12 @@ needs TKey: record, TValue: record, COUNT: U64
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
 routine @Dict[TKey, TValue].count() -> U64
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     return count
 
 ### Whether the dict holds no entries.
 ### :returns: `true` when the count is `0`.
 routine @Dict[TKey, TValue].is_empty() -> Bool
-needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     return count == 0
 
@@ -91,7 +88,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The slot holding the key, or else the slot a new entry should take: the first tombstone seen, else the
 ###     first empty slot.
 routine @Dict[TKey, TValue].slot(key: @TKey, hash: U64) -> U64
-needs TKey: typename, TValue: typename
     first_tombstone: &U64 <- DICT_SLOT_EMPTY
 
     capacity: U64 = me.slots.count.peek()
@@ -132,7 +128,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: The index of the key's entry, or `DICT_SLOT_EMPTY` when the key is absent.
 routine @Dict[TKey, TValue].find(key: @TKey) -> U64
-needs TKey: typename, TValue: typename
     capacity: U64 = me.slots.count.peek()
     if capacity == 0
         return DICT_SLOT_EMPTY
@@ -148,7 +143,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: The index of the key's entry, or `DICT_SLOT_EMPTY` when the key is absent.
 secret routine @Dict[TKey, TValue].find_value(key: TKey) -> U64
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     found: U64 = me.find(probe)
@@ -160,21 +154,18 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: `true` when an entry with an equal key is live.
 routine @Dict[TKey, TValue].has_key(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     return me.find(key) != DICT_SLOT_EMPTY
 
 ### Whether `key` is present.
 ### :param key: The key to look for.
 ### :returns: `true` when an entry with an equal key is live.
 routine @Dict[TKey, TValue].has_key(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     return me.find_value(steal key) != DICT_SLOT_EMPTY
 
 ### Whether the key at `key` is not a key: the opposite of `has_key`.
 ### :param key: The key to look for.
 ### :returns: `true` when `has_key` would be `false`.
 routine @Dict[TKey, TValue].lacks_key(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     there: Bool = me.has_key(key)
     return not there
 
@@ -182,7 +173,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to look for.
 ### :returns: `true` when `has_key` would be `false`.
 routine @Dict[TKey, TValue].lacks_key(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     there: Bool = me.has_key(steal key)
     return not there
 
@@ -191,14 +181,14 @@ needs TKey: typename, TValue: typename
 ### :param other: The dict to compare with.
 ### :returns: True when the two hold the same pairs.
 routine @Dict[TKey, TValue].eq(other: @Me) -> Bool
-needs TKey: typename, TValue: typename, Equatable[TValue]
+needs TValue obeys Equatable
     return me.eq_at(other)
 
 ### `eq`, through pointers to the two dicts.
 ### :param other: The dict to compare with.
 ### :returns: True when the two hold the same pairs.
 secret routine @Dict[TKey, TValue].eq_at(other: @Me) -> Bool
-needs TKey: typename, TValue: typename, Equatable[TValue]
+needs TValue obeys Equatable
     la: U64 = me.count.peek()
     lb: U64 = other.count.peek()
     if la == lb
@@ -230,7 +220,6 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
 ### :returns: True when it rehashed, false when the memory manager failed (the map is left as it was).
 @reshaping
 secret routine @Dict[TKey, TValue].rehash(new_capacity: U64) -> Bool
-needs TKey: typename, TValue: typename
     manager: @MemoryManager = me.keys.manager.peek()
     fresh: &Me <- .construct(manager)
     keys: @BorrowedSlice[TKey] = fresh.keys
@@ -279,7 +268,6 @@ needs TKey: typename, TValue: typename
 ### :returns: True when there is room, false when the memory manager failed (the map is left as it was).
 @reshaping
 secret routine @Dict[TKey, TValue].ensure() -> Bool
-needs TKey: typename, TValue: typename
     capacity: U64 = me.slots.count.peek()
 
     if capacity == 0
@@ -297,7 +285,6 @@ needs TKey: typename, TValue: typename
 ### :param value: The value to store.
 ### :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
 routine @Dict[TKey, TValue].setitem_direct(key: TKey, value: TValue, hash: U64) -> None
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
     slot: U64 = me.slot(key: probe, hash)
     slots: @U64 = me.slots.data.peek()
@@ -331,7 +318,6 @@ needs TKey: typename, TValue: typename
 @track_caller
 @reshaping
 failable routine @Dict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
-needs TKey: typename, TValue: typename
     hash: U64 = key.hash()
 
     if not me.ensure()
@@ -347,7 +333,6 @@ needs TKey: typename, TValue: typename
 ### :returns: A copy of the value.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getitem(key: @TKey) -> TValue
-needs TKey: typename, TValue: typename
     entry_idx: U64 = me.find(key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
@@ -361,7 +346,6 @@ needs TKey: typename, TValue: typename
 ### :returns: A copy of the value.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getitem(key: TKey) -> TValue
-needs TKey: typename, TValue: typename
     entry_idx: U64 = me.find_value(steal key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
@@ -376,7 +360,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The value's address.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getslot(key: @TKey) -> @TValue
-needs TKey: typename, TValue: typename
     entry_idx: U64 = me.find(key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
@@ -391,7 +374,6 @@ needs TKey: typename, TValue: typename
 ### :returns: The value's address.
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getslot(key: TKey) -> @TValue
-needs TKey: typename, TValue: typename
     entry_idx: U64 = me.find_value(steal key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
@@ -405,7 +387,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to remove, read through its place.
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 routine @Dict[TKey, TValue].remove(key: @TKey) -> Bool
-needs TKey: typename, TValue: typename
     capacity: U64 = me.slots.count.peek()
     if capacity == 0
         return false
@@ -431,7 +412,6 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to remove.
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 routine @Dict[TKey, TValue].remove(key: TKey) -> Bool
-needs TKey: typename, TValue: typename
     probe: &TKey <- steal key
 
     removed: Bool = me.remove(probe)
@@ -445,7 +425,6 @@ needs TKey: typename, TValue: typename
 ### :note: Does nothing on a hollow instance (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @Dict[TKey, TValue].destruct() -> None
-needs TKey: typename, TValue: typename
     if me.keys.manager.peek().is_hollow()
         return
     keys: @TKey = me.keys.data.peek()
@@ -470,7 +449,7 @@ needs TKey: typename, TValue: typename
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @Dict[TKey, TValue].represent_into[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     me.write_entries(out)
     return
 
@@ -478,7 +457,7 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 routine @Dict[TKey, TValue].diagnose_into[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     me.write_entries(out)
     return
 
@@ -486,7 +465,7 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
 secret routine @Dict[TKey, TValue].write_entries[TWriter](out: @TWriter) -> None
-needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+needs TKey obeys Diagnosable, TValue obeys Diagnosable, TWriter obeys Writer
     if me.is_empty()
         # {} is the empty set, so the empty map writes the colon
         write_str(out, text: "{:}")
@@ -518,7 +497,6 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :param count: The number of elements to allocate.
 ### :returns: True when it allocated, false when the memory manager failed (leaving `into` empty).
 secret routine make_array[T](into: @BorrowedSlice[T], count: U64) -> Bool
-needs T: typename
     manager: @MemoryManager = into.manager.peek()
     when check BorrowedSlice[T].construct(count, manager: manager)
         is BorrowedSlice[T] as slice =>
@@ -531,7 +509,6 @@ needs T: typename
 ### :param a: The first slice.
 ### :param b: The second slice.
 secret routine swap_slices[T](a: @BorrowedSlice[T], b: @BorrowedSlice[T]) -> None
-needs T: typename
     first: &[T] <- steal a.stride(0)
 
     a.poke(steal b.stride(0))

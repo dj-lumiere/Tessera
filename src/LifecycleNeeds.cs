@@ -24,7 +24,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         _ => null,
     };
 
-    /// Each type parameter holding something, except one declared `T: record`, whose values hold nothing to release.
+    /// Each type parameter holding something, except one declared `RecordType T`, whose values hold nothing to release.
     private static Dictionary<string, bool> ParamArgs(List<string> typeParams, List<Clause> clauses) =>
         typeParams.ToDictionary(p => p, p => !Compiler.DeclaresRecordKind(clauses, p));
 

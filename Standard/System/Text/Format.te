@@ -22,7 +22,6 @@ import Collections
 ### A sink for bytes: any type with a `write_bytes` method. Formatting routines write into a Writer, so nothing allocates unless the Writer does.
 ### :typeparam T: The type that accepts bytes.
 protocol Writer[T]
-needs T: typename
     ### Writes `count` bytes starting at `data`.
     ### :param data: The first byte to write.
     ### :param count: The number of bytes to write.
@@ -31,7 +30,6 @@ needs T: typename
 ### A type that can write its program-output text into a Writer with `represent_into`. Integers write decimal (`represent_hex_into` gives hex), @[Byte] writes itself unquoted, and Bool writes `true` or `false`.
 ### :typeparam T: The type that can write its program-output text.
 protocol Representable[T]
-needs T: typename
     ### Writes the value's program-output text to `out`.
     ### :typeparam TWriter: The type of the Writer that receives the text.
     ### :param out: The Writer the text is written to.
@@ -40,7 +38,6 @@ needs T: typename
 ### A type that can write its value in lowercase hex into a Writer with `represent_hex_into`: every integer type, which writes its bits, so a negative value shows its two's complement at the type's width. `Hex[T]` is the view that writes a value this way.
 ### :typeparam T: The type that can write its hex text.
 protocol HexRepresentable[T]
-needs T: typename
     ### Writes the value's bits in lowercase hex with no leading zeros to `out`.
     ### :typeparam TWriter: The type of the Writer that receives the text.
     ### :param out: The Writer the text is written to.
@@ -49,7 +46,6 @@ needs T: typename
 ### A type that can write its value with a fixed number of digits after the point with `represent_fixed_into`: every float type. `Fixed[T]` is the view that writes a value this way.
 ### :typeparam T: The type that can write its fixed-point text.
 protocol FixedRepresentable[T]
-needs T: typename
     ### Writes the value with exactly `digits` digits after the point to `out`.
     ### :typeparam TWriter: The type of the Writer that receives the text.
     ### :param out: The Writer the text is written to.
@@ -63,8 +59,8 @@ obeys Representable[CSize], Representable[CSSize]
 obeys Representable[B16], Representable[BF16], Representable[B32], Representable[B64], Representable[B128]
 obeys Representable[Bool], Representable[Char], Representable[@[Byte]], Representable[Addr], Representable[None]
 obeys Representable[Duration], Representable[Moment], Representable[ByteSize]
-obeys Representable[Items[T, COUNT]] when T: record, COUNT: U64, Diagnosable[T]
-obeys Representable[Slots[T, COUNT]] when T: typename, COUNT: U64, Diagnosable[T]
+obeys Representable[Items[T, COUNT]] when RecordType T, U64 COUNT, T obeys Diagnosable
+obeys Representable[Slots[T, COUNT]] when AnyType T, U64 COUNT, T obeys Diagnosable
 
 obeys HexRepresentable[S8], HexRepresentable[S16], HexRepresentable[S32], HexRepresentable[S64], HexRepresentable[S128], HexRepresentable[S256]
 obeys HexRepresentable[U8], HexRepresentable[U16], HexRepresentable[U32], HexRepresentable[U64], HexRepresentable[U128], HexRepresentable[U256]
@@ -136,8 +132,7 @@ routine @SliceWriter.write_bytes(data: @Byte, count: U64) -> None
 ### flush() is called, and nothing flushes by itself: call flush() before the
 ### program ends or reads input. Writes of 4 KiB or more skip the buffer.
 record BufWriter[T]
-needs T: typename
-obeys Writer[BufWriter[T]] when T: typename, Writer[T]
+obeys Writer[BufWriter[T]] when T obeys Writer
     secret inner: @T
     secret count: U64
     secret data: Items[Byte, 4096]
@@ -146,14 +141,13 @@ obeys Writer[BufWriter[T]] when T: typename, Writer[T]
 ### :typeparam T: The inner Writer type.
 ### :param inner: The Writer that receives the buffered bytes.
 routine @BufWriter[T].construct(inner: @T) -> None
-needs T: typename
     me.inner.poke(inner)
     me.count.poke(0)
     return
 
 ### Writes out the buffered bytes.
 routine @BufWriter[T].flush() -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     count: U64 = me.count.peek()
     inner: @T = me.inner.peek()
     buffer: @Items[Byte, 4096] = me.data
@@ -170,7 +164,7 @@ needs T: typename, Writer[T]
 ### :param data: The bytes to append.
 ### :param count: The number of bytes to append.
 routine @BufWriter[T].write_bytes(data: @Byte, count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     buffered: U64 = me.count.peek()
     fits: Bool = buffered + count <= 4096
     buffered2: U64 = when
@@ -227,7 +221,7 @@ routine @CountWriter.write_bytes(data: @Byte, count: U64) -> None
 ### :param out: The Writer the text is written to.
 ### :param text: The bytes to write.
 routine write_str[T](out: @T, text: @[Byte]) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     data: @Byte = text.data
     count: U64 = text.count
     out.write_bytes(data, count)
@@ -237,7 +231,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine write_line[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_str(out, text: "\n")
     return
 
@@ -261,7 +255,7 @@ preset TEN_POW_19_WIDE: U256 = TEN_POW_19.to[U256]()
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S8.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[S64]().represent_into(out)
     return
 
@@ -269,7 +263,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S8.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U8 = me.bits().to[U8]()
     bits.represent_hex_into(out)
     return
@@ -278,7 +272,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S16.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[S64]().represent_into(out)
     return
 
@@ -286,7 +280,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S16.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U16]().represent_hex_into(out)
     return
 
@@ -294,7 +288,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S32.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[S64]().represent_into(out)
     return
 
@@ -302,7 +296,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S32.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U32]().represent_hex_into(out)
     return
 
@@ -310,7 +304,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S64.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me < 0
         write_str(out, text: "-")
     me.abs_diff(0).represent_into(out)
@@ -320,7 +314,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S64.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U64]().represent_hex_into(out)
     return
 
@@ -328,7 +322,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S128.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me < 0
         write_str(out, text: "-")
     me.abs_diff(0).represent_into(out)
@@ -338,7 +332,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S128.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U128]().represent_hex_into(out)
     return
 
@@ -346,7 +340,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S256.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me < 0
         write_str(out, text: "-")
     me.abs_diff(0).represent_into(out)
@@ -356,7 +350,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine S256.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U256]().represent_hex_into(out)
     return
 
@@ -364,7 +358,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U8.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_into(out)
     return
 
@@ -372,7 +366,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U8.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_hex_into(out)
     return
 
@@ -380,7 +374,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U16.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_into(out)
     return
 
@@ -388,7 +382,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U16.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_hex_into(out)
     return
 
@@ -396,7 +390,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U32.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_into(out)
     return
 
@@ -404,7 +398,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U32.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_hex_into(out)
     return
 
@@ -412,7 +406,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U64.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.represent_into(out, min_digits: 0)
     return
 
@@ -421,7 +415,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_into[T](out: @T, min_digits: Me) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     buf: &Items[Byte, 20] <- .hollow()
     digits: @Byte = buf.getview().to[@Byte]()
 
@@ -446,7 +440,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U64.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.represent_hex_into(out, min_digits: 0)
     return
 
@@ -455,7 +449,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_hex_into[T](out: @T, min_digits: Me) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     buf: &Items[Byte, 16] <- .hollow()
     digits: @Byte = buf.getview().to[@Byte]()
 
@@ -481,7 +475,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U128.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.represent_into(out, min_digits: 0)
     return
 
@@ -491,7 +485,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U128.represent_into[T](out: @T, min_digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me < TWO_POW_64
         me.to[U64]().represent_into(out, min_digits)
         return
@@ -506,7 +500,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U128.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     high: U64 = (me >> 64).to[U64]()
     low: U64 = me.to_wrap[U64]()
 
@@ -521,7 +515,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U256.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.represent_into(out, min_digits: 0)
     return
 
@@ -531,7 +525,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U256.represent_into[T](out: @T, min_digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me >> 128 == 0
         me.to[U128]().represent_into(out, min_digits)
         return
@@ -546,7 +540,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine U256.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     high: U128 = (me >> 128).to[U128]()
     low: U128 = me.to_wrap[U128]()
 
@@ -563,7 +557,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine CSize.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_into(out)
     return
 
@@ -571,7 +565,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine CSize.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[U64]().represent_hex_into(out)
     return
 
@@ -579,7 +573,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine CSSize.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to[S64]().represent_into(out)
     return
 
@@ -587,7 +581,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine CSSize.represent_hex_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.to_wrap[U64]().represent_hex_into(out)
     return
 
@@ -595,7 +589,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Char.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     buf: &Items[Byte, 4] <- .hollow()
 
     bytes: @Byte = buf.getview().to[@Byte]()
@@ -608,7 +602,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Byte.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     me.diagnose_into(out)
     return
 
@@ -616,7 +610,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine None.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_str(out, text: "None")
     return
 
@@ -625,7 +619,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Duration.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me.is_zero()
         write_str(out, text: "0s")
         return
@@ -658,7 +652,7 @@ secret routine duration_nanoseconds(d: Duration) -> S128
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Moment.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     year: S64 = me.year()
     if year < 0
         write_str(out, text: "-")
@@ -686,7 +680,7 @@ needs T: typename, Writer[T]
 ### :param nanos: The nanoseconds, 1 up to 999999999.
 ### :param digits: How many digits `nanos` has with its leading zeros.
 secret routine write_fraction[T](out: @T, nanos: U32, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if nanos % 10 == 0
         write_fraction(out, nanos: nanos // 10, digits: digits - 1)
         return
@@ -698,7 +692,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine ByteSize.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_grouped_count(out, count: me.bytes())
     write_str(out, text: "B")
     return
@@ -708,7 +702,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param count: The count to write.
 secret routine write_grouped_count[T](out: @T, count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if count < 1000
         count.represent_into(out)
         return
@@ -725,7 +719,7 @@ needs T: typename, Writer[T]
 ### :param after: Whether a part came before.
 ### :returns: Whether a part has been written now, this one or one before.
 secret routine write_unit_part[T](out: @T, count: U64, unit: @[Byte], after: Bool) -> Bool
-needs T: typename, Writer[T]
+needs T obeys Writer
     if count == 0
         return after
     if after
@@ -738,7 +732,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Bool.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     if me
         write_str(out, text: "true")
         return
@@ -749,7 +743,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine @[Byte].represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_str(out, text: me)
     return
 
@@ -758,7 +752,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine @[Char].represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     for at in 0 til me.count()
         me.getitem(at).represent_into(out)
     return
@@ -768,7 +762,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param bytes: The bytes.
 routine write_byte_list[T](out: @T, bytes: @[Byte]) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_str(out, text: "[")
     for at in 0 til bytes.count()
         if at != 0
@@ -782,7 +776,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param chars: The characters.
 routine write_char_list[T](out: @T, chars: @[Char]) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_str(out, text: "[")
     for at in 0 til chars.count()
         if at != 0
@@ -802,7 +796,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Addr.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     address: U64 = ptrtoint[Me, U64](me)
     write_str(out, text: "0x")
     address.represent_hex_into(out, min_digits: 1)
@@ -814,7 +808,7 @@ needs T: typename, Writer[T]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Items[T, COUNT].represent_into[TWriter](out: @TWriter) -> None
-needs T: record, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs RecordType T, U64 COUNT, T obeys Diagnosable, TWriter obeys Writer
     slot: &Me <- me
 
     write_str(out, text: "[")
@@ -832,7 +826,7 @@ needs T: record, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine @Slots[T, COUNT].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs U64 COUNT, T obeys Diagnosable, TWriter obeys Writer
     write_str(out, text: "[")
     for at in 0 til COUNT
         if at != 0
@@ -854,7 +848,7 @@ needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter
 ### :param out: The Writer the text is written to.
 ### :param count: The number of zeros.
 routine write_zeros[T](out: @T, count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     until left == 0 with left: U64 = count
         write_str(out, text: "0")
         continue with left: left - 1
@@ -867,7 +861,7 @@ needs T: typename, Writer[T]
 ### :param first: The first digit, as an ASCII code.
 ### :param count: The number of digits.
 routine write_digits[T](out: @T, first: @U8, count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bytes: @Byte = first.to[@Byte]()
     out.write_bytes(data: bytes, count)
     return
@@ -877,7 +871,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param d: The digits and the decimal exponent.
 routine write_float_decimal[T](out: @T, d: FloatDecimal) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     buf: &Items[U8, 20] <- .hollow()
     digits: @U8 = buf.getview().to[@U8]()
     end: &U64 <- 20
@@ -902,7 +896,7 @@ needs T: typename, Writer[T]
 ### :param n: The number of digits.
 ### :param exponent: The power of ten the digits are scaled by.
 routine write_decimal_digits[T](out: @T, first: @U8, n: U64, exponent: S64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     top_place: S64 = n.to[S64]() - 1
     x: S64 = top_place + exponent
 
@@ -955,7 +949,7 @@ needs T: typename, Writer[T]
 ### :param bits: The float's bits, in the low `format.width` bits.
 ### :param format: The float's format (B16, BF16, B32, or B64).
 routine write_binary_float[T](out: @T, bits: U64, format: FloatFormat) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     mantissa_bits: S64 = format.fraction_bits.to[S64]()
     bias: S64 = format.bias.to[S64]()
     exponent_max: U64 = format.exponent_max.to[U64]()
@@ -992,7 +986,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine B64.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U64 = me.bits()
     write_binary_float(out, bits, format: Me.FORMAT)
     return
@@ -1001,7 +995,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine B32.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U64 = me.bits().to[U64]()
     write_binary_float(out, bits, format: Me.FORMAT)
     return
@@ -1010,7 +1004,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine B16.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U64 = me.bits().to[U64]()
     write_binary_float(out, bits, format: Me.FORMAT)
     return
@@ -1019,7 +1013,7 @@ needs T: typename, Writer[T]
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine BF16.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U64 = me.bits().to[U64]()
     write_binary_float(out, bits, format: Me.FORMAT)
     return
@@ -1049,7 +1043,7 @@ routine floor_log10_pow2(x: S64) -> S64
 ### :param e: The binary exponent.
 ### :param boundary: True when the gap below is half the gap above.
 routine write_float_exact[T](out: @T, f: U128, e: S64, boundary: Bool) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     even: Bool = f & 1 == 0
     r: &BigNat[320] <- .hollow()
     s: &BigNat[320] <- .hollow()
@@ -1162,7 +1156,7 @@ secret routine take_exact_digit(r: @BigNat[320], s: @BigNat[320]) -> U8
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine B128.represent_into[T](out: @T) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U128 = me.bits()
     negative: Bool = b128_is_negative_bits(bits)
     biased: S64 = b128_exponent(bits)
@@ -1218,7 +1212,7 @@ needs T: typename, Writer[T]
 ### :param e: The binary exponent.
 ### :param digits: The number of digits after the point.
 routine write_float_fixed[T](out: @T, f: U128, e: S64, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     n: &BigNat[864] <- .hollow()
     below_zero: U64 = e.min(0).abs_diff(0)
     own: U64 = below_zero.to[U64]()
@@ -1289,7 +1283,7 @@ secret routine fill_fixed_digits(n: @BigNat[864], chars: @U8) -> U64
 ### :param format: The float's format.
 ### :param digits: The number of digits after the point.
 routine write_binary_fixed[T](out: @T, bits: U128, format: FloatFormat, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     mantissa_bits: U128 = format.fraction_bits.to[U128]()
     shift: S64 = (format.bias + format.fraction_bits.to[S32]()).to[S64]()
     exponent_max: S64 = format.exponent_max.to[S64]()
@@ -1343,7 +1337,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param digits: The number of digits after the point.
 routine B64.represent_fixed_into[T](out: @T, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U128 = me.bits().to[U128]()
     write_binary_fixed(out, bits, format: Me.FORMAT, digits)
     return
@@ -1353,7 +1347,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param digits: The number of digits after the point.
 routine B32.represent_fixed_into[T](out: @T, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U128 = me.bits().to[U128]()
     write_binary_fixed(out, bits, format: Me.FORMAT, digits)
     return
@@ -1363,7 +1357,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param digits: The number of digits after the point.
 routine B16.represent_fixed_into[T](out: @T, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U128 = me.bits().to[U128]()
     write_binary_fixed(out, bits, format: Me.FORMAT, digits)
     return
@@ -1373,7 +1367,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param digits: The number of digits after the point.
 routine BF16.represent_fixed_into[T](out: @T, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     bits: U128 = me.bits().to[U128]()
     write_binary_fixed(out, bits, format: Me.FORMAT, digits)
     return
@@ -1383,7 +1377,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param digits: The number of digits after the point.
 routine B128.represent_fixed_into[T](out: @T, digits: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     write_binary_fixed(out, bits: me.bits(), format: Me.FORMAT, digits)
     return
 
@@ -1397,13 +1391,13 @@ needs T: typename, Writer[T]
 
 ### An integer in lowercase hex (represent_hex_into).
 record Hex[T]
-needs T: record, HexRepresentable[T]
+needs RecordType T, T obeys HexRepresentable
 obeys Representable[Hex[T]]
     value: T
 
 ### A float with a fixed number of digits after the point (represent_fixed_into).
 record Fixed[T]
-needs T: record, FixedRepresentable[T]
+needs RecordType T, T obeys FixedRepresentable
 obeys Representable[Fixed[T]]
     value: T
     digits: U64
@@ -1412,12 +1406,10 @@ obeys Representable[Fixed[T]]
 ### :param value: Its `value`.
 ### :returns: The new value.
 common routine Hex[T].construct(value: T) -> Me
-needs T: typename
     return Me(value)
 
 ### Releases nothing: a `Hex` holds no memory of its own.
 routine @Hex[T].destruct() -> None
-needs T: typename
     return
 
 ### Makes a `Fixed` from its fields.
@@ -1425,12 +1417,10 @@ needs T: typename
 ### :param digits: Its `digits`.
 ### :returns: The new value.
 common routine Fixed[T].construct(value: T, digits: U64) -> Me
-needs T: typename
     return Me(value, digits)
 
 ### Releases nothing: a `Fixed` holds no memory of its own.
 routine @Fixed[T].destruct() -> None
-needs T: typename
     return
 
 ### Writes the wrapped integer with its `represent_hex_into`.
@@ -1438,7 +1428,7 @@ needs T: typename
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Hex[T].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, TWriter: typename, Writer[TWriter]
+needs TWriter obeys Writer
     value: T = me.value
     value.represent_hex_into(out)
     return
@@ -1448,7 +1438,7 @@ needs T: typename, TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Fixed[T].represent_into[TWriter](out: @TWriter) -> None
-needs T: typename, TWriter: typename, Writer[TWriter]
+needs TWriter obeys Writer
     value: T = me.value
     digits: U64 = me.digits
     value.represent_fixed_into(out, digits)
@@ -1478,8 +1468,7 @@ record FormatSpec
 ### Passes writes on to inner, putting pad copies of fill before the first
 ### byte, or after it when it is - or +.
 secret record SignPadWriter[T]
-needs T: typename
-obeys Writer[SignPadWriter[T]] when T: typename, Writer[T]
+obeys Writer[SignPadWriter[T]] when T obeys Writer
     inner: @T
     fill: @[Byte]
     pad: U64
@@ -1518,7 +1507,7 @@ routine FormatSpec.with_fill(fill: @[Byte]) -> Me
 ### :param text: The text to write.
 ### :param count: How many times to write it.
 routine write_repeated[T](out: @T, text: @[Byte], count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     until left == 0 with left: U64 = count
         write_str(out, text)
         continue with left: left - 1
@@ -1532,7 +1521,7 @@ needs T: typename, Writer[T]
 ### :param value: The value to write.
 ### :param spec: The width, fill and alignment to apply.
 routine represent_with_into[TValue, TWriter](out: @TWriter, value: TValue, spec: FormatSpec) -> None
-needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue]
+needs TWriter obeys Writer, TValue obeys Representable
     fill: @[Byte] = spec.fill
     counter: &CountWriter <- .construct()
 
@@ -1568,7 +1557,7 @@ needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue
 ### :param data: The bytes being written.
 ### :param count: The number of bytes.
 routine @SignPadWriter[T].write_bytes(data: @Byte, count: U64) -> None
-needs T: typename, Writer[T]
+needs T obeys Writer
     inner: @T = me.inner.peek()
     pad: U64 = me.pad.peek()
 

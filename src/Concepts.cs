@@ -72,6 +72,10 @@ public sealed partial class Compiler
 
     private static string Show(string concept, List<DType> args) => $"{concept}[{string.Join(", ", args.Select(a => a.Name))}]";
 
+    /// A constraint as a needs line writes it: `T obeys Comparable`, `T obeys Emittable[S64]`.
+    private static string ShowNeeds(string concept, List<DType> args) => args.Count == 0 ? concept
+        : $"{args[0].Name} obeys {concept}{(args.Count > 1 ? $"[{string.Join(", ", args.Skip(1).Select(a => a.Name))}]" : "")}";
+
     // ── Requirements at use sites ──────────────────────────────────────────
 
     /// Checks the concept constraints of a routine's `require` clauses under `env` (its type parameters bound), for a
@@ -107,7 +111,7 @@ public sealed partial class Compiler
             RequireConformance(c, env, at, shown);
     }
 
-    /// The reason a type argument doesn't meet its parameter's `record` kind (`needs T: record`), or null: the type's
+    /// The reason a type argument doesn't meet its parameter's `record` kind (`needs RecordType T`), or null: the type's
     /// values may hold something with a release duty (an entity, a BorrowedCell or BorrowedSlice, a value holding one,
     /// or a type parameter declared `typename`, which may be one).
     public string? RecordKindMisfit(List<Clause> clauses, TypeEnv env, string neededBy)
@@ -117,10 +121,10 @@ public sealed partial class Compiler
             {
                 if (!IsRecordKind(kind) || env.Get(name) is not { } t || !MayHoldReleaseDuty(t)) continue;
                 if (_precheck is { } scope && MentionsArchetype(t))
-                    return $"{scope.What} gives {t.Name} to {name} of {neededBy}, which is declared {name}: record (a type whose "
-                        + $"values hold nothing with a release duty), and {t.Name} may be an entity: declare {RecordKindFix(t)}: record "
+                    return $"{scope.What} gives {t.Name} to {name} of {neededBy}, which is declared RecordType {name} (a type whose "
+                        + $"values hold nothing with a release duty), and {t.Name} may be an entity: declare needs RecordType {RecordKindFix(t)} "
                         + $"in {scope.Fix}";
-                return $"{neededBy} takes a record for {name} ({name}: record, a type whose values hold nothing with a release "
+                return $"{neededBy} takes a record for {name} (RecordType {name}, a type whose values hold nothing with a release "
                     + $"duty), and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, which ends with drop: "
                     + "keep it in an entity instead";
             }
@@ -220,7 +224,7 @@ public sealed partial class Compiler
             if (Conforms(sd, sargs, file, at) is { } why)
             {
                 // A type parameter lacking a refined concept lacks the refining one: that is the constraint to add.
-                if (_precheck is not null && args.Any(a => a is ArchetypeType)) _missingConstraint[key] = Show(concept.Name, args);
+                if (_precheck is not null && args.Any(a => a is ArchetypeType)) _missingConstraint[key] = ShowNeeds(concept.Name, args);
                 else Missing(key, sd, sargs);
                 return $"{Show(sd.Name, sargs)} doesn't hold ({why})";
             }
@@ -271,7 +275,7 @@ public sealed partial class Compiler
         // A type parameter has only the constraints in force on it.
         if (_precheck is not null && args.Any(MentionsArchetype))
         {
-            _missingConstraint[key] = Show(concept.Name, args);
+            _missingConstraint[key] = ShowNeeds(concept.Name, args);
             return $"no constraint in force says {Show(concept.Name, args)}";
         }
         // A marker states a capability its conformances grant per target (the unbroken values), so say which target.
@@ -329,7 +333,7 @@ public sealed partial class Compiler
             if (scope.Given.Any(g => decls.Contains(g.Concept) && g.Args.Count > 0 && g.Args[0].Equals(type))) return null;
             string wanted = ShownProtocol(decls[0], type, routine);
             return $"{op} on a {type.Name} needs {wanted}, and no constraint in force on {type.Name} says so "
-                + $"({InForce(archetype)}); add {wanted} to {scope.Fix}";
+                + $"({InForce(archetype)}); add {AsNeedsItem(wanted, decls[0].Name, type.Name)} to {scope.Fix}";
         }
         if (WrappingOnlyError(routine, decls, type, op) is { } wrappingOnly) return wrappingOnly;
         (ConceptDecl Decl, List<DType> Args, string Why)? failing = null;
@@ -389,6 +393,16 @@ public sealed partial class Compiler
 
     /// A protocol as the fix writes it for `type`: `Addable[Point]`, and for one over more types the others as the
     /// type's routine has them (`ViewingIndexable[Grid, S64]`), or by the protocol's parameter names.
+    /// `Addable[T]` as a needs line writes it, `T obeys Addable`, and `Scalable[T, B64]` as `T obeys Scalable[B64]`.
+    private static string AsNeedsItem(string shown, string protocol, string self)
+    {
+        string head = $"{protocol}[{self}";
+        if (!shown.StartsWith(head, StringComparison.Ordinal)) return shown;
+        string rest = shown[head.Length..];
+        return rest == "]" ? $"{self} obeys {protocol}"
+            : rest.StartsWith(", ", StringComparison.Ordinal) ? $"{self} obeys {protocol}[{rest[2..]}" : shown;
+    }
+
     private string ShownProtocol(ConceptDecl decl, DType type, string routine)
     {
         string self = DeclOf(type) switch
@@ -471,7 +485,7 @@ public sealed partial class Compiler
     }
 
     /// The arguments of `refining` for which it gives `concept[args]` directly (its `conform` clause names `concept`
-    /// over its own parameters, as `concept SlotEmitter[TItem, TEmitter]` does with `conform Emitter[TItem, TEmitter]`), or
+    /// over its own parameters, as `concept SlotEmitter[TEmitter, TItem]` does with `conform Emitter[TEmitter, TItem]`), or
     /// null when it doesn't refine `concept` or its parameters aren't all fixed by `args`.
     private static List<DType>? RefinedArgs(ConceptDecl refining, ConceptDecl concept, List<DType> args)
     {

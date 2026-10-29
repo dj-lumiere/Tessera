@@ -164,7 +164,7 @@ public static class Derive
         if (!declared.Contains((r.Name, "represent_into")) && !conformed.Contains(("Representable", r.Name)) && !derives("Representable"))
             sb.Append($"obeys {Fmt}Representable[{r.Name}]\n\n### Writes the message.\n### :typeparam TWriter: The Writer's type.\n"
                 + $"### :param out: Where it goes.\nroutine {r.Name}.represent_into[TWriter](out: @TWriter) -> None\n"
-                + $"needs TWriter: typename, {Fmt}Writer[TWriter]\n    me.message_into(out)\n    return\n\n");
+                + $"needs TWriter obeys {Fmt}Writer\n    me.message_into(out)\n    return\n\n");
         if (!declared.Contains((r.Name, "diagnose_into")) && !conformed.Contains(("Diagnosable", r.Name)) && !derives("Diagnosable"))
             sb.Append(RecordSource(r, "Diagnosable", "diagnose_into"));
         return sb.ToString();
@@ -187,7 +187,7 @@ public static class Derive
             _ => throw new InvalidOperationException(type.GetType().Name),
         };
         var constraints = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params)
-            .Select(p => $"{p.Name}: {p.Kind}").Distinct().ToList();
+            .Select(p => ParamItem(p.Name, p.Kind)).Distinct().ToList();
         var sb = new StringBuilder();
         sb.Append("### Gives back what the value holds, the last field first: the builder's walk over its fields.\n");
         Header(sb, $"routine @{SelfName(name, typeParams)}.destruct() -> None", constraints);
@@ -226,11 +226,15 @@ public static class Derive
         var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
         string partConcept = Qualified(concept == "Representable" && !sameConcept ? "Diagnosable" : concept);
-        return parameters.Select(p => $"{p.Name}: {p.Kind}")
-            .Concat(parameters.Where(p => Compiler.IsTypeKind(p.Kind)).Select(p => $"{partConcept}[{p.Name}]"))
+        return parameters.Select(p => ParamItem(p.Name, p.Kind))
+            .Concat(parameters.Where(p => Compiler.IsTypeKind(p.Kind)).Select(p => $"{p.Name} obeys {partConcept}"))
             .Distinct()
             .ToList();
     }
+
+    /// A parameter as a needs line declares it: `AnyType T`, `RecordType T`, `U64 N`.
+    private static string ParamItem(string name, TypeRef kind) =>
+        Compiler.IsRecordKind(kind) ? $"RecordType {name}" : Compiler.IsTypeKind(kind) ? $"AnyType {name}" : $"{kind} {name}";
 
     private static string SelfName(string name, List<string> typeParams) =>
         typeParams.Count == 0 ? name : $"{name}[{string.Join(", ", typeParams)}]";
@@ -265,7 +269,7 @@ public static class Derive
             {
                 string writer = WriterParam(r.TypeParams, r.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
+                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer} obeys {Fmt}Writer"))}\n");
                 WriteBody(sb, r);
                 break;
             }
@@ -404,7 +408,7 @@ public static class Derive
             // A pointer branch writes its address, so it asks nothing of the pointer to write it.
             bool writes = method is "represent_into" or "diagnose_into";
             constraints = constraints
-                .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "PointedCell" or "Addr")).Select(b => $"{part}[{b.Type}]"))
+                .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "PointedCell" or "Addr")).Select(b => $"{b.Type} obeys {part}"))
                 .Distinct().ToList();
         }
         string self = SelfName(v.Name, v.TypeParams);
@@ -419,7 +423,7 @@ public static class Derive
             {
                 string writer = WriterParam(v.TypeParams, v.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
+                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer} obeys {Fmt}Writer"))}\n");
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < branches.Count; i++)
                     sb.Append($"            is {branches[i].Type} as p => jump branch{i}(p)\n");
@@ -506,7 +510,7 @@ public static class Derive
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
                 sb.Append(WriterHeader(c.Name, method, "T"));
-                sb.Append($"needs T: typename, {Fmt}Writer[T]\n");
+                sb.Append($"needs T obeys {Fmt}Writer\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
@@ -551,7 +555,7 @@ public static class Derive
         bool diagnose = method == "diagnose_into";
         string prefix = diagnose ? $"{c.Name}." : "";
         sb.Append(WriterHeader(c.Name, method, "T"));
-        sb.Append($"needs T: typename, {Fmt}Writer[T]\n");
+        sb.Append($"needs T obeys {Fmt}Writer\n");
         sb.Append($"    bits: {u} = bitcast[Me, {u}](me)\n");
         sb.Append("    if bits == 0\n");
         sb.Append($"        {Fmt}write_str(out, \"none\")\n");

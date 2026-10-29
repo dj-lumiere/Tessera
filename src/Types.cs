@@ -400,16 +400,16 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public override string OwnerName => Decl.Name;
 }
 
-/// A value generic argument: an integer, such as the `8` in `Array[S64, 8]` or the `P` of `Field[P]` with `needs P: U256`,
-/// or a choice member, the `RELAXED` of `Cell[RELAXED]` with `needs O: MemoryOrder`. An integer's identity is its value
+/// A value generic argument: an integer, such as the `8` in `Array[S64, 8]` or the `P` of `Field[P]` with `needs U256 P`,
+/// or a choice member, the `RELAXED` of `Cell[RELAXED]` with `needs MemoryOrder O`. An integer's identity is its value
 /// alone, which keeps every bit of the declared type: two arguments that differ only above bit 63 are two types. A
 /// member's identity is its choice and its value.
 public sealed class ConstArg(BigInteger value, DType? kind = null) : DType
 {
     public BigInteger Value { get; } = value;
 
-    /// The type the parameter it binds is declared with (`U256` of `needs P: U256`, `MemoryOrder` of `needs O:
-    /// MemoryOrder`), which its name has as a value in the body. Null where nothing declares one, such as an Array's
+    /// The type the parameter it binds is declared with (`U256` of `needs U256 P`, `MemoryOrder` of `needs MemoryOrder
+    /// O`), which its name has as a value in the body. Null where nothing declares one, such as an Array's
     /// count, which is a U64.
     public DType? Kind { get; } = kind;
 

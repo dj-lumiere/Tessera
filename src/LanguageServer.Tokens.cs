@@ -31,7 +31,7 @@ public static partial class LanguageServer
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "steal",
-        "failable", "crashable", "import", "module", "secret", "common", "needs", "not", "true", "false", "typename",
+        "failable", "crashable", "import", "module", "secret", "common", "needs", "not", "true", "false", "AnyType", "RecordType",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them
@@ -261,7 +261,7 @@ public static partial class LanguageServer
         private string? _blockDoc;
         private Dictionary<string, TypeRef> _written = [];
 
-        /// The clause line that declares each type parameter in scope (`require T: typename, Equal[T]`), and where.
+        /// The clause line that declares each type parameter in scope (`needs T obeys Equatable`), and where.
         private Dictionary<string, string> _typeParamLines = [];
         private Dictionary<string, Pos> _typeParamAt = [];
 
@@ -762,7 +762,7 @@ public static partial class LanguageServer
                     foreach (var r in concept.Routines) Routine(r, _typeParams);
                     break;
                 case ConformDecl conform:
-                    // `conform Represent[@T] when T: typename` declares its own parameters.
+                    // `obeys Representable[@T] when AnyType T` declares its own parameters.
                     _typeParams = [.. conform.Clauses.SelectMany(c => c.Params).Select(p => p.Name)];
                     Clauses(conform.Clauses);
                     break;
