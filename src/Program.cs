@@ -20,7 +20,7 @@ static class Cli
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
-          tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its /// docs
+          tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its ### docs
           tessera help                  print this text
           tessera version               print the builder's version
 
@@ -65,7 +65,7 @@ static class Cli
               releases what the routine holds and is its only return), on a return outside finish, on a routine with
               blocks not written yet (todo), on a routine with five or more parameters (me aside,
               C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
-              tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
+              tests, playground, scratch, or generated directory) on a routine without a ### doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
               :returns: when it returns a value. It also warns on a call to an @expensive routine from a block on a
               loop (it builds the files to know which routine each call is). check, build, and run print the same

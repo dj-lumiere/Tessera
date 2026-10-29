@@ -448,10 +448,10 @@ public static class MemoryRules
                             // Handed into a value of this routine (a list of accesses): that value holds it for the work now.
                             // The work reads it through the place it was lent from, so it doesn't move while the work runs.
                             if (end.Into is { } into && state.Names.TryGetValue(into, out var intoId) && intoId != id)
-                                Report(end.Pos, $"'{end.Name}' is lent to the work put on '{endedWhileLent.Ticket}' on line "
+                                Report(end.Pos, $"'{end.Name}' is in use by the work put on '{endedWhileLent.Ticket}' on line "
                                     + $"{endedWhileLent.Pos.Line}, which reaches it through its place, and it leaves that place here ({end.How}): "
                                     + $"keep it there until {endedWhileLent.Wait}, or put it in its last place first and "
-                                    + "lend the work that place (xs.getslot(i))");
+                                    + "give the work that place (xs.getslot(i))");
                             else
                             {
                                 Report(end.Pos, endedWhileLent.Kept is { } kept

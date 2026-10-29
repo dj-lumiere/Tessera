@@ -63,10 +63,10 @@ public sealed partial class Compiler
 
     private ConceptDecl FindConcept(TypeRef c, string file)
     {
-        var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"concept '{c.Name}'", c.Path)
-                   ?? throw new CompileError(c.Pos, $"unknown concept '{c.Name}'");
+        var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"protocol '{c.Name}'", c.Path)
+                   ?? throw new CompileError(c.Pos, $"unknown protocol '{c.Name}'");
         if (decl.TypeParams.Count != c.Args.Count)
-            throw new CompileError(c.Pos, $"concept '{c.Name}' takes {decl.TypeParams.Count} argument(s), got {c.Args.Count}");
+            throw new CompileError(c.Pos, $"protocol '{c.Name}' takes {decl.TypeParams.Count} argument(s), got {c.Args.Count}");
         return decl;
     }
 
@@ -172,7 +172,7 @@ public sealed partial class Compiler
         {
             TypeArgType t => ResolveType(t.Type, env),
             TypeArgInt i => (DType)new ConstArg(i.Value),
-            _ => throw new CompileError(concept.Pos, $"invalid argument for concept '{concept.Name}'"),
+            _ => throw new CompileError(concept.Pos, $"invalid argument for protocol '{concept.Name}'"),
         }).ToList();
 
     // ── Satisfaction ───────────────────────────────────────────────────────
@@ -594,7 +594,7 @@ public sealed partial class Compiler
             if (misses.Count == 1) throw misses[0].Why;
             if (misses.Count > 1)
                 throw new CompileError(conf.Source.Pos, $"{claim}: none of the {misses.Count} routines '{owner.Name}.{req.Name}' has the "
-                    + $"signature the concept wants ({ShowSignature(req)}):"
+                    + $"signature the protocol wants ({ShowSignature(req)}):"
                     + string.Concat(misses.Select(m => $"\n    {ShowSignature(m.Method)} at {m.Method.Pos}: {Reason(m.Why.Text, claim)}")));
         }
         return met;
@@ -623,19 +623,19 @@ public sealed partial class Compiler
         string where = $"routine '{owner.Name}.{req.Name}' at {method.Pos}";
 
         if (method.Params.Count != req.Params.Count)
-            throw new CompileError(at, $"{claim}: {where} takes {method.Params.Count} parameter(s); the concept wants {req.Params.Count}");
+            throw new CompileError(at, $"{claim}: {where} takes {method.Params.Count} parameter(s); the protocol wants {req.Params.Count}");
         // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
         if (HasReceiver(req) != HasReceiver(method))
             throw new CompileError(at, HasReceiver(req)
-                ? $"{claim}: {where} doesn't take me; the concept calls it as a method, x.{req.Name}(...)"
-                : $"{claim}: {where} takes me; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
+                ? $"{claim}: {where} doesn't take me; the protocol calls it as a method, x.{req.Name}(...)"
+                : $"{claim}: {where} takes me; the protocol calls it by its type, {owner.Name}.{req.Name}(...)");
         // A call through the concept takes the failure the way the requirement says. A failable requirement may be met
         // by a routine that never fails (a float's `add` meets Addable's failable one): the call just never fails.
         if (method.IsFailable && !req.IsFailable)
-            throw new CompileError(at, $"{claim}: {where} is failable, and the concept's {req.Name} isn't: receive the failure inside, with check");
+            throw new CompileError(at, $"{claim}: {where} is failable, and the protocol's {req.Name} isn't: receive the failure inside, with check");
         bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
         if (req.TypeParams.Count != method.TypeParams.Count)
-            throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");
+            throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the protocol wants {req.TypeParams.Count}");
         for (int i = 0; i < req.Params.Count; i++)
         {
             if (ownTypeParams) continue;
@@ -645,13 +645,13 @@ public sealed partial class Compiler
             // place, `@Me` for `Me`.
             if (Entities.Holds(want) && have is PtrType { Pointee: { } lent } && lent.Equals(want)) continue;
             if (!want.Equals(have))
-                throw new CompileError(at, $"{claim}: parameter {i + 1} of {where} is {have}; the concept wants {want}");
+                throw new CompileError(at, $"{claim}: parameter {i + 1} of {where} is {have}; the protocol wants {want}");
         }
         if (ownTypeParams) return;
         var wantRet = ResolveType(req.ReturnType, renv, allowVoid: true);
         var haveRet = ResolveType(method.ReturnType, menv, allowVoid: true);
         if (!wantRet.Equals(haveRet))
-            throw new CompileError(at, $"{claim}: {where} returns {haveRet}; the concept wants {wantRet}");
+            throw new CompileError(at, $"{claim}: {where} returns {haveRet}; the protocol wants {wantRet}");
     }
 
     /// The environment of a method called on `owner`: its owner's type parameters bound from `owner`, and Me.

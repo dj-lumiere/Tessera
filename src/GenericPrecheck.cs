@@ -356,7 +356,7 @@ public sealed partial class Compiler
             .Distinct().OrderBy(p => p.Name, StringComparer.Ordinal).ToList();
         string fix = providers.Count switch
         {
-            0 => $"no concept has a routine '{method}': a value of a type parameter has only the routines of its constraints "
+            0 => $"no protocol has a routine '{method}': a value of a type parameter has only the routines of its constraints "
                  + "and the routines on every type",
             1 => $"{providers[0].Name} provides it; add {providers[0].Line} to {scope.Fix}",
             _ => $"{string.Join(" and ", providers.Select(p => p.Name))} provide it; add the one meant "

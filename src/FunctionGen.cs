@@ -250,7 +250,7 @@ public sealed partial class FunctionGen
                 return WorkCopied(work.Name, once);
             case ValueRef r when InferQuiet(r) is { } t && Entities.Holds(t):
                 return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it over with steal {r.Name}, "
-                    + "or lend its place as a pointer";
+                    + "or pass its place as a pointer";
             case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is { } t && Entities.Holds(t):
                 return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: pass the place as a pointer, "
                     + "or take it out with steal place as b";
@@ -690,7 +690,7 @@ public sealed partial class FunctionGen
             // A view of the place (`m: @BorrowedSlice[T] = me.m`) is no second handle.
             if (warn && type is not PtrType)
                 _c.NoteExpensiveCalls([(pos, $"{pos}: warning: '{name}' and '{of}' are the same memory, released once whichever one "
-                + $"gives it back: keep memory of its own with {of}.duplicate(), or lend it with {of}.getview()")]);
+                + $"gives it back: keep memory of its own with {of}.duplicate(), or pass a view of it with {of}.getview()")]);
             return;
         }
         if (value is MethodCallExpr { Name: "peek", Args.Count: 0 } peek && MemName(peek.Receiver) is { } slot)
