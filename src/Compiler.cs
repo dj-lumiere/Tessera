@@ -979,7 +979,8 @@ public sealed partial class Compiler
         var failureTypes = new StringBuilder(FailureTypeDefs());
         foreach (var sb in new[] { _typeDefs, failureTypes, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
-        string functions = FunctionTexts();
+        // A bfloat crosses between blocks as its bits (Bf16Blocks): -O0 would quiet a signaling NaN on the way.
+        string functions = Bf16Blocks.Rewrite(FunctionTexts());
         o.Append(MovesWaitingFibers ? TraceOutOfLine(functions) : functions);
         o.Append(ResetThreadLocals());
         o.Append(RaceCheckOptions());
