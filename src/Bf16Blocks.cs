@@ -34,6 +34,9 @@ public static partial class Bf16Blocks
     public static string Rewrite(string ir)
     {
         if (!ir.Contains("bfloat", StringComparison.Ordinal)) return ir;
+        // The functions are found by their lines (a `define` line, a closing `}` line), so a Windows line end must not
+        // hang on each line: without this a function's `}` is never found and the whole module reads as one function.
+        ir = ir.Replace("\r\n", "\n", StringComparison.Ordinal);
         var lines = ir.Split('\n');
         var o = new StringBuilder(ir.Length + 256);
         for (int i = 0; i < lines.Length; i++)
