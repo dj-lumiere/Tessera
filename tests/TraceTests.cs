@@ -34,20 +34,39 @@ public class TraceTests
     }
 
     /// An `@inline` routine is part of each caller, like `@untraced` code: its body pushes and pops no frame, so a hot
-    /// loop that calls it pays nothing for the trace on its account. Its traced caller keeps its own frame.
+    /// loop that calls it pays nothing for the trace on its account. Its traced caller keeps its own frame. The IR is
+    /// handed out on its own, so it keeps the shadow stack on every host.
     [Fact]
     public void InlineRoutineHasNoFrame()
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
         string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.te")], BuildTarget.Host(),
-            lint: false, trace: true);
+            executable: false, lint: false, trace: true);
         string inline = Body(ir, "@_Z4pass");
         Assert.DoesNotContain("trace_push", inline);
         Assert.DoesNotContain("trace_pop", inline);
         string traced = Body(ir, "@_Z5relay");
         Assert.Contains("trace_push", traced);
         Assert.Contains("trace_pop", traced);
+    }
+
+    /// An executable for Linux x86-64 reads its crash trace from the stack: no trace routine is called, and the table's
+    /// metadata lists the traced routines (relay) but not the inline or untraced ones (pass, quiet).
+    [Fact]
+    public void StackTracedExecutableCallsNoTraceRoutine()
+    {
+        string root = FindRoot();
+        Directory.SetCurrentDirectory(root);
+        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.te")],
+            BuildTarget.Parse("x86_64-linux-gnu"), lint: false, trace: true);
+        Assert.DoesNotContain("trace_push", ir);
+        Assert.DoesNotContain("trace_pop", ir);
+        Assert.True(TraceTable.Wanted(ir));
+        // A table entry is !{!<subprogram>, !"<name>", !"<file>", i32 <hides position>}.
+        Assert.Contains("!\"relay", ir);
+        Assert.DoesNotContain("!\"pass", ir);
+        Assert.DoesNotContain("!\"quiet", ir);
     }
 
     /// The text of the one routine definition whose symbol starts with `symbol`, up to its closing brace.
@@ -76,7 +95,9 @@ public class TraceTests
         string program = target.HasOs
             ? Path.Combine(root, "tests", "trace_frames", "src", "main.te")
             : Path.Combine(root, "tests", "freestanding", "main.te");
-        return Cli.Compile([program], target, lint: false, trace: trace);
+        // IR handed out on its own: a traced build keeps the shadow stack the checks above look for, also on Linux
+        // x86-64, where an executable reads its trace from the stack instead.
+        return Cli.Compile([program], target, executable: false, lint: false, trace: trace);
     }
 
     private static string FindRoot()

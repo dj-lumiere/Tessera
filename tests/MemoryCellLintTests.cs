@@ -38,8 +38,9 @@ public class MemoryCellLintTests
         Assert.Contains("this shows the cell 'view' itself (its address): if you meant its value, write view.peek()", warning);
     }
 
+    /// A `&[Byte]` a manager lent shows as its list of bytes, like a `&[Char]`: no cell is shown, so no warning.
     [Fact]
-    public void BytesFromAManagerPointToTheirText()
+    public void BytesFromAManagerShowTheirList()
     {
         var warnings = Lint("""
             routine start() -> None
@@ -48,9 +49,7 @@ public class MemoryCellLintTests
                 drop line
                 return
             """);
-        string warning = Assert.Single(warnings);
-        Assert.Contains("this shows the cell 'line' itself (its address, count and manager): if you meant its values, "
-            + "write line.getslice() for its text", warning);
+        Assert.Empty(warnings);
     }
 
     [Fact]

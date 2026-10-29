@@ -13,10 +13,12 @@ public class AsmArmTests
 {
     private static BuildTarget ArmLinux => BuildTarget.Parse("arm-linux-gnueabihf");
 
-    /// The entry a program without an operating system writes.
+    /// The entry a program without an operating system writes. The test boards name no serial port, so the entry
+    /// chooses to stop without a crash report.
     private const string PowerOn = """
         routine when_power_on() -> None
             Unhosted/prepare_core()
+            Crash.report_with(stop_quietly.to[Callable]())
             return
 
         """;
@@ -115,6 +117,7 @@ public class AsmArmTests
 
             routine when_power_on() -> None
                 Unhosted/prepare_core()
+                Crash.report_with(stop_quietly.to[Callable]())
                 return
 
             routine start() -> None
