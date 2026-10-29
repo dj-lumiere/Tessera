@@ -365,8 +365,8 @@ routine start() -> None
   Between `put_work` and the retrieve the handing routine neither uses nor gives back the access (`'held' is handed to
   the work put on 't' on line N, which changes it until it is waited for`), and it hands one access to one piece of
   work at a time. The work's parameter is the access's address (`routine double(value: @Authorized[U64])`), so the
-  work is lent the access and reaches it through its place: moving it out of that place before the work is waited
-  for is a build error (`'held' is lent to the work put on 't' on line N, which reaches it through its place, and it
+  work is handed the access's address and reaches it through its place: moving it out of that place before the work is
+  waited for is a build error (`'held' is in use by the work put on 't' on line N, which reaches it through its place, and it
   leaves that place here (...)`). A run of values goes to the work as its run's access (`routine double_all(part:
   @AuthorizedSlice[S64])`, `held: AuthorizedSlice[S64] <- view.getslice(start: 0, count: 4).get_exclusive_access()`).
   Work whose ticket goes into a list (`ts.add_last(steal t)`) works through the access until the list waits for it

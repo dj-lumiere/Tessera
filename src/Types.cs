@@ -247,7 +247,7 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
     public override string Name =>
         $"{(Failable ? "failable " : "")}Callable[{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}]";
     public override string Key =>
-        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]"
+        $"Callable[{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]"
         + (Failable ? $" throws({string.Join(" | ", Throws.Select(t => t.Key))})" : "");
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
