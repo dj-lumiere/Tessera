@@ -2433,6 +2433,9 @@ public sealed partial class Compiler
     {
         // `.hollow()` (or `T.hollow()`) is the all-zero value, which every type has.
         if (IsHollowCall(e)) return "zeroinitializer";
+        // `@T?` / `Callable?`: `None()` is null, anything else is the address.
+        if (t is VariantType { IsNullable: true } nullable)
+            return e is CallExpr { Name: "None", Args.Count: 0 } ? "null" : PointerInitializer(e, nullable.Leaves[0], env);
         e = AsRecordLit(e, env);
         if (t is ArrayType { Elem: IntType { Kind: IntKind.Byte or IntKind.Char } } text && e is StrLit s)
             return TextInitializer(s, text);
@@ -2447,6 +2450,7 @@ public sealed partial class Compiler
             return "[" + string.Join(", ", elements.Select((_, i) => constants[i % constants.Count])) + "]";
         }
         if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
+
         if (IsCoreSpan(t, out _) && SpanInitializer(e, t, env) is { } span) return span;
         if (t is RecordType record && record.Decl.AnnotationNamed("llvm") is null && e is RecordLit recordLit)
             return RecordInitializer(recordLit, record, env);

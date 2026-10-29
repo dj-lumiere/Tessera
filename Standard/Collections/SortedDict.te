@@ -90,12 +90,12 @@ routine @SortedDict[TKey, TValue].is_empty() -> Bool
 ### A new empty node from `manager`.
 ### :param leaf: Whether the node is a leaf.
 ### :param manager: The memory manager to take the node from.
-### :returns: The node, or null when the memory manager fails.
-common routine SortedDictNode[TKey, TValue].construct(leaf: Bool, manager: @MemoryManager) -> @Me
-    node: @Me = allocate[Me](count: 1, manager)
-
-    if node.is_hollow()
-        return node
+### :returns: The node, or None when the memory manager fails.
+common routine SortedDictNode[TKey, TValue].construct(leaf: Bool, manager: @MemoryManager) -> @Me?
+    node_at: Addr = allocate[Me](count: 1, manager)
+    if node_at.is_hollow()
+        return None()
+    node: @Me = node_at.to[@Me]()
     node.leaf.poke(leaf)
     node.count.poke(0)
     node.subtree_count.poke(0)
@@ -351,10 +351,10 @@ routine @SortedDict[TKey, TValue].value_ptr_by_rank(rank: U64) -> @TValue
 routine @SortedDictNode[TKey, TValue].split_child(index: U64, manager: @MemoryManager) -> Bool
     left: @Me = me.children[index]
     leaf: Bool = left.leaf.peek()
-    right: @Me = Me.construct(leaf, manager)
-
-    if right.is_hollow()
+    right_made: @Me? = Me.construct(leaf, manager)
+    if right_made.is_absent()
         return false
+    right: @Me = right_made.unwrap()
     mid: U64 = SORTED_DICT_NODE_KEYS.div_trunc(2)
     right_start: U64 = mid + 1
     right_count: U64 = SORTED_DICT_NODE_KEYS.sub(right_start)
@@ -472,12 +472,13 @@ failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> 
         is None => nothing
     if root.is_hollow()
         manager: @MemoryManager = me.manager.peek()
-        first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
+        first_node_made: @SortedDictNode[TKey, TValue]? = SortedDictNode[TKey, TValue].construct(
             leaf: true, manager)
-        if first_node.is_hollow()
+        if first_node_made.is_absent()
             drop probe
             drop value
             throw OutOfMemoryError()
+        first_node: @SortedDictNode[TKey, TValue] = first_node_made.unwrap()
         first_node.keys.getslot(0).poke(steal probe)
         first_node.values.getslot(0).poke(steal value)
         first_node.count.poke(1)
@@ -490,12 +491,13 @@ failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> 
     full: Bool = root_count == SORTED_DICT_NODE_KEYS
     root_node: @SortedDictNode[TKey, TValue] = when
         full =>
-            new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
+            new_root_made: @SortedDictNode[TKey, TValue]? = SortedDictNode[TKey, TValue].construct(
                 leaf: false, manager)
-            if new_root.is_hollow()
+            if new_root_made.is_absent()
                 drop probe
                 drop value
                 throw OutOfMemoryError()
+            new_root: @SortedDictNode[TKey, TValue] = new_root_made.unwrap()
             new_root.children[0] = root
             if new_root.split_child(index: 0, manager)
                 me.root.poke(new_root)

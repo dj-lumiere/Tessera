@@ -55,19 +55,19 @@ secret routine check_access_range(at: Addr, size: U64) -> None
 ### :typeparam T: The value type.
 ### :param count: The number of values, more than 0.
 ### :param manager: Where the memory comes from.
-### :returns: The first value's address, or a hollow address when the manager has none to give (also when the size
-###     doesn't fit in U64, which is more memory than any manager has).
+### :returns: The first value's address, or None when the manager has none to give (also when the size doesn't fit in
+###     U64, which is more memory than any manager has).
 @expensive("allocates memory")
-secret routine take_block[T](count: U64, manager: @MemoryManager) -> @T
+secret routine take_block[T](count: U64, manager: @MemoryManager) -> @T?
     if count.mul_overflows(sizeof[T]())
-        return .hollow()
+        return None()
     bytes: U64 = sizeof[T]() * count
     # Values of no size still take a block of their own, so the manager has an address to give.
     size: U64 = when
         bytes == 0 => 1
         else => bytes
     taken: Addr = manager.borrow(size, align: alignof[T]())
-    return taken.to[@T]()
+    return taken.to[@T?]()
 
 ### Gives the block of `count` values at `data` back to `manager`, once no other flow holds an access inside it.
 ### :typeparam T: The value type.
@@ -103,9 +103,10 @@ obeys ViewingIndexable[BorrowedSlice[T], T]
 failable common routine BorrowedSlice[T].construct(count: U64, manager: @MemoryManager) -> Me
     if count == 0
         return Me(data: .hollow(), count: 0, manager)
-    data: @T = take_block[T](count, manager)
-    if data.is_hollow()
+    data_made: @T? = take_block[T](count, manager)
+    if data_made.is_absent()
         throw OutOfMemoryError()
+    data: @T = data_made.unwrap()
     return Me(data, count, manager)
 
 ### `values` written `times` over, one run after another, in memory from `manager`: what `[a, b] * n at manager`
@@ -341,9 +342,10 @@ entity BorrowedCell[T]
 @track_caller
 @expensive("allocates memory")
 common routine BorrowedCell[T].construct(value: T, manager: @MemoryManager) -> Me
-    at: @T = take_block[T](count: 1, manager)
-    if at.is_hollow()
+    at_made: @T? = take_block[T](count: 1, manager)
+    if at_made.is_absent()
         throw OutOfMemoryError()
+    at: @T = at_made.unwrap()
     at.poke(steal value)
     return Me(at, manager)
 

@@ -243,10 +243,10 @@ secret routine close_if_open(h: Addr) -> None
 ### :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
 @target(os: "windows")
 secret routine utf16(text: @[Byte], manager: @MemoryManager) -> (@U16, U64)
-    units: @U16 = allocate[U16](count: text.count() + 1, manager)
-
-    if units.is_hollow()
+    units_at: Addr = allocate[U16](count: text.count() + 1, manager)
+    if units_at.is_hollow()
         return (.hollow(), 0)
+    units: @U16 = units_at.to[@U16]()
     n: Optional[U64] = encode_utf16(text, out: units, capacity: text.count() + 1)
     when n
         is U64 as count => return (units, count)
@@ -341,9 +341,10 @@ secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @Memory
         argument: @[Byte] = args[i]
         continue with capacity: capacity + argument.count() * 2 + 3
     then
-        line: @U16 = allocate[U16](count: capacity + 1, manager)
-        if line.is_hollow()
+        line_at: Addr = allocate[U16](count: capacity + 1, manager)
+        if line_at.is_hollow()
             return .hollow()
+        line: @U16 = line_at.to[@U16]()
         line.poke_into(at)
         # 0 is the program, i the argument i - 1.
         for i2 in 0 to arg_count
@@ -435,10 +436,10 @@ secret routine units_of(s: @U16) -> U64
 @target(os: "windows")
 secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16
     room: U64 = v.name.count() + v.value.count() + 2
-    units: @U16 = allocate[U16](count: room, manager)
-
-    if units.is_hollow()
+    units_at: Addr = allocate[U16](count: room, manager)
+    if units_at.is_hollow()
         return .hollow()
+    units: @U16 = units_at.to[@U16]()
     name_units: Optional[U64] = encode_utf16(text: v.name, out: units, capacity: room)
     when name_units
         is U64 as n =>
@@ -484,20 +485,21 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, manager: @Mem
 ###     before).
 @target(os: "windows")
 secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U16
-    own: @@U16 = allocate[@U16](count: options.env_count.max(1), manager)
-
-    if own.is_hollow()
+    own_at: Addr = allocate[@U16](count: options.env_count.max(1), manager)
+    if own_at.is_hollow()
         return .hollow()
+    own: @@U16 = own_at.to[@@U16]()
     if not wide_overrides(options, out: own, manager)
         # A failure has freed the strings made so far, so only the array is left.
         deallocate(data: own, manager)
         return .hollow()
     parent: @U16 = c_get_environment_strings()
     n: U64 = count_block_entries(parent)
-    all: @@U16 = allocate[@U16](count: (n + options.env_count).max(1), manager)
+    all_at: Addr = allocate[@U16](count: (n + options.env_count).max(1), manager)
     result: @U16 = when
-        all.is_hollow() => .hollow()
+        all_at.is_hollow() => .hollow()
         else =>
+            all: @@U16 = all_at.to[@@U16]()
             # The parent's entries no override names, then the overrides.
             k: U64 = keep_unnamed(all, parent, own, m: options.env_count)
             for j in 0 til options.env_count
@@ -513,8 +515,8 @@ secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U
 
     # The arrays, each when it was made.
     deallocate(data: own, manager)
-    if not all.is_hollow()
-        deallocate(data: all, manager)
+    if not all_at.is_hollow()
+        deallocate(data: all_at.to[@@U16](), manager)
     return result
 
 ### How many entries an environment block has: each ends with a 0, and an empty one ends the block.
@@ -572,9 +574,10 @@ secret routine join_entries(all: @@U16, total: U64, manager: @MemoryManager) -> 
     for i in 0 til total with units: U64 = 1
         continue with units: units + units_of(all.stride(i).peek()) + 1
     then
-        block_units: @U16 = allocate[U16](count: units, manager)
-        if block_units.is_hollow()
+        block_units_at: Addr = allocate[U16](count: units, manager)
+        if block_units_at.is_hollow()
             return .hollow()
+        block_units: @U16 = block_units_at.to[@U16]()
         for i2 in 0 til total with at: @U16 = block_units
             entry: @U16 = all.stride(i2).peek()
             n: U64 = units_of(entry) + 1
@@ -1009,10 +1012,11 @@ secret routine env_value(key: @U16, units: @@U16,
         return None()
     if need == 0
         return BorrowedSlice[Byte].construct(count: 0, manager: manager)
-    made: @U16 = allocate[U16](count: need.to[U64](), manager)
-    made.poke_into(units)
-    if made.is_hollow()
+    made_at: Addr = allocate[U16](count: need.to[U64](), manager)
+    if made_at.is_hollow()
         return None()
+    made: @U16 = made_at.to[@U16]()
+    made.poke_into(units)
     got: U32 = c_get_environment_variable(key, made, need)
     if got == 0 or got >= need
         return None()

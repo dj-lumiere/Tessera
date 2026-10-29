@@ -50,13 +50,13 @@ entity MemoryManager
     ### Takes a block back: `(state, at)`.
     secret give_back_fn: Callable[(Addr, Addr), None]
     ### Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
-    secret reserve_fn: Callable[(Addr, U64), Addr]
+    secret reserve_fn: Callable[(Addr, U64), Addr]?
     ### Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
-    secret commit_fn: Callable[(Addr, Addr, U64), Bool]
+    secret commit_fn: Callable[(Addr, Addr, U64), Bool]?
     ### Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
-    secret release_fn: Callable[(Addr, Addr, U64), None]
+    secret release_fn: Callable[(Addr, Addr, U64), None]?
     ### Sets what pages allow, false when it can't: `(state, at, size, access)`.
-    secret protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool]
+    secret protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool]?
     ### What the routines share, passed to each of them: the manager's address.
     secret state: Addr
 
@@ -166,8 +166,8 @@ needs TWriter obeys Writer
 secret common routine MemoryManager.construct(borrow_fn: Callable[(Addr, U64, U64), Addr],
     reborrow_fn: Callable[(Addr, Addr, U64, U64), Addr], give_back_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
-    return Me(borrow_fn, reborrow_fn, give_back_fn, reserve_fn: .hollow(), commit_fn: .hollow(),
-        release_fn: .hollow(), protect_fn: .hollow(), state)
+    return Me(borrow_fn, reborrow_fn, give_back_fn, reserve_fn: None(), commit_fn: None(),
+        release_fn: None(), protect_fn: None(), state)
 
 ### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `borrow`, `reborrow`,
 ### and `give_back`, with its address. Its page routines are empty (`has_pages()` and `has_protect()` are false).
@@ -177,8 +177,8 @@ routine @T.to[MemoryManager]() -> MemoryManager
 needs AnyType T, T obeys MemoryManageable
     return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
         reborrow_fn: forward_reborrow[T].to[Callable](),
-        give_back_fn: forward_give_back[T].to[Callable](), reserve_fn: .hollow(),
-        commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: me)
+        give_back_fn: forward_give_back[T].to[Callable](), reserve_fn: None(),
+        commit_fn: None(), release_fn: None(), protect_fn: None(), state: me)
 
 ### The table of a manager that handles pages: routines that call its `borrow`, `reborrow`, `give_back`, `reserve`, `commit`,
 ### `release`, and `protect`, with its address (`has_pages()` and `has_protect()` are true).
@@ -319,14 +319,12 @@ routine @MemoryManager.give_back(at: Addr) -> None
 ### Whether this manager handles pages: `reserve`, `commit`, and `release` are there.
 ### :returns: True when its page routines are filled in.
 routine @MemoryManager.has_pages() -> Bool
-    reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
-    return reserve_fn.addr().is_not_hollow()
+    return me.reserve_fn.peek().is_present()
 
 ### Whether this manager can set what pages allow: `protect` is there.
 ### :returns: True when its protect routine is filled in.
 routine @MemoryManager.has_protect() -> Bool
-    protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
-    return protect_fn.addr().is_not_hollow()
+    return me.protect_fn.peek().is_present()
 
 ### Reserves `size` bytes of address space: whole pages, none of them usable until `commit`.
 ### :param size: The number of bytes, rounded up to whole pages by the manager.
@@ -335,11 +333,9 @@ routine @MemoryManager.has_protect() -> Bool
 @track_caller
 @expensive("asks for address space")
 routine @MemoryManager.reserve(size: U64) -> Addr
-    reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
-    if reserve_fn.addr().is_hollow()
-        crash_no_pages()
-    at: Addr = reserve_fn.call(me.state.peek(), size)
-    return at
+    when me.reserve_fn.peek()
+        is Callable[(Addr, U64), Addr] as reserve_fn => return reserve_fn.call(me.state.peek(), size)
+        is None => crash_no_pages()
 
 ### Makes `size` bytes of reserved pages at `at` readable and writable.
 ### :param at: The first page, page aligned, inside a reservation of this manager.
@@ -349,10 +345,9 @@ routine @MemoryManager.reserve(size: U64) -> Addr
 @track_caller
 @expensive("asks for memory")
 routine @MemoryManager.commit(at: Addr, size: U64) -> Bool
-    commit_fn: Callable[(Addr, Addr, U64), Bool] = me.commit_fn.peek()
-    if commit_fn.addr().is_hollow()
-        crash_no_pages()
-    return commit_fn.call(me.state.peek(), at, size)
+    when me.commit_fn.peek()
+        is Callable[(Addr, Addr, U64), Bool] as commit_fn => return commit_fn.call(me.state.peek(), at, size)
+        is None => crash_no_pages()
 
 ### Gives a whole reservation back, committed pages and all.
 ### :param at: The reservation's start, as `reserve` returned it.
@@ -361,10 +356,9 @@ routine @MemoryManager.commit(at: Addr, size: U64) -> Bool
 @track_caller
 @expensive("gives memory back")
 routine @MemoryManager.release(at: Addr, size: U64) -> None
-    release_fn: Callable[(Addr, Addr, U64), None] = me.release_fn.peek()
-    if release_fn.addr().is_hollow()
-        crash_no_pages()
-    release_fn.call(me.state.peek(), at, size)
+    when me.release_fn.peek()
+        is Callable[(Addr, Addr, U64), None] as release_fn => release_fn.call(me.state.peek(), at, size)
+        is None => crash_no_pages()
     return
 
 ### Sets what `size` bytes of pages at `at` allow: a page closed with `PageAccess.NONE` stops the program when touched
@@ -377,10 +371,9 @@ routine @MemoryManager.release(at: Addr, size: U64) -> None
 @track_caller
 @expensive("asks the operating system")
 routine @MemoryManager.protect(at: Addr, size: U64, access: PageAccess) -> Bool
-    protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
-    if protect_fn.addr().is_hollow()
-        throw NotImplementedError(description: "This memory manager can't set what pages allow: its protect is empty.")
-    return protect_fn.call(me.state.peek(), at, size, access)
+    when me.protect_fn.peek()
+        is Callable[(Addr, Addr, U64, PageAccess), Bool] as protect_fn => return protect_fn.call(me.state.peek(), at, size, access)
+        is None => throw NotImplementedError(description: "This memory manager can't set what pages allow: its protect is empty.")
 
 ### Crashes with `NotImplementedError`: the manager's page routines are empty.
 @noreturn
@@ -407,34 +400,31 @@ secret routine check_align(align: U64) -> None
 ### :typeparam T: The element type to allocate room for.
 ### :param count: The number of values of `T` to make room for.
 ### :param manager: The memory manager to use.
-### :returns: A pointer to the new block, or a null pointer when the memory manager fails.
+### :returns: The new block's address, or the zero address when the memory manager fails: `allocate[T](...).to[@T]()`
+### when running out of memory may crash, `to[@T?]()` taken apart with `when` where it is handled.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
-### :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
+### :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns the zero address rather than crashing.
 @expensive("allocates heap memory")
-routine allocate[T](count: U64, manager: @MemoryManager) -> @T
+routine allocate[T](count: U64, manager: @MemoryManager) -> Addr
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
-    raw: Addr = manager.borrow(size, align: alignof[T]())
-    typed: @T = raw.to[@T]()
-    return typed
+    return manager.borrow(size, align: alignof[T]())
 
 ### Resizes the block at `ptr` to hold `new_count` values of `T` through `manager` and returns the possibly moved pointer.
 ### :typeparam T: The element type.
 ### :param ptr: The block to resize, from `allocate` or an earlier `reallocate`.
 ### :param new_count: The new number of values of `T`.
 ### :param manager: The memory manager to use.
-### :returns: A pointer to the resized block, which may have moved, or a null pointer when the memory manager fails.
+### :returns: The resized block's address, which may have moved, or the zero address when the memory manager fails.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
-### :note: A failed reallocation returns a null pointer, and the old block stays valid.
+### :note: A failed reallocation returns the zero address, and the old block stays valid.
 @track_caller
 @expensive("reallocates heap memory")
 @reshaping(ptr)
-routine reallocate[T](ptr: @T, new_count: U64, manager: @MemoryManager) -> @T
+routine reallocate[T](ptr: @T, new_count: U64, manager: @MemoryManager) -> Addr
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * new_count
-    raw: Addr = manager.reborrow(at: ptr, size, align: alignof[T]())
-    typed: @T = raw.to[@T]()
-    return typed
+    return manager.reborrow(at: ptr, size, align: alignof[T]())
 
 ### Hands the block at `data` back to `manager`, the memory manager it came from. Not a destructor: whatever the values own is
 ### not released.
