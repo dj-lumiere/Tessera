@@ -2241,7 +2241,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new UnreachableStmt(pos);
             case "todo":
             {
-                string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
+                // The entry block is the routine's own body, which the author never names, so the message names
+                // only the routine there and the block as well for a block the author wrote.
+                string message = _blockName == "entry"
+                    ? $"routine '{_routineDisplay}' is not written yet"
+                    : $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
                 var crash = new CallExpr("NotImplementedError", [], [new StrLit(message, pos)], pos)
                     { ArgNames = ["description"], Path = Compiler.SystemModule };
                 return new TodoStmt(crash, _blockName, pos);
