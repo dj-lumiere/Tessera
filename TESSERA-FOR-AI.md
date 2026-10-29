@@ -825,8 +825,11 @@ routine start() -> None
   `needs TEmitter obeys Emitter[S64]` (`Emitter[TEmitter, S64]`). Several items go on one line separated by commas
   (`needs RecordType TKey, RecordType TValue`, `needs T obeys Diagnosable, TWriter obeys Writer`). `needs AnyType T`
   lists a parameter of any type where nothing else does: the owner of a routine on every type (`routine
-  TFrom.bitcast[TTo]() -> TTo` with `needs AnyType TFrom`), a top-level conformance's parameters (`obeys
-  Representable[@T] when AnyType T`), or a parameter with a default. The old `T: typename`, `N: U64` and a bare
+  TFrom.bitcast[TTo]() -> TTo` with `needs AnyType TFrom, AnyType TTo`), a top-level conformance's parameters (`obeys
+  Representable[@T] when AnyType T`), or a parameter with a default. A routine on a type names its own type
+  parameters, the `[...]` after its name, on a needs line (`routine @Fiber[T].put_callable[A](...)` with `needs
+  AnyType A`, `routine D32.represent_into[T](out: @T)` with `needs T obeys Writer`): a name there that no needs line
+  declares is a type (`S32.to[S64]`), and one that is no type is a build error. The old `T: typename`, `N: U64` and a bare
   `Equatable[T]` are build errors that name the line to write.
 - **Type kinds.** A parameter with no kind, or `AnyType`, takes any type. `RecordType T` takes a type whose values
   hold nothing with a release duty (no entity, `&T`, `&[T]`, or value holding one): what a record holds by value

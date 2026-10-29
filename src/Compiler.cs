@@ -459,11 +459,12 @@ public sealed partial class Compiler
         clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params).Where(p => IsTypeKind(p.Kind))
             .Select(p => p.Name).ToHashSet();
 
-    /// A routine on a type with the type parameters its owner's arguments and its own `[...]` name and no needs line
-    /// declares added as parameters of any type: `T` in `routine @List[T].push(...)` and in `routine
-    /// @List[Thread[T]].wait_all_finished()`, `A` in `routine @Thread[T].put_callable[A](...)`, `U` in `routine
-    /// PointedCell[T].to[@U]()`. A name that is a type (`Byte` in `List[Byte].write_bytes`, `S64` in
-    /// `S32.to[S64]`) or a member of the choice the slot is declared with (`RELAXED` in `Cell[RELAXED].load`) is not one.
+    /// A routine on a type with the type parameters its owner's arguments name and no needs line declares added as
+    /// parameters of any type: `T` in `routine @List[T].push(...)` and in `routine @List[Thread[T]].wait_all_finished()`.
+    /// A name that is a type (`Byte` in `List[Byte].write_bytes`) or a member of the choice the slot is declared with
+    /// (`RELAXED` in `Cell[RELAXED].load`) is not one. The routine's own `[...]` (`A` in `routine
+    /// @Thread[T].put_callable[A](...)`) is declared on a needs line, and a name there that is neither declared nor a
+    /// type is a build error.
     private RoutineDecl WithImplicitOwnerParams(RoutineDecl r)
     {
         if (r.Owner is not { } owner || (owner.Args.Count == 0 && r.Fixed.Count == 0)) return r;
@@ -487,18 +488,28 @@ public sealed partial class Compiler
             foreach (var a in t.Args.OfType<TypeArgType>()) Visit(a.Type, false, skip);
         }
         foreach (var a in owner.Args.OfType<TypeArgType>()) Visit(a.Type, true, []);
-        int ownerFound = found.Count;
-        // The routine's own `[...]` past the owner's: parameters of their own unless they name a type.
+        // The routine's own `[...]` past the owner's is never read as parameters: each one is declared on a needs line,
+        // so a type declared later under the same name can't change what the routine means.
         var ownerNames = owner.Args.OfType<TypeArgType>().SelectMany(a => TypeNames(a.Type)).Append(owner.Name).ToHashSet();
-        foreach (var t in r.Fixed) Visit(t, false, ownerNames);
+        var undeclared = new List<(string, TypeRef, Pos)>();
+        void Own(TypeRef t)
+        {
+            if (t.Member is not null || t.Known is not null) return;
+            if (t.Args.Count > 0)
+            {
+                foreach (var a in t.Args.OfType<TypeArgType>()) Own(a.Type);
+                return;
+            }
+            if (t.Path is not null || t.Name is "None" or "Bool" or "Addr" or "Me" || IntType.FromName(t.Name) is not null
+                || NamesType(t.Name) || declared.Contains(t.Name) || ownerNames.Contains(t.Name)
+                || _presets.ContainsKey(("", t.Name))) return;
+            throw new CompileError(t.Pos, $"routine '{owner}.{r.Name}' names '{t.Name}' in its [...], and no type is "
+                + $"called '{t.Name}': if it's a type parameter of the routine, declare it on a needs line (needs AnyType "
+                + $"{t.Name})");
+        }
+        foreach (var t in r.Fixed) Own(t);
         if (found.Count == 0) return r;
-        var own = found.Skip(ownerFound).Select(f => f.Item1).ToList();
-        var clauses = new List<Clause>([.. r.Clauses, new Clause("require", []) { Params = found }]);
-        if (own.Count == 0) return r with { Clauses = clauses };
-        // `put_callable[A, B]`: every one a parameter, so the routine is generic over them and fixes nothing.
-        if (r.Fixed.All(t => t is { Args.Count: 0, Path: null, Member: null } && own.Contains(t.Name)))
-            return r with { Clauses = clauses, TypeParams = [.. r.Fixed.Select(t => t.Name)], Fixed = [] };
-        return r with { Clauses = clauses, TypeParams = [.. r.TypeParams, .. own.Where(n => !r.TypeParams.Contains(n))] };
+        return r with { Clauses = [.. r.Clauses, new Clause("require", []) { Params = found }] };
     }
 
     private static IEnumerable<string> TypeNames(TypeRef t) =>
