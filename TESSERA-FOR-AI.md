@@ -1471,7 +1471,8 @@ routine start() -> None
   kind. For a `T` whose values hold nothing with a release duty it is a value laid out as `{ i1, T }` (the present
   flag, then the value; `{ i1, [0 x T], T }` in the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it
   is copied, a preset, a field of a record. `@T?` and `Callable[...]?` are the address alone (`ptr`, 8 bytes), null
-  for None, so they cost nothing over the `@T` and pass to C as a pointer. For an entity `T` (or one holding an entity) it is one address (`ptr`) of
+  for None, so they cost nothing over the `@T` and pass to C as a pointer. `&@T?` is an Optional place (`Optional[BorrowedCell[PointedCell[T]]]`), and a
+  place that holds an `@T?` is written with parentheses, `&(@T?)` (one type in parentheses only groups it). For an entity `T` (or one holding an entity) it is one address (`ptr`) of
   the place the `T` lives in, null for None, handed over with `steal`. Both are read and made as a variant
   (`m: S64? = 5`, `return None()`, `when`, `is None`, `try`). `Maybe` is an unknown type whose error names
   `Optional[T]` and `T?`. An `Optional` of a variant written inline (`Optional[Circle | Square]`) keeps the tagged

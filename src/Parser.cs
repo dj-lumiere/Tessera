@@ -1363,6 +1363,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.RParen, "')'");
             if (items is [{ Name: TypeRef.UnionName, Path: null }])
                 throw new CompileError(pos, "a variant written inline needs no parentheses: A | B is already the loosest type form");
+            // One type in parentheses groups it: `&(@T?)` is a place holding an `@T?`, where `&@T?` is an Optional place.
+            if (items.Count == 1) return items[0];
             return TupleType(items, pos);
         }
         // `failable Callable[(T,), U]`: a routine value that may fail.
