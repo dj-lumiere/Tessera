@@ -191,6 +191,15 @@ routine start() -> None
   `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
   `&List[S64]`'s `getview()` is the List's span. Passing a `&T` where a `@T` is expected lends its view. Returning a
   STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
+- **Writing over a place: `y <- v`.** On a place that holds a value already, `y <- v` writes `v` into the same memory
+  (`v.store_into(y)`): nothing new is borrowed and the place is given back once, where it always was. For an entity the
+  builder ends the old value with its `destruct` once `v` is made, then puts `v` in. A `&[T]` place takes new memory
+  with `replace` (the old memory goes back first). A named entity goes in with `steal` (`y <- steal spare`). The first
+  fill of a `lateinit` place has no old value. `y <- v from HEAP` on a filled place is a build error (it would borrow a
+  second place and lose the first: write over without `from`), and `<-` on a value binding (`x: S64 = 1`) is one too
+  (bind a place, `x: &S64 <- 1`). A call on a place or a view never reads the value: `y.to[S64]()` on a `&B32` is a
+  build error that points to `y.load().to[S64]()`, and `y.to[@U]()` sees the same memory as another type (there is no
+  `&T.to[&U]()`: two places over one memory would give it back twice).
 - A place with no value starts all zero: `p: &T` (or `p: T`), for a type whose all-zero bytes are a value (numbers, `Bool`,
   choices, `Addr`, `T?`, and records, arrays and vectors of those). It is a memset in place. A type holding a pointer, a
   routine value, or memory that is never empty (`@T`, `@[T]`, `Callable`, `BorrowedCell`, `BorrowedSlice`, and every type

@@ -482,8 +482,10 @@ public sealed partial class FunctionGen
             return;
         }
         if (f.Place is ValueRef named)
-            throw Err(f.Pos, $"'<-' borrows a place, and a binding names its type: {named.Name}: &T <- value. A field that "
-                + $"keeps an E? is filled with <- (me.next <- value from HEAP)");
+        {
+            EmitOverwrite(named, f);
+            return;
+        }
         if (Infer(f.Place) is not PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var held] } cell }
             || cell.Decl.Module != Compiler.SystemModule)
             throw Err(f.Pos, $"'<-' fills a field that keeps an E? (an entity or nothing) with a place from a manager, and "
@@ -884,13 +886,45 @@ public sealed partial class FunctionGen
     /// Set while `steal place as old inject new` puts `new` in: the old value went to `old`, so the poke ends nothing.
     private bool _injecting;
 
+    /// `y <- value` on a place that holds a value already: the value goes into the same memory, so nothing new is
+    /// borrowed and the place is given back once, where it always was. A value with a release duty (an entity) is ended
+    /// with its destruct first, once `value` is made, as `poke` into an entity slot does. A place of memory (`&[T]`)
+    /// takes the new memory with `replace`, which gives the old back first. `from` borrows a new place, so on a place
+    /// that holds one already it would lose the old.
+    private void EmitOverwrite(ValueRef named, FillStmt f)
+    {
+        var printer = new Printer();
+        if (f.Value is AtExpr at)
+            throw Err(f.Pos, $"'{named.Name}' holds a value already, and 'from' borrows a new place, which would lose the "
+                + $"one it has: write over it without from, {named.Name} <- {printer.Expr(at.Value, 0)}");
+        var placeType = Infer(named);
+        if (placeType is PtrType { Pointee: RecordType { Decl.Name: "BorrowedSlice" } slice } && slice.Decl.Module == Compiler.SystemModule)
+        {
+            EvalAny(new MethodCallExpr(named, "replace", [], [f.Value], f.Pos));
+            return;
+        }
+        if (placeType is not PtrType { Pointee: { } pointee } || pointee is PtrType)
+            throw Err(f.Pos, $"'{named.Name}' is a value of {placeType?.Name ?? "unknown type"}, not a place, so '<-' has nothing "
+                + $"to write into: bind it as a place, {named.Name}: &{placeType?.Name ?? "T"} <- value, to write over it later");
+        Expr slot = pointee is RecordType { Decl.Name: "BorrowedCell" } cell && cell.Decl.Module == Compiler.SystemModule
+            ? new MethodCallExpr(named, "getview", [], [], f.Pos)
+            : named;
+        var outer = _overwriteValue;
+        _overwriteValue = f.Value;
+        try { EvalAny(new MethodCallExpr(slot, "poke", [], [f.Value], f.Pos)); }
+        finally { _overwriteValue = outer; }
+    }
+
+    /// The value a `y <- value` line writes over a filled place with: its poke ends what the place held first.
+    private Expr? _overwriteValue;
+
     /// Whether a call is a `poke` into an entity slot: a STACK place of this routine (`x: &Noisy`) or a global that holds
     /// an entity (`global G: &Noisy`), not the value a `<-` line fills its place with first.
     private bool EntitySlotPoke(CallPlan plan, Instance sig) =>
         sig.Decl is { Name: "poke" or "poke_volatile", IsLibrary: true } && plan.Args.Count == 1
         && !ReferenceEquals(plan.Args[0], _claimContents) && !_injecting
         && sig.Params[0] is PtrType { Pointee: { } held } && held is not PtrType && Entities.Holds(held)
-        && plan.Receiver is { } slot && EntitySlot(slot);
+        && plan.Receiver is { } slot && (ReferenceEquals(plan.Args[0], _overwriteValue) || EntitySlot(slot));
 
     /// Whether `e` names an entity slot a poke ends the value of: a STACK place of this routine or a global that holds
     /// an entity.
@@ -5482,6 +5516,19 @@ public sealed partial class FunctionGen
             if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
             {
                 string forms = string.Join(", ", defined.Select(d => $"{m.Name}[{string.Join(", ", d.Fixed)}]"));
+                // A member call on a place or a view never reads the value: the routines found are the value's, so
+                // the message names the place and points at reading the value first.
+                if (rt is PtrType { Pointee: { } heldValue } && owner.Equals(heldValue) && m.TypeArgs.Count > 0)
+                {
+                    bool place = m.Receiver is ValueRef { Name: var placeName } && _stackPlaces.ContainsKey(placeName);
+                    string spelled = new Printer().Expr(m.Receiver, 0);
+                    string read = place ? "load" : "peek";
+                    string what = place ? $"a place, &{heldValue.Name}" : $"a view, @{heldValue.Name}";
+                    throw Err(m.Pos, $"{spelled} is {what}, and a call on it never reads the {heldValue.Name} it holds, so "
+                        + $"{m.Name}[{string.Join(", ", m.TypeArgs)}] isn't found on it (to see the memory as another type, "
+                        + $"{spelled}.{m.Name}[@U]()): for the value, read it first, "
+                        + $"{spelled}.{read}().{m.Name}[{string.Join(", ", m.TypeArgs)}]()");
+                }
                 throw Err(m.Pos, m.TypeArgs.Count == 0
                     ? $"{owner}.{m.Name} takes the type it goes to: {forms}"
                     : $"{owner} has no {m.Name}[{string.Join(", ", m.TypeArgs)}]; it has {forms}");
