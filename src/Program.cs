@@ -43,9 +43,6 @@ static class Cli
                  between them. --no-race-check (or [debug] race-check = false in config.toml) turns it off, and
                  --race-check (or race-check = true) turns it on in the release modes. It makes the program slower.
                  test runs every test without a config.toml with it on those targets. check checks its declarations too.
-        uninit fill: --uninit-fill (or [debug] uninit-fill = true in config.toml) fills every slot that starts
-                 <- .uninit() with 0xAA bytes, so a read before its routine fills it stands out. Off by default: the
-                 slot keeps whatever was there.
         heap check: --heap-check (or [debug] heap-check = true in config.toml) makes the default heap check every
                  free and crash with DoubleFreeError at the line that frees a block a second time, in every mode. It
                  is off otherwise, except that test always turns it on. check checks both sides.
@@ -430,7 +427,6 @@ static class Cli
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
                 case "--emit-llvm": emit = true; break;
                 case "--no-stdlib-exports": stdlibExports = false; break;
-                case "--uninit-fill": uninitFill = true; break;
                 case "--heap-check": heapCheck = true; break;
                 case "--show-destructs": showDestructs = true; break;
                 case "--frame-pointers": framePointers = true; break;
@@ -559,7 +555,6 @@ static class Cli
             EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
             IngridDir = IngridDir(),
-            UninitFill = uninitFill,
             LinkArguments = linkArguments ?? [],
             FramePointers = framePointers,
         };
@@ -759,7 +754,7 @@ static class Cli
         if (m.RaceCheckSetting == true) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
-            uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
+            deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
             crashMessageSize: m.CrashMessageSize, linkArguments: LibraryArguments(m));
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
@@ -1246,7 +1241,7 @@ static class Cli
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
                 raceCheck: race, traceFrames: manifest?.TraceFrames,
-                failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
+                failureTraces: manifest?.FailureTraces, 
                 deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
                 crashMessageSize: manifest?.CrashMessageSize, destructs: destructs,
                 linkArguments: manifest is null ? null : LibraryArguments(manifest));

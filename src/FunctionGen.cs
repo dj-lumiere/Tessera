@@ -178,6 +178,9 @@ public sealed partial class FunctionGen
     /// The names (values, block parameters, slots) whose memory the check follows.
     private readonly HashSet<string> _memTracked = [];
 
+    /// The lateinit places of the routine, by name, with the type written for each.
+    private readonly Dictionary<string, TypeRef> _lateTypes = [];
+
     /// A call to a BorrowedSlice or BorrowedCell routine that gives back the same memory (`with_count`): the call, and the handle it
     /// was made on, so a binding of it is a copy of that handle.
     private (Pos Call, string Of)? _memSame;
@@ -472,6 +475,12 @@ public sealed partial class FunctionGen
     {
         var printer = new Printer();
         string spelled = printer.Expr(f.Place, 0);
+        // `x <- value` on a lateinit place fills it: store for a place of one value, replace for a place of memory.
+        if (f.Place is ValueRef late && _lateTypes.TryGetValue(late.Name, out var lateType))
+        {
+            EvalAny(new MethodCallExpr(late, lateType.Name == "BorrowedSlice" ? "replace" : "store", [], [f.Value], f.Pos));
+            return;
+        }
         if (f.Place is ValueRef named)
             throw Err(f.Pos, $"'<-' borrows a place, and a binding names its type: {named.Name}: &T <- value. A field that "
                 + $"keeps an E? is filled with <- (me.next <- value from HEAP)");
@@ -1258,6 +1267,7 @@ public sealed partial class FunctionGen
         bool bootEntry = _c.IsBootStep(_decl);
         _memoryReady = bootEntry ? false : null;
         _crashSlotSet = bootEntry ? false : null;
+        if (LateinitFlow.Check(_decl.Blocks) is { } lateError) throw lateError;
         try
         {
             EmitRoutine();
@@ -1926,6 +1936,7 @@ public sealed partial class FunctionGen
         {
             case BindStmt { Borrows: true } borrow:
             {
+                if (borrow.Late) _lateTypes[borrow.Name] = borrow.Type;
                 if (borrow.Bare && !borrow.Late)
                 {
                     var written = Resolve(borrow.Type);

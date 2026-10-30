@@ -196,6 +196,10 @@ routine start() -> None
   routine value, or memory that is never empty (`@T`, `@[T]`, `Callable`, `BorrowedCell`, `BorrowedSlice`, and every type
   holding one: the collections, `Text`) has no zero value: `p: &T` for one is a build error. Give it a value, or write
   `lateinit p: &T` when a routine fills it before it is read (an out parameter, `out.construct(...)`, an emitter's place).
+  The build follows a `lateinit` local path by path: a call that takes the place as receiver or argument (`p.store(v)`,
+  `out.construct(...)`, `fill(out: p)`, `p.zeroinit(1)`) or `p <- value` fills it, and a `load`, `peek`, `getitem` or the name
+  used as a value on a path where it may still be unfilled is a build error. A `lateinit global` and a read inside an
+  f-string are not followed.
   `T.hollow()`, `.hollow()` and `.uninit()` are gone (writing them is a build error that names what to write): a zero
   value is a literal or constructor (`0`, `false`, `None()`, `Addr.zero()`, `@[Byte].empty()`,
   `BorrowedSlice[T].empty(manager)`), and `place.zeroinit(1)` empties a place in memory. An array value comes from `[1, 2, x]` or a
