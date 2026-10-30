@@ -22,7 +22,7 @@ module Unhosted
 
 ### The manager that start put in the CpuEventManager's interrupt slot, null while none runs.
 @target(arch: "aarch64", os: "none")
-secret global RUNNING_GIC: &@InterruptManagerByGic
+secret global RUNNING_GIC: &(@InterruptManagerByGic?)
 
 ### How many lines the manager holds handlers for: the 16 software lines, the 16 lines of the core's own devices
 ### (its timers among them), and 96 lines of the board's devices.
@@ -69,7 +69,7 @@ routine @InterruptManagerByGic.stop() -> None
     me.register(at: me.distributor.peek(), offset: 0x000).poke_volatile(0)
     before: Callable[(CpuEvent,), None] = bitcast(me.before.peek())
     CpuEventManager.when_interrupt_requested(before)
-    RUNNING_GIC.poke(.hollow())
+    RUNNING_GIC.poke(None())
     return
 
 ### Puts `holder` in the slot of line `line`.
@@ -136,9 +136,10 @@ secret routine line_bit(line: U32) -> U32
 ### :param event: The interrupt.
 @target(arch: "aarch64", os: "none")
 secret routine gic_interrupt(event: CpuEvent) -> None
-    gic: @InterruptManagerByGic = RUNNING_GIC.peek()
-    if gic.is_hollow()
+    running: @InterruptManagerByGic? = RUNNING_GIC.peek()
+    if running.is_absent()
         return
+    gic: @InterruptManagerByGic = running.unwrap()
     taken: U32 = gic.register(at: gic.cpu_interface.peek(), offset: 0x00C).peek_volatile()
     line: U32 = taken & 0x3FF
     if line >= 1020

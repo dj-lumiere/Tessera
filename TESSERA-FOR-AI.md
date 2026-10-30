@@ -995,8 +995,8 @@ routine start() -> None
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
   `(p.peek() + 1).poke_into(p)`.
-- **Methods through a pointer.** `p.m()` finds `routine @T.m` first, then `PointedCell`'s own methods (`is_hollow`,
-  `offset`, `to[@U]`, ...): the more specific receiver wins. A `routine PointedCell[X].m` and a `routine @X.m` with the same
+- **Methods through a pointer.** `p.m()` finds `routine @T.m` first, then `PointedCell`'s own methods (`offset`,
+  `to[@U]`, ...): the more specific receiver wins. A `routine PointedCell[X].m` and a `routine @X.m` with the same
   parameters are the same call, a build error asking to rename one. Value methods (`routine T.m`, such as every
   collection's `eq`) aren't reachable through a pointer, because that would hide a load: load first
   (`a.peek().eq(b.peek())`).
@@ -1471,7 +1471,11 @@ routine start() -> None
   kind. For a `T` whose values hold nothing with a release duty it is a value laid out as `{ i1, T }` (the present
   flag, then the value; `{ i1, [0 x T], T }` in the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it
   is copied, a preset, a field of a record. `@T?` and `Callable[...]?` are the address alone (`ptr`, 8 bytes), null
-  for None, so they cost nothing over the `@T` and pass to C as a pointer. `&@T?` is an Optional place (`Optional[BorrowedCell[PointedCell[T]]]`), and a
+  for None, so they cost nothing over the `@T` and pass to C as a pointer: an `@export` routine may take and give
+  them. An `@T` always points at a value, so `p.is_hollow()` / `p.is_not_hollow()` on an `@T` is a build error that
+  points to `@T?`: what may be missing (a list's next node, the running coroutine, a C pointer that may be null) is
+  an `@T?`, taken apart with `when` or asked with `is_absent()` / `is_present()` and `unwrap()`. An `Addr` may still
+  be zero and keeps its `is_hollow()`. `@T?` is UnbrokenStorable and UnbrokenExchangeable like `@T`. `&@T?` is an Optional place (`Optional[BorrowedCell[PointedCell[T]]]`), and a
   place that holds an `@T?` is written with parentheses, `&(@T?)` (one type in parentheses only groups it). For an entity `T` (or one holding an entity) it is one address (`ptr`) of
   the place the `T` lives in, null for None, handed over with `steal`. Both are read and made as a variant
   (`m: S64? = 5`, `return None()`, `when`, `is None`, `try`). `Maybe` is an unknown type whose error names
@@ -2231,7 +2235,7 @@ routine start() -> None
   time since power on. `waitfor(duration)` sleeps the running round robin thread, and outside `run` waits on
   `Clock.monotonic()`. Such a build error comes from `@unavailable("why")` on a standard library routine kept for
   that target: a call of it is the build error, with the reason (tests/clock_now_no_rtc, tests/rr_clock_monotonic,
-  tests/rr_clock_now).
+  tests/rr_clock_now). `@refused("why")` does the same on every target: `PointedCell[T].is_hollow()` carries it.
 - `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.te`): preemptive threads on one core. The region is cut into slots of
   `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
   `StackManager`). `launch(entry: Callable[(Addr,), None], arg)` takes a free slot (the slot comes back when `entry`
@@ -2322,9 +2326,9 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 `.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `BorrowedSlice`, a `BorrowedCell`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
 `.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Optional[T]` is empty as `None()`, and a pointer to nothing is
-`.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
-no `null`: writing it is a build error that asks for `.hollow()`. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
+numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Optional[T]` is empty as `None()`, and a pointer that may point at nothing is an
+`@T?` whose None is that, so there is no `none()` or `nothing()` routine, and no `null`: writing it is a build
+error. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
 an argument to a generic routine), name it, `PointedCell[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 

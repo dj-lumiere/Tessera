@@ -38,7 +38,7 @@ import Fiber
 
 ### The manager whose timer is running, for the timer's interrupt handler: null outside `run`.
 @target(arch: "aarch64", os: "none")
-secret global RUNNING_ROUND_ROBIN: &@ThreadManagerByRoundRobin
+secret global RUNNING_ROUND_ROBIN: &(@ThreadManagerByRoundRobin?)
 
 ### The word written above a thread's record, below its stack: a stack that ran down into its record changes it first.
 @target(arch: "aarch64", os: "none")
@@ -60,13 +60,13 @@ secret entity RoundRobinThread
     stack: StackManager
     state: RoundRobinState
     ### The next thread of the list it is in (the free slots, the ready queue, the sleepers, or the waiters).
-    next: @RoundRobinThread
+    next: @RoundRobinThread?
     ### The counter value it sleeps until, while SLEEPING.
     wake_at: U64
     ### The word it waits on, while WAITING.
     waits_on: Addr
     ### The routine the thread runs, and what it is given.
-    entry: Callable[(Addr,), None]
+    entry: Callable[(Addr,), None]?
     arg: Addr
     ### Its crash trace depth while it isn't running.
     trace_depth: U64
@@ -87,20 +87,20 @@ entity ThreadManagerByRoundRobin
     ### The slice of time a thread runs before the next ready one, in counter ticks.
     slice: U64
     ### The slots no thread holds.
-    free: @RoundRobinThread
+    free: @RoundRobinThread?
     ### The ready queue: the first one to run next, the last one most recently ready.
-    ready_first: @RoundRobinThread
-    ready_last: @RoundRobinThread
+    ready_first: @RoundRobinThread?
+    ready_last: @RoundRobinThread?
     ### The sleeping threads, the earliest to wake first.
-    sleeping: @RoundRobinThread
+    sleeping: @RoundRobinThread?
     ### The threads waiting on a word.
-    waiting: @RoundRobinThread
+    waiting: @RoundRobinThread?
     ### The thread on the core.
-    running: @RoundRobinThread
+    running: @RoundRobinThread?
     ### The flow that called `run`, on the stack it had.
     boot: RoundRobinThread
     ### The idle thread, which waits for interrupts when no other thread is ready.
-    idle: @RoundRobinThread
+    idle: @RoundRobinThread?
     ### The threads launched that haven't returned yet.
     live: U64
     ### Counts the threads that returned: what `run` waits on.
@@ -122,8 +122,8 @@ entity ThreadManagerByRoundRobin
 ### :returns: The record.
 @target(arch: "aarch64", os: "none")
 secret common routine RoundRobinThread.construct(stack: StackManager, state: RoundRobinState) -> Me
-    return Me(stack: steal stack, state, next: .hollow(), wake_at: 0, waits_on: .hollow(),
-        entry: .hollow(), arg: .hollow(), trace_depth: 0, number: 0, thread_locals: .hollow())
+    return Me(stack: steal stack, state, next: None(), wake_at: 0, waits_on: .hollow(),
+        entry: None(), arg: .hollow(), trace_depth: 0, number: 0, thread_locals: .hollow())
 
 ### Gives the boot flow's and the idle thread's stack managers back (the memory under them is the program's).
 @target(arch: "aarch64", os: "none")
@@ -155,10 +155,10 @@ common routine ThreadManagerByRoundRobin.construct(region: Addr, size: ByteSize,
     if slot_size < record_room() + 1024 or size.bytes() // slot_size < 2
         throw UnacceptedValueError(description: "The region holds fewer than two slots of stack_size, or stack_size has no room for a thread's record and 1 KiB of stack.")
     return Me(region, slot_size, slot_count: size.bytes() // slot_size,
-        slice: cpu_timer_ticks(slice).max(1), free: .hollow(), ready_first: .hollow(),
-        ready_last: .hollow(), sleeping: .hollow(), waiting: .hollow(), running: .hollow(),
+        slice: cpu_timer_ticks(slice).max(1), free: None(), ready_first: None(),
+        ready_last: None(), sleeping: None(), waiting: None(), running: None(),
         boot: RoundRobinThread.construct(stack: StackManager.construct(bottom: .hollow(), top: .hollow()), state: RoundRobinState.RUNNING),
-        idle: .hollow(), live: 0, finished: 0, next_number: 1, idle_wakes: 0, preemptions: 0,
+        idle: None(), live: 0, finished: 0, next_number: 1, idle_wakes: 0, preemptions: 0,
         interrupts, timer_before: .hollow())
 
 ### Starts a thread that runs `entry(arg)`, in a free slot: it is ready, and runs once `run` gives it the core. Its
@@ -170,10 +170,11 @@ common routine ThreadManagerByRoundRobin.construct(region: Addr, size: ByteSize,
 routine @ThreadManagerByRoundRobin.launch(entry: Callable[(Addr,), None], arg: Addr) -> Bool
     was: U64 = mask_interrupts()
     me.prepare_slots()
-    thread: @RoundRobinThread = me.free.peek()
-    if thread.is_hollow()
+    free: @RoundRobinThread? = me.free.peek()
+    if free.is_absent()
         restore_interrupts(was)
         return false
+    thread: @RoundRobinThread = free.unwrap()
     me.free.poke(thread.next.peek())
     thread.entry.poke(entry)
     thread.arg.poke(arg)
@@ -229,8 +230,8 @@ routine @ThreadManagerByRoundRobin.run() -> None
     cpu_timer_stop()
     gic.turn_off(CPU_TIMER_LINE)
     gic.when_line_raised(line: CPU_TIMER_LINE, holder: bitcast(me.timer_before.peek()))
-    RUNNING_ROUND_ROBIN.poke(.hollow())
-    me.running.poke(.hollow())
+    RUNNING_ROUND_ROBIN.poke(None())
+    me.running.poke(None())
     restore_interrupts(was)
     return
 
@@ -238,7 +239,7 @@ routine @ThreadManagerByRoundRobin.run() -> None
 @target(arch: "aarch64", os: "none")
 routine @ThreadManagerByRoundRobin.yield_now() -> None
     was: U64 = mask_interrupts()
-    me.make_ready(me.running.peek())
+    me.make_ready(me.running.peek().unwrap())
     me.switch_away()
     restore_interrupts(was)
     return
@@ -249,7 +250,7 @@ routine @ThreadManagerByRoundRobin.yield_now() -> None
 @target(arch: "aarch64", os: "none")
 routine @ThreadManagerByRoundRobin.sleep(span: Duration) -> None
     was: U64 = mask_interrupts()
-    thread: @RoundRobinThread = me.running.peek()
+    thread: @RoundRobinThread = me.running.peek().unwrap()
     ticks: U64 = cpu_timer_ticks(span)
     if ticks == 0
         me.make_ready(thread)
@@ -274,7 +275,7 @@ routine @ThreadManagerByRoundRobin.wait_on(at: @U32, expected: U32) -> None
     if at.peek_volatile() != expected
         restore_interrupts(was)
         return
-    thread: @RoundRobinThread = me.running.peek()
+    thread: @RoundRobinThread = me.running.peek().unwrap()
     thread.waits_on.poke(at)
     thread.state.poke(RoundRobinState.WAITING)
     me.add_waiter(thread)
@@ -304,7 +305,7 @@ routine @ThreadManagerByRoundRobin.wake_all(at: @U32) -> None
 ### :returns: The number.
 @target(arch: "aarch64", os: "none")
 routine @ThreadManagerByRoundRobin.current_number() -> U64
-    return me.running.peek().number.peek()
+    return me.running.peek().unwrap().number.peek()
 
 ### How many times the timer's interrupt has come while the core waited on the idle thread (`wfi`).
 ### :returns: The count.
@@ -337,7 +338,7 @@ secret routine record_room() -> U64
 ### Cuts the region into slots the first time it is asked: the idle thread in the first, the rest free.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.prepare_slots() -> None
-    if me.idle.peek().is_not_hollow()
+    if me.idle.peek().is_present()
         return
     base: U64 = ptrtoint[Addr, U64](me.region.peek())
     size: U64 = me.slot_size.peek()
@@ -365,15 +366,13 @@ secret routine @ThreadManagerByRoundRobin.prepare_slots() -> None
 ### :param thread: The thread.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.make_ready(thread: @RoundRobinThread) -> None
-    if thread === me.idle.peek()
+    if thread === me.idle.peek().unwrap()
         return
     thread.state.poke(RoundRobinState.READY)
-    thread.next.poke(.hollow())
-    last: @RoundRobinThread = me.ready_last.peek()
-    if last.is_hollow()
-        me.ready_first.poke(thread)
-    else
-        last.next.poke(thread)
+    thread.next.poke(None())
+    when me.ready_last.peek()
+        is @RoundRobinThread as last => last.next.poke(thread)
+        is None => me.ready_first.poke(thread)
     me.ready_last.poke(thread)
     return
 
@@ -381,13 +380,14 @@ secret routine @ThreadManagerByRoundRobin.make_ready(thread: @RoundRobinThread) 
 ### :returns: The thread.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.take_ready() -> @RoundRobinThread
-    first: @RoundRobinThread = me.ready_first.peek()
-    if first.is_hollow()
-        return me.idle.peek()
+    head: @RoundRobinThread? = me.ready_first.peek()
+    if head.is_absent()
+        return me.idle.peek().unwrap()
+    first: @RoundRobinThread = head.unwrap()
     me.ready_first.poke(first.next.peek())
-    if first.next.peek().is_hollow()
-        me.ready_last.poke(.hollow())
-    first.next.poke(.hollow())
+    if first.next.peek().is_absent()
+        me.ready_last.poke(None())
+    first.next.poke(None())
     return first
 
 ### Puts a sleeping thread among the sleepers, after every one that wakes no later.
@@ -395,43 +395,44 @@ secret routine @ThreadManagerByRoundRobin.take_ready() -> @RoundRobinThread
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.add_sleeper(thread: @RoundRobinThread) -> None
     wake_at: U64 = thread.wake_at.peek()
-    first: @RoundRobinThread = me.sleeping.peek()
-    if first.is_hollow() or wake_at < first.wake_at.peek()
+    first: @RoundRobinThread? = me.sleeping.peek()
+    if first.is_absent() or wake_at < first.unwrap().wake_at.peek()
         thread.next.poke(first)
         me.sleeping.poke(thread)
         return
-    loop with after: @RoundRobinThread = first
-        later: @RoundRobinThread = after.next.peek()
-        if later.is_hollow() or wake_at < later.wake_at.peek()
+    loop with after: @RoundRobinThread = first.unwrap()
+        later: @RoundRobinThread? = after.next.peek()
+        if later.is_absent() or wake_at < later.unwrap().wake_at.peek()
             thread.next.poke(later)
             after.next.poke(thread)
             return
-        continue with after: later
+        continue with after: later.unwrap()
 
 ### Puts a waiting thread at the end of the waiters, so a wake finds the one that waited longest first.
 ### :param thread: The thread, its `waits_on` set.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.add_waiter(thread: @RoundRobinThread) -> None
-    thread.next.poke(.hollow())
-    first: @RoundRobinThread = me.waiting.peek()
-    if first.is_hollow()
+    thread.next.poke(None())
+    first: @RoundRobinThread? = me.waiting.peek()
+    if first.is_absent()
         me.waiting.poke(thread)
         return
-    loop with after: @RoundRobinThread = first
-        later: @RoundRobinThread = after.next.peek()
-        if later.is_hollow()
+    loop with after: @RoundRobinThread = first.unwrap()
+        later: @RoundRobinThread? = after.next.peek()
+        if later.is_absent()
             after.next.poke(thread)
             return
-        continue with after: later
+        continue with after: later.unwrap()
 
 ### Makes every sleeper whose time has come ready, in the order they wake.
 ### :param now: The counter now.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.wake_sleepers(now: U64) -> None
     loop
-        first: @RoundRobinThread = me.sleeping.peek()
-        if first.is_hollow() or first.wake_at.peek() > now
+        head: @RoundRobinThread? = me.sleeping.peek()
+        if head.is_absent() or head.unwrap().wake_at.peek() > now
             return
+        first: @RoundRobinThread = head.unwrap()
         me.sleeping.poke(first.next.peek())
         me.make_ready(first)
         continue
@@ -442,37 +443,37 @@ secret routine @ThreadManagerByRoundRobin.wake_sleepers(now: U64) -> None
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.wake_waiters(at: @U32, all: Bool) -> None
     place: Addr = at
-    loop with before: @RoundRobinThread = .hollow(), thread: @RoundRobinThread = me.waiting.peek()
-        if thread.is_hollow()
+    loop with before: @RoundRobinThread? = None(), link: @RoundRobinThread? = me.waiting.peek()
+        if link.is_absent()
             return
-        later: @RoundRobinThread = thread.next.peek()
+        thread: @RoundRobinThread = link.unwrap()
+        later: @RoundRobinThread? = thread.next.peek()
         if thread.waits_on.peek() !== place
-            continue with before: thread, thread: later
-        if before.is_hollow()
-            me.waiting.poke(later)
-        else
-            before.next.poke(later)
+            continue with before: thread, link: later
+        when before
+            is @RoundRobinThread as previous => previous.next.poke(later)
+            is None => me.waiting.poke(later)
         thread.waits_on.poke(.hollow())
         me.make_ready(thread)
         if not all
             return
-        continue with before: before, thread: later
+        continue with before: before, link: later
 
 ### Sets the timer for the next thing the manager must do: the end of the running thread's slice when another thread
 ### is ready, else the first sleeper's time, else nothing (the timer stops).
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.arm_timer() -> None
     now: U64 = cpu_timer_count()
-    sleeper: @RoundRobinThread = me.sleeping.peek()
-    if me.ready_first.peek().is_not_hollow()
+    sleeper: @RoundRobinThread? = me.sleeping.peek()
+    if me.ready_first.peek().is_present()
         deadline: U64 = now +^ me.slice.peek()
-        if sleeper.is_not_hollow()
-            cpu_timer_raise_at(deadline.min(sleeper.wake_at.peek()))
+        if sleeper.is_present()
+            cpu_timer_raise_at(deadline.min(sleeper.unwrap().wake_at.peek()))
             return
         cpu_timer_raise_at(deadline)
         return
-    if sleeper.is_not_hollow()
-        cpu_timer_raise_at(sleeper.wake_at.peek())
+    if sleeper.is_present()
+        cpu_timer_raise_at(sleeper.unwrap().wake_at.peek())
         return
     cpu_timer_stop()
     return
@@ -481,7 +482,7 @@ secret routine @ThreadManagerByRoundRobin.arm_timer() -> None
 ### timer for it. Called with interrupts masked, it returns when something switches back to this thread.
 @target(arch: "aarch64", os: "none")
 secret routine @ThreadManagerByRoundRobin.switch_away() -> None
-    from: @RoundRobinThread = me.running.peek()
+    from: @RoundRobinThread = me.running.peek().unwrap()
     to: @RoundRobinThread = me.take_ready()
     if to === from
         from.state.poke(RoundRobinState.RUNNING)
@@ -522,12 +523,12 @@ secret routine @ThreadManagerByRoundRobin.check_stack(thread: @RoundRobinThread)
 @target(arch: "aarch64", os: "none")
 @noreturn
 secret routine round_robin_thread_main() -> None
-    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek()
-    thread: @RoundRobinThread = manager.running.peek()
+    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek().unwrap()
+    thread: @RoundRobinThread = manager.running.peek().unwrap()
     RUNNING_MOLD.poke(reserve_failure_mold())
     ThreadLocalManager.reset()
     unmask_interrupts()
-    entry: Callable[(Addr,), None] = thread.entry.peek()
+    entry: Callable[(Addr,), None] = thread.entry.peek().unwrap()
     entry.call(thread.arg.peek())
     mask_interrupts()
     manager.check_stack(thread)
@@ -546,13 +547,13 @@ secret routine round_robin_thread_main() -> None
 @target(arch: "aarch64", os: "none")
 @noreturn
 secret routine round_robin_idle_main() -> None
-    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek()
+    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek().unwrap()
     RUNNING_MOLD.poke(reserve_failure_mold())
     loop
         unmask_interrupts()
         wait_for_next_interrupt()
         mask_interrupts()
-        if manager.ready_first.peek().is_not_hollow()
+        if manager.ready_first.peek().is_present()
             manager.switch_away()
         continue
 
@@ -561,18 +562,19 @@ secret routine round_robin_idle_main() -> None
 ### :param line: The timer's line.
 @target(arch: "aarch64", os: "none")
 secret routine round_robin_tick(line: U32) -> None
-    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek()
-    if manager.is_hollow()
+    running_manager: @ThreadManagerByRoundRobin? = RUNNING_ROUND_ROBIN.peek()
+    if running_manager.is_absent()
         cpu_timer_stop()
         return
+    manager: @ThreadManagerByRoundRobin = running_manager.unwrap()
     manager.wake_sleepers(cpu_timer_count())
-    running: @RoundRobinThread = manager.running.peek()
-    if running === manager.idle.peek()
+    running: @RoundRobinThread = manager.running.peek().unwrap()
+    if running === manager.idle.peek().unwrap()
         manager.idle_wakes.peek().add(1).poke_into(manager.idle_wakes)
-    if manager.ready_first.peek().is_hollow()
+    if manager.ready_first.peek().is_absent()
         manager.arm_timer()
         return
-    if running !== manager.idle.peek()
+    if running !== manager.idle.peek().unwrap()
         manager.preemptions.peek().add(1).poke_into(manager.preemptions)
     manager.make_ready(running)
     manager.switch_away()

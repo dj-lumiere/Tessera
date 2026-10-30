@@ -156,7 +156,7 @@ secret routine c_duplicate_handle(from_process: Addr, handle: Addr, to_process: 
 @callconv("stdcall")
 @target(os: "windows")
 secret routine c_create_process(application: Addr, command_line: @U16, process_attrs: Addr,
-    thread_attrs: Addr, inherit: CInt, flags: U32, environment: Addr, directory: @U16,
+    thread_attrs: Addr, inherit: CInt, flags: U32, environment: @U16?, directory: @U16?,
     startup: @StartupInfo, info: @ProcessInformation) -> CInt
 
 ### Binds the Win32 `WaitForSingleObject` function, which waits until an object is signaled.
@@ -240,19 +240,19 @@ secret routine close_if_open(h: Addr) -> None
 ### `text` as UTF-16 with a 0 after it, in memory from `manager`.
 ### :param text: The UTF-8 text.
 ### :param manager: The memory manager for the units.
-### :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
+### :returns: The units and their count without the 0, or None and 0 when `text` has a NUL or the allocation fails.
 @target(os: "windows")
-secret routine utf16(text: @[Byte], manager: @MemoryManager) -> (@U16, U64)
+secret routine utf16(text: @[Byte], manager: @MemoryManager) -> (@U16?, U64)
     units_at: Addr = allocate[U16](count: text.count() + 1, manager)
     if units_at.is_hollow()
-        return (.hollow(), 0)
+        return (None(), 0)
     units: @U16 = units_at.to[@U16]()
     n: Optional[U64] = encode_utf16(text, out: units, capacity: text.count() + 1)
     when n
         is U64 as count => return (units, count)
         is None =>
             deallocate(data: units, manager)
-            return (.hollow(), 0)
+            return (None(), 0)
 
 # -- the command line --------------------------------------------------------------------
 
@@ -328,11 +328,10 @@ secret routine quote_arg(source: @U16, n: U64, target: @U16) -> @U16
 ### :param program: The program to run.
 ### :param args: The arguments, not including the program name.
 ### :param manager: The memory manager for the line and the working memory.
-### :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
+### :returns: The command line, or None when an allocation fails (the texts were checked for a NUL before).
 @target(os: "windows")
-secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @MemoryManager) -> @U16
+secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @MemoryManager) -> @U16?
     arg_count: U64 = args.count()
-    at: &@U16 <- .hollow()
 
     program_bound: U64 = program.count() * 2
 
@@ -343,18 +342,19 @@ secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @Memory
     then
         line_at: Addr = allocate[U16](count: capacity + 1, manager)
         if line_at.is_hollow()
-            return .hollow()
+            return None()
         line: @U16 = line_at.to[@U16]()
-        line.poke_into(at)
+        at: &@U16 <- line
         # 0 is the program, i the argument i - 1.
         for i2 in 0 to arg_count
             arg: @[Byte] = when
                 i2 == 0 => program
                 else => args[i2 - 1]
-            units, n = utf16(text: arg, manager)
-            if units.is_hollow()
+            units_or_none, n = utf16(text: arg, manager)
+            if units_or_none.is_absent()
                 deallocate(data: line, manager)
-                return .hollow()
+                return None()
+            units: @U16 = units_or_none.unwrap()
             if not (i2 == 0)
                 at.load().poke(32)
                 at.load().stride(1).poke_into(at)
@@ -434,11 +434,11 @@ secret routine units_of(s: @U16) -> U64
 ### :param manager: The memory manager for the string.
 ### :returns: The string, or null when the allocation fails.
 @target(os: "windows")
-secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16
+secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16?
     room: U64 = v.name.count() + v.value.count() + 2
     units_at: Addr = allocate[U16](count: room, manager)
     if units_at.is_hollow()
-        return .hollow()
+        return None()
     units: @U16 = units_at.to[@U16]()
     name_units: Optional[U64] = encode_utf16(text: v.name, out: units, capacity: room)
     when name_units
@@ -453,7 +453,7 @@ secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16
 
     # Not reached after the NUL check, which leaves the texts encodable in the room counted for them.
     deallocate(data: units, manager)
-    return .hollow()
+    return None()
 
 ### The overrides as "NAME=VALUE" UTF-16 strings, in memory from `manager`.
 ### :param options: The environment overrides.
@@ -464,8 +464,8 @@ secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16
 secret routine wide_overrides(options: ProcessOptions, out: @@U16, manager: @MemoryManager) -> Bool
     until i == options.env_count with i: U64 = 0
         v: EnvVar = options.env.stride(i).peek()
-        units: @U16 = env_entry_utf16(v, manager)
-        if units.is_hollow()
+        units: @U16? = env_entry_utf16(v, manager)
+        if units.is_absent()
             until i2 == 0 with i2: U64 = i
                 copy_slot: @@U16 = out.stride(i2 - 1)
                 deallocate(data: copy_slot.peek(), manager)
@@ -473,7 +473,7 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, manager: @Mem
             then
                 return false
         else
-            out.stride(i).poke(units)
+            out.stride(i).poke(units.unwrap())
             continue with i: i + 1
     then
         return true
@@ -484,20 +484,20 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, manager: @Mem
 ### :returns: The UTF-16 environment block, or null when an allocation fails (the overrides were checked for a NUL
 ###     before).
 @target(os: "windows")
-secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U16
+secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U16?
     own_at: Addr = allocate[@U16](count: options.env_count.max(1), manager)
     if own_at.is_hollow()
-        return .hollow()
+        return None()
     own: @@U16 = own_at.to[@@U16]()
     if not wide_overrides(options, out: own, manager)
         # A failure has freed the strings made so far, so only the array is left.
         deallocate(data: own, manager)
-        return .hollow()
+        return None()
     parent: @U16 = c_get_environment_strings().unwrap()
     n: U64 = count_block_entries(parent)
     all_at: Addr = allocate[@U16](count: (n + options.env_count).max(1), manager)
-    result: @U16 = when
-        all_at.is_hollow() => .hollow()
+    result: @U16? = when
+        all_at.is_hollow() => None()
         else =>
             all: @@U16 = all_at.to[@@U16]()
             # The parent's entries no override names, then the overrides.
@@ -519,24 +519,24 @@ secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U
     return result
 
 ### How many entries an environment block has: each ends with a 0, and an empty one ends the block.
-### :param parent: The block, or null for none.
-### :returns: The number of entries, 0 when `parent` is null.
+### :param parent: The block.
+### :returns: The number of entries.
 @target(os: "windows")
 secret routine count_block_entries(parent: @U16) -> U64
-    until at.is_hollow() or at.peek() == 0 with at: @U16 = parent, n: U64 = 0
+    until at.peek() == 0 with at: @U16 = parent, n: U64 = 0
         continue with at: at.stride(units_of(at) + 1), n: n + 1
     then
         return n
 
 ### Puts the entries of the environment block `parent` that no override names into `all`, in their order.
 ### :param all: Where the entries go (pointers into `parent`), room for each.
-### :param parent: The environment block, or null for none.
+### :param parent: The environment block.
 ### :param own: The overrides as UTF-16 strings.
 ### :param m: How many overrides `own` holds.
 ### :returns: How many entries went into `all`.
 @target(os: "windows")
 secret routine keep_unnamed(all: @@U16, parent: @U16, own: @@U16, m: U64) -> U64
-    until at.is_hollow() or at.peek() == 0 with at: @U16 = parent, k: U64 = 0
+    until at.peek() == 0 with at: @U16 = parent, k: U64 = 0
         next: @U16 = at.stride(units_of(at) + 1)
         if is_overridden(entry: at, own, m)
             continue with at: next, k: k
@@ -569,13 +569,13 @@ secret routine sort_entries(all: @@U16, total: U64) -> None
 ### :param manager: The memory manager for the block.
 ### :returns: The block, or null when its allocation fails.
 @target(os: "windows")
-secret routine join_entries(all: @@U16, total: U64, manager: @MemoryManager) -> @U16
+secret routine join_entries(all: @@U16, total: U64, manager: @MemoryManager) -> @U16?
     for i in 0 til total with units: U64 = 1
         continue with units: units + units_of(all.stride(i).peek()) + 1
     then
         block_units_at: Addr = allocate[U16](count: units, manager)
         if block_units_at.is_hollow()
-            return .hollow()
+            return None()
         block_units: @U16 = block_units_at.to[@U16]()
         for i2 in 0 til total with at: @U16 = block_units
             entry: @U16 = all.stride(i2).peek()
@@ -629,8 +629,8 @@ secret record Launch
     pi: @ProcessInformation
     sa: @SecurityAttributes
     line: @U16
-    env: @U16
-    directory: @U16
+    env: @U16?
+    directory: @U16?
 
 ### Makes a `PipeReader` from its fields.
 ### :param pipe: Its `pipe`.
@@ -785,24 +785,25 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
         throw InvalidArgumentError()
-    line: @U16 = command_line(program, args, manager)
-    if line.is_hollow()
+    line_or_none: @U16? = command_line(program, args, manager)
+    if line_or_none.is_absent()
         throw OutOfMemoryError()
-    directory_units: @U16 = when options.directory
+    line: @U16 = line_or_none.unwrap()
+    directory_units: @U16? = when options.directory
         is @[Byte] as d =>
             units: @U16 = directory.getview().to[@U16]()
             n: Optional[U64] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
             if not n.is_present()
-                free_texts(line, env: .hollow(), manager)
+                free_texts(line, env: None(), manager)
                 throw InvalidArgumentError()
             becomes units
-        is None => .hollow()
-    env: @U16 = when
-        options.env_count == 0 => .hollow()
+        is None => None()
+    env: @U16? = when
+        options.env_count == 0 => None()
         else =>
-            block_units: @U16 = env_block(options, manager)
-            if block_units.is_hollow()
-                free_texts(line, env: .hollow(), manager)
+            block_units: @U16? = env_block(options, manager)
+            if block_units.is_absent()
+                free_texts(line, env: None(), manager)
                 throw OutOfMemoryError()
             becomes block_units
 
@@ -897,16 +898,15 @@ secret failable routine collect_output(h: @Handles, pi: @ProcessInformation,
     return output
 
 ### Frees the command line and the environment block, each when there is one.
-### :param line: The command line text, or null.
-### :param env: The environment block, or null.
+### :param line: The command line text.
+### :param env: The environment block, or None.
 ### :param manager: The memory manager they came from.
 @target(os: "windows")
-secret routine free_texts(line: @U16, env: @U16, manager: @MemoryManager) -> None
-    if not line.is_hollow()
-        deallocate(data: line, manager)
-    if env.is_hollow()
-        return
-    deallocate(data: env, manager)
+secret routine free_texts(line: @U16, env: @U16?, manager: @MemoryManager) -> None
+    deallocate(data: line, manager)
+    when env
+        is @U16 as env_units => deallocate(data: env_units, manager)
+        is None => nothing
     return
 
 ### Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
@@ -960,9 +960,8 @@ secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, manager: @MemoryMan
 secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffer
     copied: &CaptureBuffer <- CaptureBuffer.empty()
 
-    data: @Byte = b.storage.data.peek()
-    if data.is_not_hollow()
-        copied.append(chunk: data, n: b.count.peek(), manager)
+    if b.count.peek() != 0
+        copied.append(chunk: b.storage.data.peek(), n: b.count.peek(), manager)
     lost: Bool = copied.failed.peek() or b.failed.peek()
     copied.failed.poke(lost)
     return copied
@@ -978,7 +977,7 @@ secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffe
 @target(os: "windows")
 @expensive("allocates a copy of the variable")
 secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
-    units: &@U16 <- .hollow()
+    units: &(@U16?) <- None()
     key: &Items[U16, 256] <- .hollow()
 
     n: Optional[U64] = encode_utf16(text: name, out: key.getview().to[@U16](), capacity: 256)
@@ -988,21 +987,20 @@ secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Optional[Borro
         manager)
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
-    held: @U16 = units.load()
-    if held.is_hollow()
-        return value
-    deallocate(data: held, manager)
+    when units.load()
+        is @U16 as held => deallocate(data: held, manager)
+        is None => nothing
     return value
 
 ### The value of the variable whose UTF-16 name is at `key`, as UTF-8 in memory from `manager`. The UTF-16 copy it reads
 ### into goes into `units`, for the caller to give back.
 ### :param key: The 0-terminated UTF-16 name.
-### :param units: Where the UTF-16 copy's address goes, null when there is none.
+### :param units: Where the UTF-16 copy's address goes, None when there is none.
 ### :param manager: The memory manager for both copies.
 ### :returns: The value's bytes.
 ### :absent: When the variable isn't set, or the value can't be read or allocated.
 @target(os: "windows")
-secret routine env_value(key: @U16, units: @@U16,
+secret routine env_value(key: @U16, units: @(@U16?),
     manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     c_set_last_error(0)
     need: U32 = c_get_environment_variable(key, .hollow(), 0)
@@ -1015,7 +1013,7 @@ secret routine env_value(key: @U16, units: @@U16,
     if made_at.is_hollow()
         return None()
     made: @U16 = made_at.to[@U16]()
-    made.poke_into(units)
+    units.poke(made)
     got: U32 = c_get_environment_variable(key, made, need)
     if got == 0 or got >= need
         return None()

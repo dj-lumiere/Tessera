@@ -4800,6 +4800,14 @@ public sealed partial class FunctionGen
                 throw Err(unavailable.Pos, "@unavailable marks a standard library routine that can't run on a target");
             throw Err(plan.Pos, $"{plan.Decl.DisplayName} can't run here: {unavailable.First}");
         }
+        // `@refused("why")` keeps a standard library routine whose every call is a build error: the routine says why the
+        // call can't be right and what to write instead.
+        if (plan?.Decl.AnnotationNamed("refused") is { } refused)
+        {
+            if (!plan.Decl.IsLibrary)
+                throw Err(refused.Pos, "@refused marks a standard library routine whose every call is a build error");
+            throw Err(plan.Pos, refused.First ?? $"{plan.Decl.DisplayName} can't be called");
+        }
         if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
             && !_decl.IsLibrary && !Tessera.Derive.IsImplicit(_decl)
             && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
