@@ -2864,6 +2864,13 @@ public sealed partial class FunctionGen
 
     private Val IntConst(BigInteger value, Pos pos, DType expected, int hexDigits = 0)
     {
+        // An integer literal is an address where an Addr goes: the number is the address, as wide as the target's.
+        if (expected is PtrType { Pointee: null })
+        {
+            string address = _c.Count.Literal(value, hexDigits, out var addressError)
+                             ?? throw Err(pos, $"{addressError}: an address on this target is {_c.Count.Bits} bits wide");
+            return new Val($"inttoptr ({_c.Count.Llvm} {address} to ptr)", expected);
+        }
         var it = expected switch
         {
             IntType i => i,
@@ -4807,6 +4814,11 @@ public sealed partial class FunctionGen
                 throw Err(refused.Pos, "@refused marks a standard library routine whose every call is a build error");
             throw Err(plan.Pos, refused.First ?? $"{plan.Decl.DisplayName} can't be called");
         }
+        if (plan is { Decl: { Name: "inttoptr", IsLibrary: true, Module: Compiler.SystemModule } toPointer }
+            && plan.Env.Get(toPointer.TypeParams.LastOrDefault() ?? "") is { } pointerTarget and not PtrType { Pointee: null })
+            throw Err(plan.Pos, $"inttoptr gives an address, an Addr, not {pointerTarget}: a number is turned into a view through "
+                + "an address. Write the address as an Addr (a literal such as base: Addr = 0x30010000, or inttoptr[U64, Addr](n) for "
+                + "one worked out), then convert it with .to[@T]() (a crash on zero) or .to[@T?]() (None for zero)");
         if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
             && !_decl.IsLibrary && !Tessera.Derive.IsImplicit(_decl)
             && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
@@ -5166,6 +5178,11 @@ public sealed partial class FunctionGen
                 return null;
             case IntLit i:
             {
+                if (pt is PtrType { Pointee: null })
+                {
+                    preferred = false;
+                    return _c.Count.Literal(i.Value, i.HexDigits, out var addressError) is null ? addressError : null;
+                }
                 var it = pt switch { IntType x => x, ChoiceType ch => ch.Underlying, _ => null };
                 if (it is null) return $"an integer literal can't be a {pt}";
                 if (it.Literal(i.Value, i.HexDigits, out var error) is null) return error;
@@ -5290,7 +5307,7 @@ public sealed partial class FunctionGen
     /// bare `[a, b]` an Array or a Vector, a bare `(a, b)` a tuple, a bare `(x: a)` a record.
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
-        IntLit i => t is IntType { IsNumber: true } || i.Base10 && (t is FloatType || HexFloat.IsB128(t)),
+        IntLit i => t is IntType { IsNumber: true } or PtrType { Pointee: null } || i.Base10 && (t is FloatType || HexFloat.IsB128(t)),
         FloatLit f => t is FloatType || (HexFloat.IsHex(f.Text) || f.IsWord) && HexFloat.IsB128(t),
         ArrayLit { IsTuple: true } => t is RecordType { IsTuple: true },
         ArrayLit => t is ArrayType or VectorType,

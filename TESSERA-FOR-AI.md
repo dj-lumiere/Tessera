@@ -250,8 +250,8 @@ routine start() -> None
   generic code over `@T` uses `src.copy_into(dst, count)`.
 - **Giving back twice.** The build catches a second `drop`, a use after it, a missing one, a view used after its
   memory is given back, and a routine that gives back memory its caller holds (the group check below). Raw code the
-  build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made with
-  `inttoptr`) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
+  build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made from
+  a number) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
   (any build mode, off by default, always on under `tessera test`) `HEAP` is the `HeapManagerByCheckedHeap`, which keeps a
   header in front of each block and crashes with `DoubleFreeError` at the line that gives the same block back a second time (a
   quarantine of the last 256 blocks given back keeps that sure, raw layer included). With it off it is plain malloc / free,
@@ -398,8 +398,7 @@ routine start() -> None
   parameter an AuthorizedSlice[S64]), borrowed in a name first, held: AuthorizedSlice[S64] <- s.get_exclusive_access(),
   and dropped after the ticket's retrieve". A `@T` or `@[T]` the work only reads, and one it changes under an access it
   takes itself, is no build error, as for every view.
-  The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
-  `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
+  The build doesn't know whether two threads get the same memory and follows no `Addr` or address made from a number: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a STACK place, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / `getview`) or of a
@@ -435,8 +434,12 @@ routine start() -> None
     sees memory a frame slot holds: the table holds the views the work was handed. Work handed a frame slot itself is
     waited for wherever its ticket is stored. Work handed a view of memory makes the ticket hold that view until the
     work is over, so the memory isn't given back before.
+  - A number becomes an address as an `Addr`: an integer literal goes where an `Addr` is expected (`base: Addr = 0x30010000`, an `Addr`
+    parameter, a global's first value, an `Addr` preset), a computed one is `inttoptr[U64, Addr](n)`, and an address moves with
+    `+%` and a `ByteSize`. A view comes from an `Addr` with `.to[@T]()` (a crash on zero) or `.to[@T?]()` (None for zero).
+    `inttoptr` with a `@T`, `@T?` or `Callable` target is a build error. A literal wider than the target's addresses is one too.
   - A number made from an address (`ptrtoint`) is a number, and the check doesn't follow it, the same as an `Addr`
-    passed on to another routine. The build doesn't check an address made from a number with `inttoptr`: what it
+    passed on to another routine. The build doesn't check an address made from a number: what it
     points at and how long that memory lives are the code's to keep right.
   - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
@@ -2208,8 +2211,8 @@ lateinit global THREADS: &ThreadManagerByRoundRobin
 global STACKS: &Items[U64, 8192]   # 64 KiB for the threads' slots
 
 routine start() -> None
-    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
-        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.poke(InterruptManagerByGic.construct(distributor: 0x08000000,
+        cpu_interface: 0x08010000))
     GIC.start()
     THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
         slice: Duration.from_milliseconds(1), interrupts: GIC))
@@ -2220,7 +2223,7 @@ routine start() -> None
 ```
 
 - `Pl011` (Unhosted): a Writer over a PL011 serial port, `port: &Pl011 <-
-  .construct(base: inttoptr[U64, Addr](0x09000000))`, then `port.write("n = {n}\n")`. It waits for room in the
+  .construct(base: 0x09000000)`, then `port.write("n = {n}\n")`. It waits for room in the
   transmit queue and sets nothing up.
 - `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
   (`stop()` puts the one before back), `when_line_raised(line, holder)` holds a `Callable[(U32,), None]` per line

@@ -2558,6 +2558,9 @@ public sealed partial class Compiler
     /// address). A thread-local's address differs per thread, so it isn't one.
     private string PointerInitializer(Expr e, DType t, TypeEnv env)
     {
+        // An address written as a number: a constant.
+        if (t is PtrType { Pointee: null } && e is IntLit literalAddress)
+            return $"inttoptr ({Count.Llvm} {Count.Literal(literalAddress.Value, literalAddress.HexDigits, out var addressError) ?? throw new CompileError(e.Pos, $"{addressError}: an address on this target is {Count.Bits} bits wide")} to ptr)";
         if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
         // A preset in read-only data: its address, a view.
         if (t is PtrType { Pointee: { } viewed } && e is PresetRef { Owner: null } named

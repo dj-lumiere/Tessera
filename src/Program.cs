@@ -379,7 +379,7 @@ static class Cli
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null,
+        bool StdlibExports, bool? Trace, bool RaceCheck, bool HeapCheck = false, Board? Board = null,
         bool ShowDestructs = false, bool FramePointers = false);
 
     internal static bool RaceCheckable(BuildTarget target) => BuildModes.RaceCheckable(target);
@@ -414,7 +414,7 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, stdlibExports = true, uninitFill = false, heapCheck = false, showDestructs = false;
+        bool emit = false, stdlibExports = true, heapCheck = false, showDestructs = false;
         bool framePointers = false;
         bool? trace = null, race = null;
         var mode = BuildMode.Debug;
@@ -443,7 +443,7 @@ static class Cli
         var target = targetArgs.Build();
         if (race == true) RequireRaceCheckable(target);
         return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race ?? mode.RaceCheckedByDefault(target),
-            uninitFill, heapCheck, targetArgs.Board, showDestructs, framePointers);
+            heapCheck, targetArgs.Board, showDestructs, framePointers);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -537,7 +537,7 @@ static class Cli
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
-        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
+        bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
         TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false)
     {
         var inputs = files.ToList();
@@ -772,7 +772,7 @@ static class Cli
         }
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
-            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck,
+            trace: o.Trace, raceCheck: o.RaceCheck, heapCheck: o.HeapCheck,
             destructs: o.ShowDestructs ? Console.Out : null, framePointers: o.FramePointers);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
@@ -818,7 +818,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck), exe,
+            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, heapCheck: o.HeapCheck), exe,
                 o.Target, o.Mode,
                 RaceLink(o.RaceCheck));
             var (code, _, _) = Exec(exe, captureOutput: false, programArgs: programArgs);
