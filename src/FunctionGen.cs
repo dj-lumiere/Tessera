@@ -2867,6 +2867,7 @@ public sealed partial class FunctionGen
         // An integer literal is an address where an Addr goes: the number is the address, as wide as the target's.
         if (expected is PtrType { Pointee: null })
         {
+            if (Compiler.AddressLiteralError(new IntLit(value, pos, hexDigits)) is { } notHex) throw Err(pos, notHex);
             string address = _c.Count.Literal(value, hexDigits, out var addressError)
                              ?? throw Err(pos, $"{addressError}: an address on this target is {_c.Count.Bits} bits wide");
             return new Val($"inttoptr ({_c.Count.Llvm} {address} to ptr)", expected);
@@ -5181,6 +5182,7 @@ public sealed partial class FunctionGen
                 if (pt is PtrType { Pointee: null })
                 {
                     preferred = false;
+                    if (Compiler.AddressLiteralError(i) is { } notHex) return notHex;
                     return _c.Count.Literal(i.Value, i.HexDigits, out var addressError) is null ? addressError : null;
                 }
                 var it = pt switch { IntType x => x, ChoiceType ch => ch.Underlying, _ => null };

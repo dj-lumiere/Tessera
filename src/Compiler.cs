@@ -2548,6 +2548,17 @@ public sealed partial class Compiler
         }
     }
 
+    /// Why an integer literal can't be an address: an address is written in hex (`0x09000000`), so a literal in
+    /// another base or a negative one is refused. Null when it is a hex literal.
+    internal static string? AddressLiteralError(IntLit literal) =>
+        literal.HexDigits > 0 ? null
+        : literal.Value.Sign < 0 ? "an address is never negative: write it in hex, 0x..."
+        : $"an address is written in hex: 0x{HexDigitsOf(literal.Value)}";
+
+    /// The hex digits of a nonnegative number, without the leading zero BigInteger writes before a top digit of 8 or more.
+    private static string HexDigitsOf(System.Numerics.BigInteger value) =>
+        value.ToString("X").TrimStart('0') is { Length: > 0 } digits ? digits : "0";
+
     /// `Addr.zero()` (or the builder's own zero value): the all-zero value of the type the memory holds.
     private static bool IsHollowCall(Expr e) =>
         e is ImplicitCallExpr { Name: "hollow", Args.Count: 0, TypeArgs.Count: 0 }
@@ -2560,7 +2571,7 @@ public sealed partial class Compiler
     {
         // An address written as a number: a constant.
         if (t is PtrType { Pointee: null } && e is IntLit literalAddress)
-            return $"inttoptr ({Count.Llvm} {Count.Literal(literalAddress.Value, literalAddress.HexDigits, out var addressError) ?? throw new CompileError(e.Pos, $"{addressError}: an address on this target is {Count.Bits} bits wide")} to ptr)";
+            return AddressLiteralError(literalAddress) is { } notHex ? throw new CompileError(e.Pos, notHex) : $"inttoptr ({Count.Llvm} {Count.Literal(literalAddress.Value, literalAddress.HexDigits, out var addressError) ?? throw new CompileError(e.Pos, $"{addressError}: an address on this target is {Count.Bits} bits wide")} to ptr)";
         if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
         // A preset in read-only data: its address, a view.
         if (t is PtrType { Pointee: { } viewed } && e is PresetRef { Owner: null } named
