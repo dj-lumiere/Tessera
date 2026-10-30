@@ -4831,21 +4831,6 @@ public sealed partial class FunctionGen
                 InferTypeArgs(r, env, c.Args, expected, 0);
                 return new CallPlan(r, env, null, c.Args, c.Pos);
             }
-            case ImplicitCallExpr { Name: "hollow", Written: true } gone:
-            {
-                string write = expected switch
-                {
-                    null => "the zero value",
-                    { Name: "Addr" } => "Addr.zero()",
-                    VariantType { IsNullable: true } => "None()",
-                    BoolType => "false",
-                    FloatType => "0.0",
-                    IntType => "0",
-                    _ => "the zero value as a constructor",
-                };
-                throw Err(gone.Pos, $"'.hollow()' is gone: write `{write}` here. A place with no value is x: &T (all zero), "
-                    + "and lateinit x: &T is one filled later");
-            }
             case ImplicitCallExpr ic:
             {
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.

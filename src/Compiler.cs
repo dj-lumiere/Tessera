@@ -2551,10 +2551,11 @@ public sealed partial class Compiler
         }
     }
 
-    /// `.hollow()` or `T.hollow()`: the all-zero value of the type the memory holds.
+    /// `Addr.zero()` (or the builder's own zero value): the all-zero value of the type the memory holds.
     private static bool IsHollowCall(Expr e) =>
         e is ImplicitCallExpr { Name: "hollow", Args.Count: 0, TypeArgs.Count: 0 }
-            or NsCallExpr { Name: "hollow", Args.Count: 0, TypeArgs.Count: 0 };
+            or NsCallExpr { Name: "hollow", Args.Count: 0, TypeArgs.Count: 0 }
+            or NsCallExpr { Name: "zero", Owner.Name: "Addr", Args.Count: 0, TypeArgs.Count: 0 };
 
     /// A pointer known when the program is linked: `.hollow()`, or the name of another global or preset in memory (its
     /// address). A thread-local's address differs per thread, so it isn't one.
@@ -2584,7 +2585,7 @@ public sealed partial class Compiler
         }
         throw new CompileError(e.Pos, t is CallableType
             ? $"a {t.Name} in memory starts as .hollow() or as a routine: name.to[Callable]()"
-            : $"a {t.Name} in memory starts as .hollow() or as the address of a global or preset in memory");
+            : $"a {t.Name} in memory starts as Addr.zero() or as the address of a global or preset in memory");
     }
 
     /// A record literal in a global's or a preset's memory: every field from its own initializer, in the record's

@@ -2704,8 +2704,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // `.Nothing` without arguments can only be a variant case; the checker says so otherwise.
                 if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
                 var (implicitArgs, implicitNames) = ParseNamedArgs();
-                if (member.Text == "uninit") RejectGone(member.Text, t.Pos);
-                return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames, Written = true };
+                RejectGone(member.Text, t.Pos);
+                return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames };
             }
             case TokenKind.LParen when LambdaParamCount() is { } lambdaParams:
                 return ParseLambda(lambdaParams, t.Pos);
@@ -2778,9 +2778,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private void RejectGone(string name, Pos pos)
     {
         if (name == "hollow")
-            throw new CompileError(pos, "'hollow' is gone: write the zero value as a literal or constructor (0, false, None(), T(...)), "
-                + "start a place with no value (x: &T, every byte zero, only for a type whose zero is a value), or write "
-                + "lateinit x: &T for a place filled later");
+            throw new CompileError(pos, "'.hollow()' is gone: write the zero value as a literal or constructor (0, false, None(), "
+                + "Addr.zero(), @[T].empty(), T(...)), start a place with no value (x: &T, every byte zero, only for a type whose zero "
+                + "is a value), or write lateinit x: &T for a place filled later");
         if (name == "uninit")
             throw new CompileError(pos, "'uninit' is gone: a place with no value (x: &T) starts all zero, and lateinit x: &T is one filled later");
     }

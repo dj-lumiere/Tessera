@@ -521,9 +521,6 @@ public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<
 {
     /// Each argument's name where the call names it, as on CallExpr.
     public List<string?>? ArgNames { get; init; }
-
-    /// The call was written in the source (`.hollow()` is gone as a spelling, the builder's own zero value is not).
-    public bool Written { get; init; }
 }
 
 /// `.Nothing`: a variant case without a payload, of the variant the value goes to.
