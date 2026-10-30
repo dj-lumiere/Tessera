@@ -12,7 +12,7 @@ module Hosted
 @external("c")
 @symbol("environ")
 @target(os: "linux")
-global ENVIRON: &@@Byte
+global ENVIRON: &(@(@Byte?)?)
 
 ### struct pollfd
 @target(os: ("linux", "macos"))
@@ -76,7 +76,7 @@ secret routine c_dup2(from: CInt, to: CInt) -> CInt
 @external("c")
 @symbol("execvp")
 @target(os: ("linux", "macos"))
-secret routine c_execvp(file: @Byte, argv: @@Byte) -> CInt
+secret routine c_execvp(file: @Byte, argv: @(@Byte?)) -> CInt
 
 ### Binds the C `_exit` function, which ends the process at once, without flushing or running `atexit` handlers.
 ### :param status: The process's exit status.
@@ -101,7 +101,7 @@ secret routine c_waitpid(pid: CInt, status: @CInt, options: CInt) -> CInt
 @external("c")
 @symbol("_NSGetEnviron")
 @target(os: "macos")
-secret routine c_ns_get_environ() -> @@@Byte
+secret routine c_ns_get_environ() -> @(@(@Byte?)?)
 
 # nfds_t: unsigned long on Linux, unsigned int on macOS
 ### Binds the C `poll` function (Linux), which waits until one of several descriptors is ready.
@@ -141,13 +141,13 @@ secret routine poll_two(fds: @PollFd) -> CInt
 ### Where C's environ lives: the variable on Linux, and through _NSGetEnviron on macOS (as a library must).
 ### :returns: The address of the `environ` pointer.
 @target(os: "linux")
-secret routine environ_place() -> @@@Byte
+secret routine environ_place() -> @(@(@Byte?)?)
     return ENVIRON
 
 ### Where C's environ lives: the variable on Linux, and through _NSGetEnviron on macOS (as a library must).
 ### :returns: The address of the `environ` pointer.
 @target(os: "macos")
-secret routine environ_place() -> @@@Byte
+secret routine environ_place() -> @(@(@Byte?)?)
     return c_ns_get_environ()
 
 ### The `open` flags O_RDWR | O_CLOEXEC, whose values differ between Linux and macOS.
@@ -178,30 +178,30 @@ secret routine spawn_error(e: CInt) -> ProcessError
 ### The argument vector, the environment (null to inherit), and the directory (null to stay), in memory from manager.
 @target(os: ("linux", "macos"))
 secret record Prepared
-    argv: @@Byte  # the program and the arguments, then null
+    argv: @(@Byte?)?  # the program and the arguments, then None
     argc: U64  # how many strings argv holds (made so far, when it couldn't finish)
-    envp: @@Byte  # the parent's entries not overridden, the overrides, then null
+    envp: @(@Byte?)?  # the parent's entries not overridden, the overrides, then null
     own_first: U64  # where envp's own (allocated) entries start
     own_count: U64
-    directory: @Byte
+    directory: @Byte?
 
 ### Nothing prepared: what a run starts from, so releasing it is right on every path.
 ### :returns: The empty {Prepared}.
 @target(os: ("linux", "macos"))
 secret common routine Prepared.empty() -> Me
-    return Me(argv: .hollow(), argc: 0, envp: .hollow(), own_first: 0, own_count: 0,
-        directory: .hollow())
+    return Me(argv: None(), argc: 0, envp: None(), own_first: 0, own_count: 0,
+        directory: None())
 
 ### `text` with a NUL after it, in memory from `manager`.
 ### :param text: The bytes to copy.
 ### :param manager: The memory manager for the copy.
 ### :returns: The NUL-terminated copy, or null when the allocation fails.
 @target(os: ("linux", "macos"))
-secret routine c_string(text: @[Byte], manager: @MemoryManager) -> @Byte
+secret routine c_string(text: @[Byte], manager: @MemoryManager) -> @Byte?
     n: U64 = text.count()
     p_at: Addr = allocate[Byte](count: n + 1, manager)
     if p_at.is_hollow()
-        return .hollow()
+        return None()
     p: @Byte = p_at.to[@Byte]()
     p.copy(src: text.data, count: n)
     p.stride(n).poke(0x00)
@@ -212,12 +212,12 @@ secret routine c_string(text: @[Byte], manager: @MemoryManager) -> @Byte
 ### :param manager: The memory manager for the entry.
 ### :returns: The NUL-terminated entry, or null when the allocation fails.
 @target(os: ("linux", "macos"))
-secret routine env_entry(v: EnvVar, manager: @MemoryManager) -> @Byte
+secret routine env_entry(v: EnvVar, manager: @MemoryManager) -> @Byte?
     n: U64 = v.name.count()
     m: U64 = v.value.count()
     p_at: Addr = allocate[Byte](count: n + m + 2, manager)
     if p_at.is_hollow()
-        return .hollow()
+        return None()
     p: @Byte = p_at.to[@Byte]()
     p.copy(src: v.name.data, count: n)
     p.stride(n).poke(b'=')
@@ -229,27 +229,21 @@ secret routine env_entry(v: EnvVar, manager: @MemoryManager) -> @Byte
 ### :param manager: The memory manager they came from.
 @target(os: ("linux", "macos"))
 secret routine @Prepared.release(manager: @MemoryManager) -> None
-    for i in 0 til me.argc.peek()
-        arg_slot: @@Byte = me.argv.peek().stride(i)
-        deallocate(data: arg_slot.peek(), manager)
-
-    loop with i: U64 = 0
-        envp2: @@Byte = me.envp.peek()
-        if envp2.is_hollow() or i == me.own_count.peek()
-            break
-        entry_slot: @@Byte = envp2.stride(me.own_first.peek() + i)
-        deallocate(data: entry_slot.peek(), manager)
-        continue with i: i + 1
-    argv: @@Byte = me.argv.peek()
-    if not argv.is_hollow()
-        deallocate(data: argv, manager)
-    envp: @@Byte = me.envp.peek()
-    if not envp.is_hollow()
-        deallocate(data: envp, manager)
-    dir: @Byte = me.directory.peek()
-    if dir.is_hollow()
-        return
-    deallocate(data: dir, manager)
+    when me.argv.peek()
+        is @(@Byte?) as argv =>
+            for i in 0 til me.argc.peek()
+                deallocate(data: argv.stride(i).peek().unwrap(), manager)
+            deallocate(data: argv, manager)
+        is None => nothing
+    when me.envp.peek()
+        is @(@Byte?) as envp =>
+            for i in 0 til me.own_count.peek()
+                deallocate(data: envp.stride(me.own_first.peek() + i).peek().unwrap(), manager)
+            deallocate(data: envp, manager)
+        is None => nothing
+    when me.directory.peek()
+        is @Byte as dir => deallocate(data: dir, manager)
+        is None => nothing
     return
 
 ### Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
@@ -269,50 +263,50 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
     argv_at: Addr = allocate[@Byte](count: arg_count + 2, manager)
     if argv_at.is_hollow()
         return false
-    argv: @@Byte = argv_at.to[@@Byte]()
+    argv: @(@Byte?) = argv_at.to[@(@Byte?)]()
     me.argv.poke(argv)
     for i in 0 to arg_count
-        s: @Byte = when
+        s: @Byte? = when
             i == 0 => c_string(text: program, manager)
             else => c_string(text: args[i - 1], manager)
-        if s.is_hollow()
+        if s.is_absent()
             return false
         argv.stride(i).poke(s)
         me.argc.poke(i + 1)
-    argv.stride(arg_count + 1).poke(.hollow())
+    argv.stride(arg_count + 1).poke(None())
     when options.directory
         is @[Byte] as d =>
-            directory: @Byte = c_string(text: d, manager)
-            if directory.is_hollow()
+            directory: @Byte? = c_string(text: d, manager)
+            if directory.is_absent()
                 return false
             me.directory.poke(directory)
         is None => nothing
     if options.env_count == 0
         return true
-    parent: @@Byte = environ_place().peek()
-    n: U64 = count_entries(parent)
+    parent_or_none: @(@Byte?)? = environ_place().peek()
+    n: U64 = count_entries(parent_or_none)
 
     # The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     # the overrides, made here.
     envp_at: Addr = allocate[@Byte](count: n + options.env_count + 1, manager)
     if envp_at.is_hollow()
         return false
-    envp: @@Byte = envp_at.to[@@Byte]()
+    envp: @(@Byte?) = envp_at.to[@(@Byte?)]()
     me.envp.poke(envp)
     0.poke_into(first)
     for i in 0 til n
-        entry: @Byte = parent.stride(i).peek()
+        entry: @Byte = parent_or_none.unwrap().stride(i).peek().unwrap()
         if not is_overridden(entry: entry.to[CStrView]().getview(), options)
             envp.stride(first.load()).poke(entry)
             (first.load() + 1).poke_into(first)
     for j in 0 til options.env_count
-        e: @Byte = env_entry(v: options.env.stride(j).peek(), manager)
-        if e.is_hollow()
+        e: @Byte? = env_entry(v: options.env.stride(j).peek(), manager)
+        if e.is_absent()
             me.own_first.poke(first.load())
             me.own_count.poke(j)
             return false
         envp.stride(first.load() + j).poke(e)
-    envp.stride(first.load() + options.env_count).poke(.hollow())
+    envp.stride(first.load() + options.env_count).poke(None())
     me.own_first.poke(first.load())
     me.own_count.poke(options.env_count)
     return true
@@ -321,10 +315,11 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
 ### :param entries: The array, or null for none.
 ### :returns: The number of entries, 0 when `entries` is null.
 @target(os: ("linux", "macos"))
-secret routine count_entries(entries: @@Byte) -> U64
-    if entries.is_hollow()
+secret routine count_entries(entries_or_none: @(@Byte?)?) -> U64
+    if entries_or_none.is_absent()
         return 0
-    until entries.stride(n).peek().is_hollow() with n: U64 = 0
+    entries: @(@Byte?) = entries_or_none.unwrap()
+    until entries.stride(n).peek().is_absent() with n: U64 = 0
         continue with n: n + 1
     then
         return n
@@ -382,13 +377,13 @@ secret routine child(p: @Prepared, s: ChildStreams) -> None
         c_dup2(s.output, 1)
     if s.error >= 0
         c_dup2(s.error, 2)
-    dir: @Byte = p.directory.peek()
-    if dir.is_hollow() or c_chdir(dir) == 0
-        envp: @@Byte = p.envp.peek()
-        if not envp.is_hollow()
+    dir: @Byte? = p.directory.peek()
+    if dir.is_absent() or c_chdir(dir.unwrap()) == 0
+        envp: @(@Byte?)? = p.envp.peek()
+        if envp.is_present()
             environ_place().poke(envp)
-        argv: @@Byte = p.argv.peek()
-        c_execvp(argv.peek(), argv)
+        argv: @(@Byte?) = p.argv.peek().unwrap()
+        c_execvp(argv.peek().unwrap(), argv)
         e: &CInt <- errno()
         c_write(s.report, e.to[@Byte](), 4)
         c_exit_now(127)

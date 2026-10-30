@@ -10,8 +10,8 @@ preset ROUNDS: U64 = 1000
 record PingPong
     sched: @CoroutineManager
     turn: U32  # 0: ping's, 1: pong's
-    ping: @FiberState
-    pong: @FiberState
+    ping: @FiberState?
+    pong: @FiberState?
     handoffs: U64
 
 record Sleepers
@@ -37,7 +37,7 @@ common routine Family.construct(sched: @CoroutineManager) -> Me
     return Me(sched, sum: 0, children: .hollow())
 
 ### One side of the ping-pong: waits for mine, hands the turn to the other, ROUNDS times.
-routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState) -> None
+routine play(game: @PingPong, mine: U32, own: @(@FiberState?), other: @(@FiberState?)) -> None
     sched: @CoroutineManager = game.sched.peek()
 
     own.poke_unbroken(sched.current())
@@ -50,12 +50,11 @@ routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState)
             # The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
             game.handoffs.fetch_add_unbroken(1)
             game.turn.poke_unbroken(mine ^ 1)
-            peer: @FiberState = other.peek_unbroken()
-            if peer.is_hollow()
-                continue
-            else
-                sched.wake(peer)
-                continue
+            when other.peek_unbroken()
+                is @FiberState as peer =>
+                    sched.wake(peer)
+                    continue
+                is None => continue
     then
         return
 

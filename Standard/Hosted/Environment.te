@@ -44,11 +44,11 @@ common routine EnvironmentEntry.construct(name: BorrowedSlice[Byte],
 ### :param argv: The arguments, NUL-terminated.
 ### :throws: Crashes with `OutOfMemoryError` when the table of arguments can't be allocated.
 @export("tessera_set_arguments")
-routine set_arguments(argc: CInt, argv: @@Byte) -> None
+routine set_arguments(argc: CInt, argv: @(@Byte?)?) -> None
     manager: @MemoryManager = C_HEAP
 
     n: U64 = argc.max(0).to[U64]()
-    if n == 0 or argv.is_hollow()
+    if n == 0 or argv.is_absent()
         ARGUMENT_COUNT.poke(0)
         return
     table_at: Addr = allocate[@[Byte]](count: n, manager)
@@ -56,19 +56,20 @@ routine set_arguments(argc: CInt, argv: @@Byte) -> None
         throw OutOfMemoryError()
     table: @@[Byte] = table_at.to[@@[Byte]]()
     for i in 0 til n
-        table.stride(i).poke(argument_text(raw: argv.stride(i).peek(), manager))
+        table.stride(i).poke(argument_text(raw_or_none: argv.unwrap().stride(i).peek(), manager))
     ARGUMENT_TEXT.poke(table)
     ARGUMENT_COUNT.poke(n)
     return
 
 ### One argument as the program sees it: the C string's bytes as they are.
-### :param raw: The NUL-terminated argument.
+### :param raw_or_none: The NUL-terminated argument, or None.
 ### :param manager: Unused here.
 ### :returns: A view of the argument's bytes.
 @target(os: ("linux", "macos"))
-secret routine argument_text(raw: @Byte, manager: @MemoryManager) -> @[Byte]
-    if raw.is_hollow()
+secret routine argument_text(raw_or_none: @Byte?, manager: @MemoryManager) -> @[Byte]
+    if raw_or_none.is_absent()
         return ""
+    raw: @Byte = raw_or_none.unwrap()
     return @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
 
 ### Binds the Win32 `MultiByteToWideChar` function, which converts text in a code page to UTF-16.
@@ -88,14 +89,15 @@ secret routine c_multi_byte_to_wide_char(code_page: U32, flags: U32, text: @Byte
 
 ### One argument as the program sees it: the C string, in the ANSI code page, converted to UTF-8 in memory from manager,
 ### kept for the whole run.
-### :param raw: The NUL-terminated argument.
+### :param raw_or_none: The NUL-terminated argument, or None.
 ### :param manager: The memory manager for the UTF-16 and UTF-8 copies.
 ### :returns: The argument's UTF-8 bytes, empty when it can't be converted.
 ### :throws: Crashes with `OutOfMemoryError` when a copy can't be allocated.
 @target(os: "windows")
-secret routine argument_text(raw: @Byte, manager: @MemoryManager) -> @[Byte]
-    if raw.is_hollow()
+secret routine argument_text(raw_or_none: @Byte?, manager: @MemoryManager) -> @[Byte]
+    if raw_or_none.is_absent()
         return ""
+    raw: @Byte = raw_or_none.unwrap()
     need: CInt = c_multi_byte_to_wide_char(0, 0, raw, -1, .hollow(), 0)
     if need <= 0
         return ""
@@ -183,13 +185,15 @@ secret routine copied(text: @[Byte], manager: @MemoryManager) -> BorrowedSlice[B
 secret routine environment_entries(manager: @MemoryManager) -> List[EnvironmentEntry]
     list: &List[EnvironmentEntry] <- .construct(manager)
 
-    env: @@Byte = environ_place().peek()
-    if env.is_hollow()
+    env_or_none: @(@Byte?)? = environ_place().peek()
+    if env_or_none.is_absent()
         return list
+    env: @(@Byte?) = env_or_none.unwrap()
     loop with i: U64 = 0
-        raw: @Byte = env.stride(i).peek()
-        if raw.is_hollow()
+        entry: @Byte? = env.stride(i).peek()
+        if entry.is_absent()
             break
+        raw: @Byte = entry.unwrap()
         text: @[Byte] = @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
         when text.find("=")
             is U64 as at =>

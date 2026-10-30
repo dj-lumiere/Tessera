@@ -33,13 +33,13 @@ module Hosted
 ### The slot of the work running on this thread (a thread worker's, or the fiber's that runs), or null.
 @threadlocal
 @target(os: not "none")
-global RUNNING_WORK: &@WorkSlot
+global RUNNING_WORK: &(@WorkSlot?)
 
 ### Released before a thread worker takes the next ticket's work: what that work left in this thread's `@threadlocal`
 ### globals and still owns (the thread's CoroutineManager), or null. Whatever makes such a value sets it.
 @threadlocal
 @target(os: not "none")
-global THREAD_CLEANUP: &Callable[(), None]
+global THREAD_CLEANUP: &(Callable[(), None]?)
 
 ### A ticket with no work yet: the next may go on.
 preset TICKET_EMPTY: U32 = 0
@@ -131,10 +131,9 @@ secret routine no_work(work: Addr) -> None
 ### :returns: True once its ticket was cancelled.
 @target(os: not "none")
 routine cancel_requested() -> Bool
-    slot: @WorkSlot = RUNNING_WORK.peek()
-    if slot.is_hollow()
-        return false
-    return slot.cancel.peek_unbroken() == 1
+    when RUNNING_WORK.peek()
+        is @WorkSlot as slot => return slot.cancel.peek_unbroken() == 1
+        is None => return false
 
 ### Crashes unless the ticket numbered `issued` still holds the slot.
 ### :param issued: The ticket's number.
@@ -252,9 +251,10 @@ routine @WorkSlot.wait_until(deadline: Duration, cancellable: Bool) -> Bool
 @target(os: not "none")
 @noinline
 routine blocked_until_cancelled(waiter: Waiter) -> Bool
-    slot: @WorkSlot = RUNNING_WORK.peek()
-    if slot.is_hollow()
+    running: @WorkSlot? = RUNNING_WORK.peek()
+    if running.is_absent()
         return false
+    slot: @WorkSlot = running.unwrap()
     held: Authorized[U8] <- slot.guard.get_exclusive_access()
     slot.blocked.poke(waiter)
     drop held

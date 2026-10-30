@@ -207,8 +207,9 @@ public sealed partial class Compiler
             symbol = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
             if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
                 throw new CompileError(export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
-            // C reads a value or a value and a code: a variant (an Optional, a Check, an A | B) is nothing C can take apart.
-            if (ret is VariantType returned)
+            // C reads a value or a value and a code: a variant (an Optional, a Check, an A | B) is nothing C can take apart,
+            // except an `@T?` or `Callable?`, which is one address, null for None.
+            if (ret is VariantType { IsNullable: false } returned)
                 throw new CompileError(export.Pos, $"'{r.DisplayName}' is @export, and C can't read the {returned.Name} it returns: "
                     + "an exported routine returns a T, or a Result[T, TErrorCode] that tells C what went wrong with a code");
         }

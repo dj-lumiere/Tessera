@@ -59,7 +59,7 @@ entity FiberState
     ### running.
     stack: StackManager
     ### The manager running it. Only a ThreadPoolManager's fiber changes manager, while it waits.
-    manager: @CoroutineManager
+    manager: @CoroutineManager?
     slot: WorkSlot
     ### The slot whose work it runs: its own, or a ThreadPoolManager passable fiber's it was given.
     work: @WorkSlot
@@ -72,15 +72,15 @@ entity FiberState
     ### Its crash trace depth while it isn't running (Trace.te).
     trace_depth: U64
     ### What the AccessManager keeps of it: the accesses it holds and what it waits for, made at its first access.
-    access: @AccessFlow
+    access: @AccessFlow?
     ### Its stack's handle for the data race check, or null without it.
     race: Addr
     ### The next fiber given back, waiting for a ticket.
-    next_idle: @FiberState
+    next_idle: @FiberState?
     ### The next of all the manager's fibers, or of all the pool's for a pool's fiber.
-    next_all: @FiberState
+    next_all: @FiberState?
     ### The ThreadPoolManager that keeps it and runs it on any of its threads, or null for a fiber of one manager.
-    pool: @ThreadPoolManager
+    pool: @ThreadPoolManager?
     ### Its mold, where a failure thrown on it waits for the caller to take it (Standard/System/Crash.te): reserved in
     ### the frame of its first routine, hollow until it first runs.
     mold: Addr
@@ -89,7 +89,7 @@ entity FiberState
 ### (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
 entity Fiber[T]
-    fiber: @FiberState
+    fiber: @FiberState?
     ### The ticket's number: the fiber's until the ticket is given back.
     issued: U64
 
@@ -115,7 +115,7 @@ entity CoroutineManager
     ### The driving loop's stack's handle for the data race check, while a fiber runs.
     home_race: Addr
     ### The fiber running, or null.
-    current: @FiberState
+    current: @FiberState?
     ### The fibers ready to go on, in order. Only the manager's thread touches it.
     ready: RotatableList[@FiberState]
     ### The byte whose exclusive access guards `inbox` and `idle`.
@@ -126,13 +126,13 @@ entity CoroutineManager
     epoch: U32
     ### The word that changes instead of `epoch`, when a ThreadPoolManager's thread drives the manager and waits on the
     ### pool's, or null.
-    alert: @U32
+    alert: @U32?
     ### The fibers whose work hasn't finished.
     busy: U64
     ### The fibers given back, waiting for the next ticket.
-    idle: @FiberState
+    idle: @FiberState?
     ### Every fiber the manager made.
-    all: @FiberState
+    all: @FiberState?
     ### The fibers waiting with a deadline. Only the manager's thread touches it.
     timers: PriorityQueue[TimerKey, @FiberState]
     timer_seq: U64
@@ -203,10 +203,10 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
 ### :param mold: Its `mold`.
 ### :returns: The new value.
 @target(os: not "none")
-common routine FiberState.construct(stack: StackManager, manager: @CoroutineManager, slot: WorkSlot,
+common routine FiberState.construct(stack: StackManager, manager: @CoroutineManager?, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@CoroutineManager, @Me), None], wake_state: U32, timer: U64,
-    trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
-    pool: @ThreadPoolManager, mold: Addr) -> Me
+    trace_depth: U64, access: @AccessFlow?, race: Addr, next_idle: @Me?, next_all: @Me?,
+    pool: @ThreadPoolManager?, mold: Addr) -> Me
     return Me(stack: steal stack, manager, slot: steal slot, work, then, wake_state, timer,
         trace_depth, access, race, next_idle, next_all, pool, mold)
 
@@ -225,13 +225,14 @@ routine @FiberState.destruct() -> None
 @target(os: not "none")
 @track_caller
 routine @Fiber[T].destruct() -> None
-    fiber: @FiberState = me.fiber.peek()
-    if fiber.is_hollow()
+    given: @FiberState? = me.fiber.peek()
+    if given.is_absent()
         return
+    fiber: @FiberState = given.unwrap()
     if fiber.slot.issued.peek() != me.issued.peek()
         return
     fiber.slot.give_back()
-    manager: @CoroutineManager = fiber.manager.peek()
+    manager: @CoroutineManager = fiber.manager.peek().unwrap()
     held: Authorized[U8] <- manager.inbox_guard.get_exclusive_access()
     fiber.next_idle.poke(manager.idle.peek())
     manager.idle.poke(fiber)
@@ -258,10 +259,10 @@ routine TimerKey.compare(other: Me) -> S32
 common routine CoroutineManager.construct(stack_size: ByteSize, stack_manager: @MemoryManager,
     manager: @MemoryManager) -> Me
     return Me(manager, stack_manager, stack_size, owner: thread_mark(), home: .hollow(),
-        home_race: .hollow(), current: .hollow(),
+        home_race: .hollow(), current: None(),
         ready: RotatableList[@FiberState].construct(manager), inbox_guard: 0,
-        inbox: RotatableList[@FiberState].construct(manager), epoch: 0, alert: .hollow(), busy: 0,
-        idle: .hollow(), all: .hollow(),
+        inbox: RotatableList[@FiberState].construct(manager), epoch: 0, alert: None(), busy: 0,
+        idle: None(), all: None(),
         timers: PriorityQueue[TimerKey, @FiberState].construct(manager), timer_seq: 0)
 
 ### Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
@@ -270,14 +271,15 @@ common routine CoroutineManager.construct(stack_size: ByteSize, stack_manager: @
 routine @CoroutineManager.destruct() -> None
     if me.manager.peek().is_hollow()
         return
-    until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
-        next: @FiberState = fiber.next_all.peek()
+    until at.is_absent() with at: @FiberState? = me.all.peek()
+        fiber: @FiberState = at.unwrap()
+        next: @FiberState? = fiber.next_all.peek()
         fiber.destruct()
         AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
         give_back_stack(stack: fiber.stack, pages: me.stack_manager.peek())
         deallocate(data: fiber, manager: me.manager.peek())
-        continue with fiber: next
+        continue with at: next
     me.ready.destruct()
     me.inbox.destruct()
     me.timers.destruct()
@@ -312,14 +314,15 @@ routine @CoroutineManager.get_fiber[T]() -> Fiber[T]
 needs AnyType T
     me.ensure()
     held: Authorized[U8] <- me.inbox_guard.get_exclusive_access()
-    idle: @FiberState = me.idle.peek()
-    if idle.is_hollow()
+    idle_or_none: @FiberState? = me.idle.peek()
+    if idle_or_none.is_absent()
         drop held
         fiber: @FiberState = me.make_fiber()
         return Fiber[T](fiber, issued: 0)
+    idle: @FiberState = idle_or_none.unwrap()
     me.idle.poke(idle.next_idle.peek())
     drop held
-    idle.next_idle.poke(.hollow())
+    idle.next_idle.poke(None())
     idle.slot.state.poke_unbroken(TICKET_EMPTY)
     return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
 
@@ -341,27 +344,28 @@ secret routine @CoroutineManager.make_fiber() -> @FiberState
     fiber.poke(FiberState(stack: steal stack, manager: me,
         slot: .construct(manager: me.manager.peek()), work: fiber.slot,
         then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
-        access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(),
-        pool: .hollow(), mold: .hollow()))
+        access: None(), race: race_stack_new(), next_idle: None(), next_all: me.all.peek(),
+        pool: None(), mold: .hollow()))
     me.all.poke(fiber)
     return fiber
 
-### The fiber running this code, if it is one of this manager's, or null: its handle for wake.
-### :returns: The running fiber's handle, or null.
+### The fiber running this code, if it is one of this manager's, or None: its handle for wake.
+### :returns: The running fiber's handle, or None.
 @target(os: not "none")
-routine @CoroutineManager.current() -> @FiberState
+routine @CoroutineManager.current() -> @FiberState?
     waiter: Waiter = current_waiter()
     if waiter.manager === me
-        return waiter.fiber.to[@FiberState]()
-    return .hollow()
+        return waiter.fiber.to[@FiberState?]()
+    return None()
 
 ### Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
 routine @CoroutineManager.yield() -> None
-    fiber: @FiberState = me.current()
+    running: @FiberState? = me.current()
 
-    if fiber.is_hollow()
+    if running.is_absent()
         return
+    fiber: @FiberState = running.unwrap()
     # The manager queues the fiber once it is back on its own stack (see resume).
     race_stack_switch(me.home_race.peek())
     switch_stack(from: fiber.stack.sp, to: me.home.peek())
@@ -371,10 +375,11 @@ routine @CoroutineManager.yield() -> None
 ### last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 @target(os: not "none")
 routine @CoroutineManager.park() -> None
-    fiber: @FiberState = me.current()
+    running: @FiberState? = me.current()
 
-    if fiber.is_hollow()
+    if running.is_absent()
         return
+    fiber: @FiberState = running.unwrap()
     if compare_exchange(at: fiber.wake_state, expected: FIBER_RUNNING, new: FIBER_PARKING)
         # A wake came first: this park is over before it starts.
         # The manager decides, once the fiber is off its stack, whether a wake came meanwhile (see commit_park).
@@ -391,10 +396,11 @@ routine @CoroutineManager.park() -> None
 @target(os: not "none")
 @reshaping
 routine @CoroutineManager.park_until(deadline: Duration) -> None
-    fiber: @FiberState = me.current()
+    running: @FiberState? = me.current()
 
-    if fiber.is_hollow()
+    if running.is_absent()
         return
+    fiber: @FiberState = running.unwrap()
     seq: U64 = me.timer_seq.peek() + 1
     me.timer_seq.poke(seq)
     # Unbroken: a pool's fiber may go on on another thread while this manager's timer still holds it.
@@ -431,14 +437,15 @@ routine @CoroutineManager.wake(fiber: @FiberState) -> None
 @reshaping
 routine @CoroutineManager.waitfor(duration: Duration) -> None
     deadline: Duration = Clock.monotonic() +^ duration
-    fiber: @FiberState = me.current()
+    running: @FiberState? = me.current()
 
-    if fiber.is_hollow()
+    if running.is_absent()
         sleep_thread(deadline)
         return
+    fiber: @FiberState = running.unwrap()
     # A pool's fiber may go on on another thread after a park, so each park goes through the manager running it.
     until Clock.monotonic() >= deadline
-        fiber.manager.peek().park_until(deadline)
+        fiber.manager.peek().unwrap().park_until(deadline)
     then
         return
 
@@ -447,7 +454,7 @@ routine @CoroutineManager.waitfor(duration: Duration) -> None
 @reshaping
 routine @CoroutineManager.run() -> None
     me.ensure()
-    me.drive(awaited: .hollow(), deadline: Duration.MAX, idle_only: false)
+    me.drive(awaited: None(), deadline: Duration.MAX, idle_only: false)
     return
 
 ### Runs the fibers that are ready, and those they make ready, until none is, then returns: for a thread that takes
@@ -456,7 +463,7 @@ routine @CoroutineManager.run() -> None
 @reshaping
 routine @CoroutineManager.run_until_idle() -> None
     me.ensure()
-    me.drive(awaited: .hollow(), deadline: Duration.MAX, idle_only: true)
+    me.drive(awaited: None(), deadline: Duration.MAX, idle_only: true)
     return
 
 ### How long the thread that drives the manager may sleep before a fiber waiting with a deadline is due: for a thread
@@ -469,9 +476,9 @@ routine @CoroutineManager.idle_wait() -> Duration
 
 ### Makes a wake from another thread change `word` and wake whoever sleeps on it, instead of the manager's own word:
 ### for a thread that drives the manager between other work and sleeps on `word` for both.
-### :param word: The word, or null for the manager's own.
+### :param word: The word, or None for the manager's own.
 @target(os: not "none")
-routine @CoroutineManager.wake_through(word: @U32) -> None
+routine @CoroutineManager.wake_through(word: @U32?) -> None
     me.ensure()
     me.alert.poke(word)
     return
@@ -480,10 +487,9 @@ routine @CoroutineManager.wake_through(word: @U32) -> None
 ### :returns: `alert`, or the manager's own `epoch`.
 @target(os: not "none")
 secret routine @CoroutineManager.wake_word() -> @U32
-    alert: @U32 = me.alert.peek()
-    if alert.is_hollow()
-        return me.epoch
-    return alert
+    when me.alert.peek()
+        is @U32 as alert => return alert
+        is None => return me.epoch
 
 ### Runs work(arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber a
 ### thread ticket runs it while the fiber waits, and the fiber goes on once it returns. Outside a fiber it is just
@@ -494,7 +500,7 @@ secret routine @CoroutineManager.wake_word() -> @U32
 @target(os: not "none")
 routine @CoroutineManager.run_blocking[T](work: Callable[(@T,), None], arg: @T) -> None
 needs AnyType T
-    if me.current().is_hollow()
+    if me.current().is_absent()
         work.call(arg)
         return
     t: Thread[None] <- get_thread[None]()
@@ -511,7 +517,7 @@ needs AnyType T
 @target(os: not "none")
 @track_caller
 routine @Fiber[T].work_slot() -> @WorkSlot
-    fiber: @FiberState = me.fiber.peek()
+    fiber: @FiberState = me.fiber.peek().unwrap()
     fiber.slot.check_ticket(me.issued.peek())
     return fiber.slot
 
@@ -523,8 +529,8 @@ routine @Fiber[T].work_slot() -> @WorkSlot
 @track_caller
 secret routine @Fiber[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
     work: Addr) -> None
-    fiber: @FiberState = me.fiber.peek()
-    manager: @CoroutineManager = fiber.manager.peek()
+    fiber: @FiberState = me.fiber.peek().unwrap()
+    manager: @CoroutineManager = fiber.manager.peek().unwrap()
     me.work_slot().put(runner, discard, work)
     manager.busy.fetch_add_unbroken(1)
     manager.place_ready(fiber)
@@ -718,8 +724,8 @@ routine @Fiber[T].waitfor(timeout: Duration) -> @Me
 @track_caller
 secret routine @Fiber[T].wait_to_retrieve() -> U32
     slot: @WorkSlot = me.work_slot()
-    fiber: @FiberState = me.fiber.peek()
-    manager: @CoroutineManager = fiber.manager.peek()
+    fiber: @FiberState = me.fiber.peek().unwrap()
+    manager: @CoroutineManager = fiber.manager.peek().unwrap()
 
     if not manager.drives_here()
         return slot.wait_to_retrieve()
@@ -736,8 +742,8 @@ secret routine @Fiber[T].wait_to_retrieve() -> U32
 @track_caller
 secret routine @Fiber[T].wait_finished() -> None
     slot: @WorkSlot = me.work_slot()
-    fiber: @FiberState = me.fiber.peek()
-    manager: @CoroutineManager = fiber.manager.peek()
+    fiber: @FiberState = me.fiber.peek().unwrap()
+    manager: @CoroutineManager = fiber.manager.peek().unwrap()
 
     if slot.is_finished()
         return
@@ -815,15 +821,15 @@ secret routine @CoroutineManager.drives_here() -> Bool
 ### :param idle_only: True to return once no fiber is ready.
 @target(os: not "none")
 @reshaping
-secret routine @CoroutineManager.drive(awaited: @WorkSlot, deadline: Duration,
+secret routine @CoroutineManager.drive(awaited: @WorkSlot?, deadline: Duration,
     idle_only: Bool) -> None
     me.owner.poke_unbroken(thread_mark())
 
     loop
-        if awaited.is_hollow()
+        if awaited.is_absent()
             if me.busy.peek_unbroken() == 0
                 return
-        elseif awaited.is_finished()
+        elseif awaited.unwrap().is_finished()
             return
         # Reads the wake word before looking, so a fiber put in the inbox in between changes it and the wait returns.
         seen: U32 = me.wake_word().peek_unbroken()
@@ -851,7 +857,7 @@ secret routine @CoroutineManager.drive(awaited: @WorkSlot, deadline: Duration,
 secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     me.current.poke(fiber)
     outer_fiber: Waiter = RUNNING_FIBER.peek()
-    outer_work: @WorkSlot = RUNNING_WORK.peek()
+    outer_work: @WorkSlot? = RUNNING_WORK.peek()
     RUNNING_FIBER.poke(Waiter(fiber, manager: me, park_fn: park_hook.to[Callable](),
         wake_fn: wake_hook.to[Callable]()))
     RUNNING_WORK.poke(fiber.work.peek())
@@ -862,9 +868,9 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     outer_mold: Addr = RUNNING_MOLD.peek()
     RUNNING_MOLD.poke(fiber.mold.peek())
     # The AccessManager sees the fiber as the flow running here while it runs.
-    outer_flow: @@AccessFlow = AccessManager.switch_flow(fiber.access)
+    outer_flow: @(@AccessFlow?)? = AccessManager.switch_flow(fiber.access)
     # The running flow's StackManager is the fiber's while it runs.
-    outer_stack: @StackManager = RUNNING_STACK.peek()
+    outer_stack: @StackManager? = RUNNING_STACK.peek()
     RUNNING_STACK.poke(fiber.stack)
     me.home_race.poke(race_stack_current())
     race_stack_switch(fiber.race.peek())
@@ -878,7 +884,7 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     AccessManager.switch_flow(outer_flow)
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
-    me.current.poke(.hollow())
+    me.current.poke(None())
     then: Callable[(@Me, @FiberState), None] = fiber.then.peek()
     fiber.then.poke(requeue.to[Callable]())
     then.call(me, fiber)
@@ -907,7 +913,7 @@ secret routine fiber_start() -> None
             fiber.work.poke(fiber.slot)
             fiber.slot.complete()
         # Read last: the work and the completes may park, and a pool's fiber may go on on another thread after that.
-        manager: @CoroutineManager = fiber.manager.peek()
+        manager: @CoroutineManager = fiber.manager.peek().unwrap()
         manager.busy.fetch_sub_unbroken(1)
         fiber.then.poke(commit_idle.to[Callable]())
         race_stack_switch(manager.home_race.peek())
@@ -919,10 +925,11 @@ secret routine fiber_start() -> None
 @target(os: not "none")
 @reshaping
 secret routine @CoroutineManager.place_ready(fiber: @FiberState) -> None
-    pool: @ThreadPoolManager = fiber.pool.peek()
-    if pool.is_not_hollow()
-        pool.queue_woken(fiber)
-        return
+    when fiber.pool.peek()
+        is @ThreadPoolManager as pool =>
+            pool.queue_woken(fiber)
+            return
+        is None => nothing
     if thread_mark() === me.owner.peek_unbroken()
         me.ready.add_last(fiber)
         return
@@ -1003,9 +1010,9 @@ secret routine commit_park(manager: @CoroutineManager, fiber: @FiberState) -> No
 @target(os: not "none")
 secret routine commit_idle(manager: @CoroutineManager, fiber: @FiberState) -> None
     fiber.wake_state.poke_unbroken(FIBER_RUNNING)
-    pool: @ThreadPoolManager = fiber.pool.peek()
-    if pool.is_not_hollow()
-        pool.keep_fiber(fiber)
+    when fiber.pool.peek()
+        is @ThreadPoolManager as pool => pool.keep_fiber(fiber)
+        is None => nothing
     return
 
 ### How a Waiter parks a fiber of a manager: until a wake, or a deadline other than Duration.MAX. The fiber parks
@@ -1031,7 +1038,7 @@ secret routine park_hook(manager: Addr, deadline: Duration) -> None
 @reshaping(manager)
 secret routine wake_hook(manager: Addr, fiber: Addr) -> None
     state: @FiberState = fiber.to[@FiberState]()
-    fibers: @CoroutineManager = state.manager.peek_unbroken()
+    fibers: @CoroutineManager = state.manager.peek_unbroken().unwrap()
     fibers.wake(state)
     return
 

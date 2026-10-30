@@ -39,10 +39,10 @@ entity ThreadPoolManager
     ### and the threads.
     guard: U8
     ### The passable fibers whose work waits for a thread, in order.
-    first: @PassableFiberSlot
-    last: @PassableFiberSlot
+    first: @PassableFiberSlot?
+    last: @PassableFiberSlot?
     ### The passable fibers given back, for the next ticket.
-    idle: @PassableFiberSlot
+    idle: @PassableFiberSlot?
     ### Changes when work is queued, a fiber of a pool thread is woken from another thread, or the pool stops. The
     ### threads sleep on it.
     epoch: U32
@@ -57,21 +57,21 @@ entity ThreadPoolManager
     ### The fibers running passable fibers that were woken, for the first free thread to go on with.
     woken: RotatableList[@FiberState]
     ### Every fiber the pool made, through `next_all`.
-    fibers: @FiberState
+    fibers: @FiberState?
     ### The fibers whose passable fiber is over, waiting for the next, through `next_idle`.
-    spare: @FiberState
+    spare: @FiberState?
 
 ### One passable fiber of a pool: its work, and its place in the queue or among the idle ones.
 secret entity PassableFiberSlot
     slot: WorkSlot
-    next: @PassableFiberSlot
+    next: @PassableFiberSlot?
     pool: @ThreadPoolManager
 
 ### A ticket for a passable fiber of a ThreadPoolManager, from {ThreadPoolManager.get_passable_fiber}: it runs one piece
 ### of work at a time, whose result is a `T` (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
 entity PassableFiber[T]
-    passable: @PassableFiberSlot
+    passable: @PassableFiberSlot?
     ### The ticket's number: the passable fiber's until the ticket is given back.
     issued: U64
 
@@ -106,10 +106,10 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
     count: U64 = when
         threads == 0 => cpu_count()
         else => threads
-    return Me(guard: 0, first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0, stopping: 0,
+    return Me(guard: 0, first: None(), last: None(), idle: None(), epoch: 0, stopping: 0,
         count, threads: .hollow(), manager: HEAP,
-        woken: RotatableList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
-        spare: .hollow())
+        woken: RotatableList[@FiberState].construct(manager: HEAP), fibers: None(),
+        spare: None())
 
 ### Stops the pool: its threads finish the work they have, then end, and the idle passable fibers and the fibers go.
 ### Give every passable fiber back first.
@@ -128,24 +128,26 @@ routine @ThreadPoolManager.destruct() -> None
         t.work_slot().wait()
         drop t
 
-    until passable.is_hollow() with passable: @PassableFiberSlot = me.idle.peek()
-        next: @PassableFiberSlot = passable.next.peek()
+    until at.is_absent() with at: @PassableFiberSlot? = me.idle.peek()
+        passable: @PassableFiberSlot = at.unwrap()
+        next: @PassableFiberSlot? = passable.next.peek()
         passable.destruct()
         deallocate(data: passable, manager: me.manager.peek())
-        continue with passable: next
+        continue with at: next
     drop me.threads
-    me.idle.poke(.hollow())
+    me.idle.poke(None())
 
-    until fiber.is_hollow() with fiber: @FiberState = me.fibers.peek()
-        next: @FiberState = fiber.next_all.peek()
+    until fiber_at.is_absent() with fiber_at: @FiberState? = me.fibers.peek()
+        fiber: @FiberState = fiber_at.unwrap()
+        next: @FiberState? = fiber.next_all.peek()
         fiber.destruct()
         AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
         give_back_stack(stack: fiber.stack, pages: PAGES)
         deallocate(data: fiber, manager: me.manager.peek())
-        continue with fiber: next
-    me.fibers.poke(.hollow())
-    me.spare.poke(.hollow())
+        continue with fiber_at: next
+    me.fibers.poke(None())
+    me.spare.poke(None())
     me.woken.destruct()
     return
 
@@ -156,9 +158,10 @@ routine @ThreadPoolManager.destruct() -> None
 @target(os: not "none")
 @track_caller
 routine @PassableFiber[T].destruct() -> None
-    passable: @PassableFiberSlot = me.passable.peek()
-    if passable.is_hollow()
+    given: @PassableFiberSlot? = me.passable.peek()
+    if given.is_absent()
         return
+    passable: @PassableFiberSlot = given.unwrap()
     if passable.slot.issued.peek() != me.issued.peek()
         return
     passable.slot.give_back()
@@ -180,19 +183,20 @@ routine @ThreadPoolManager.get_passable_fiber[T]() -> PassableFiber[T]
 needs AnyType T
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     me.start_threads()
-    idle: @PassableFiberSlot = me.idle.peek()
-    if idle.is_hollow()
+    idle_or_none: @PassableFiberSlot? = me.idle.peek()
+    if idle_or_none.is_absent()
         drop held
         manager: @MemoryManager = me.manager.peek()
         passable_at: Addr = allocate[PassableFiberSlot](count: 1, manager)
         if passable_at.is_hollow()
             throw OutOfMemoryError()
         passable: @PassableFiberSlot = passable_at.to[@PassableFiberSlot]()
-        passable.poke(PassableFiberSlot(slot: .construct(manager), next: .hollow(), pool: me))
+        passable.poke(PassableFiberSlot(slot: .construct(manager), next: None(), pool: me))
         return PassableFiber[T](passable, issued: 0)
+    idle: @PassableFiberSlot = idle_or_none.unwrap()
     me.idle.poke(idle.next.peek())
     drop held
-    idle.next.poke(.hollow())
+    idle.next.poke(None())
     idle.slot.state.poke_unbroken(TICKET_EMPTY)
     return PassableFiber[T](passable: idle, issued: idle.slot.issued.peek())
 
@@ -220,11 +224,9 @@ secret routine @ThreadPoolManager.start_threads() -> None
 @target(os: not "none")
 secret routine @ThreadPoolManager.queue(passable: @PassableFiberSlot) -> None
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    last: @PassableFiberSlot = me.last.peek()
-    if last.is_hollow()
-        me.first.poke(passable)
-    else
-        last.next.poke(passable)
+    when me.last.peek()
+        is @PassableFiberSlot as last => last.next.poke(passable)
+        is None => me.first.poke(passable)
     me.last.poke(passable)
     drop held
     me.epoch.fetch_add_unbroken(1)
@@ -234,17 +236,18 @@ secret routine @ThreadPoolManager.queue(passable: @PassableFiberSlot) -> None
 ### The passable fiber at the front of the queue, taken out, or null.
 ### :returns: The passable fiber, or null.
 @target(os: not "none")
-secret routine @ThreadPoolManager.take() -> @PassableFiberSlot
+secret routine @ThreadPoolManager.take() -> @PassableFiberSlot?
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    passable: @PassableFiberSlot = me.first.peek()
-    if passable.is_hollow()
+    first: @PassableFiberSlot? = me.first.peek()
+    if first.is_absent()
         drop held
-        return .hollow()
-    next: @PassableFiberSlot = passable.next.peek()
+        return None()
+    passable: @PassableFiberSlot = first.unwrap()
+    next: @PassableFiberSlot? = passable.next.peek()
     me.first.poke(next)
-    if next.is_hollow()
-        me.last.poke(.hollow())
-    passable.next.poke(.hollow())
+    if next.is_absent()
+        me.last.poke(None())
+    passable.next.poke(None())
     drop held
     return passable
 
@@ -264,11 +267,11 @@ secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
 ### :returns: The fiber, or null.
 @target(os: not "none")
 @reshaping
-secret routine @ThreadPoolManager.take_woken() -> @FiberState
+secret routine @ThreadPoolManager.take_woken() -> @FiberState?
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     if me.woken.is_empty()
         drop held
-        return .hollow()
+        return None()
     fiber: @FiberState = me.woken.remove_first()
     drop held
     return fiber
@@ -290,13 +293,14 @@ secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
 @track_caller
 secret routine @ThreadPoolManager.take_fiber() -> @FiberState
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    spare: @FiberState = me.spare.peek()
-    if spare.is_not_hollow()
+    spare_or_none: @FiberState? = me.spare.peek()
+    if spare_or_none.is_present()
+        spare: @FiberState = spare_or_none.unwrap()
         me.spare.poke(spare.next_idle.peek())
         drop held
-        spare.next_idle.poke(.hollow())
+        spare.next_idle.poke(None())
         # No manager runs it until a thread adopts it, which counts it among that thread's busy fibers.
-        spare.manager.poke_unbroken(.hollow())
+        spare.manager.poke_unbroken(None())
         return spare
     drop held
     manager: @MemoryManager = me.manager.peek()
@@ -309,10 +313,10 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
     fiber: @FiberState = fiber_at.to[@FiberState]()
     stack.sp.poke(initial_stack(stack: stack.bottom.peek(), size: stack.size().bytes(),
         entry: fiber_start.addr()))
-    fiber.poke(FiberState(stack: steal stack, manager: .hollow(), slot: .construct(manager),
+    fiber.poke(FiberState(stack: steal stack, manager: None(), slot: .construct(manager),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
-        trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
-        next_all: .hollow(), pool: me, mold: .hollow()))
+        trace_depth: 0, access: None(), race: race_stack_new(), next_idle: None(),
+        next_all: None(), pool: me, mold: .hollow()))
     held2: Authorized[U8] <- me.guard.get_exclusive_access()
     fiber.next_all.poke(me.fibers.peek())
     me.fibers.poke(fiber)
@@ -324,12 +328,13 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
 ### :param fiber: A pool's fiber, ready to run.
 @target(os: not "none")
 secret routine adopt(fiber: @FiberState) -> None
-    from: @CoroutineManager = fiber.manager.peek_unbroken()
-    if from !== FIBERS
+    from: @CoroutineManager? = fiber.manager.peek_unbroken()
+    if from.is_absent() or from.unwrap() !== FIBERS
         FIBERS.busy.fetch_add_unbroken(1)
         fiber.manager.poke_unbroken(FIBERS)
-        if from.is_not_hollow()
-            from.busy.fetch_sub_unbroken(1)
+        when from
+            is @CoroutineManager as previous => previous.busy.fetch_sub_unbroken(1)
+            is None => nothing
     FIBERS.ready.add_last(fiber)
     return
 
@@ -345,12 +350,12 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
     loop
         seen: U32 = pool.epoch.peek_unbroken()
         FIBERS.run_until_idle()
-        woken: @FiberState = pool.take_woken()
-        if woken.is_not_hollow()
-            adopt(woken)
+        woken: @FiberState? = pool.take_woken()
+        if woken.is_present()
+            adopt(woken.unwrap())
             continue
-        passable: @PassableFiberSlot = pool.take()
-        if passable.is_hollow()
+        taken: @PassableFiberSlot? = pool.take()
+        if taken.is_absent()
             if pool.stopping.peek_unbroken() == 1 and FIBERS.busy.peek_unbroken() == 0
                 break
             wait: Duration = FIBERS.idle_wait()
@@ -359,6 +364,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
                 continue
             wait_on_for(at: pool.epoch, expected: seen, timeout: wait)
             continue
+        passable: @PassableFiberSlot = taken.unwrap()
         fiber: @FiberState = pool.take_fiber()
         fiber.slot.state.poke_unbroken(TICKET_RUNNING)
         fiber.work.poke(passable.slot)
@@ -374,7 +380,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
 @target(os: not "none")
 @track_caller
 routine @PassableFiber[T].work_slot() -> @WorkSlot
-    passable: @PassableFiberSlot = me.passable.peek()
+    passable: @PassableFiberSlot = me.passable.peek().unwrap()
     passable.slot.check_ticket(me.issued.peek())
     return passable.slot
 
@@ -386,7 +392,7 @@ routine @PassableFiber[T].work_slot() -> @WorkSlot
 @track_caller
 secret routine @PassableFiber[T].start(runner: Callable[(Addr,), None],
     discard: Callable[(Addr,), None], work: Addr) -> None
-    passable: @PassableFiberSlot = me.passable.peek()
+    passable: @PassableFiberSlot = me.passable.peek().unwrap()
     me.work_slot().put(runner, discard, work)
     passable.pool.peek().queue(passable)
     return
