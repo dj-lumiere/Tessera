@@ -262,7 +262,7 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
 @track_caller
 secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
     list: &List[StorageManager] <- .construct(manager)
-    iter: &DirEmitter <- .hollow()
+    lateinit iter: &DirEmitter
 
     opened: Bool = try iter.open_path("/sys/block")
     if not opened
@@ -293,7 +293,7 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
     list: &List[PartitionManager] <- .construct(manager)
-    iter: &DirEmitter <- .hollow()
+    lateinit iter: &DirEmitter
     mounts: &[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
 
     opened: Bool = try iter.open_path("/sys/class/block")
@@ -434,7 +434,7 @@ secret routine c_statfs(path: @Byte, out: @StatFs) -> CInt
 @external("c")
 @symbol("getfsstat$INODE64")
 @target(os: "macos", arch: "x86_64")
-secret routine c_getfsstat(out: @StatFs, size: CInt, flags: CInt) -> CInt
+secret routine c_getfsstat(out: @StatFs?, size: CInt, flags: CInt) -> CInt
 
 ### Binds the C `getfsstat` function, which describes every mounted file system.
 ### :param out: Where the descriptions go, or null to count them.
@@ -444,7 +444,7 @@ secret routine c_getfsstat(out: @StatFs, size: CInt, flags: CInt) -> CInt
 @external("c")
 @symbol("getfsstat")
 @target(os: "macos", arch: not "x86_64")
-secret routine c_getfsstat(out: @StatFs, size: CInt, flags: CInt) -> CInt
+secret routine c_getfsstat(out: @StatFs?, size: CInt, flags: CInt) -> CInt
 
 ### The text of a NUL-terminated field.
 ### :param field: The field's first byte.
@@ -495,7 +495,7 @@ secret routine mac_partition(st: @StatFs, manager: @MemoryManager) -> PartitionM
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
     list: &List[PartitionManager] <- .construct(manager)
 
-    n: CInt = c_getfsstat(.hollow(), 0, 2)
+    n: CInt = c_getfsstat(None(), 0, 2)
     if n <= 0
         return list
     count: U64 = n.to[U64]()
@@ -545,8 +545,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "macos")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    cpath: &Items[Byte, PATH_CAPACITY] <- .hollow()
-    st: &StatFs <- .hollow()
+    cpath: &Items[Byte, PATH_CAPACITY]
+    st: &StatFs
 
     if not c_path(path, out: cpath.getview().to[@Byte]())
         throw path_error(path)
@@ -581,8 +581,8 @@ secret routine c_get_logical_drive_strings(size: U32, buffer: @U16) -> U32
 @symbol("GetVolumeInformationW")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_get_volume_information(root: @U16, name: @U16, name_size: U32, serial: @U32,
-    longest: @U32, flags: @U32, fs_name: @U16, fs_name_size: U32) -> CInt
+secret routine c_get_volume_information(root: @U16, name: @U16?, name_size: U32, serial: @U32?,
+    longest: @U32?, flags: @U32?, fs_name: @U16?, fs_name_size: U32) -> CInt
 
 ### Binds the Win32 `GetDiskFreeSpaceExW` function, which tells a volume's size and free space.
 ### :param root: A directory on the volume, 0-terminated.
@@ -594,7 +594,8 @@ secret routine c_get_volume_information(root: @U16, name: @U16, name_size: U32, 
 @symbol("GetDiskFreeSpaceExW")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_get_disk_free_space(root: @U16, available: @U64, total: @U64, free: @U64) -> CInt
+secret routine c_get_disk_free_space(root: @U16, available: @U64?, total: @U64?,
+    free: @U64?) -> CInt
 
 ### Binds the Win32 `GetVolumePathNameW` function, which finds the root of the volume a path is on.
 ### :param path: The path, 0-terminated.
@@ -615,18 +616,18 @@ secret routine c_get_volume_path_name(path: @U16, out: @U16, size: U32) -> CInt
 @target(os: "windows")
 @track_caller
 secret routine windows_partition(root: @U16, manager: @MemoryManager) -> PartitionManager
-    fs: &Items[U16, 64] <- .hollow()
+    fs: &Items[U16, 64]
     total: &U64 <- 0
 
     n: U64 = wide_length(root)
     at: &[Byte] <- copied_wide(units: root, count: n, manager)
     fs_name: &[Byte] <- copied(text: "", manager)
 
-    if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(),
-        fs.getview().to[@U16](), 64) != 0
+    if c_get_volume_information(root, None(), 0, None(), None(), None(), fs.getview().to[@U16](),
+        64) != 0
         fs_name.replace(value: copied_wide(units: fs.getview().to[@U16](),
             count: wide_length(fs.getview().to[@U16]()), manager))
-        c_get_disk_free_space(root, .hollow(), total, .hollow())
+        c_get_disk_free_space(root, None(), total, None())
     path: @[Byte] = at.getslice()
     # The drive "C:" is the root without its separator.
     name: @[Byte] = when
@@ -648,7 +649,7 @@ secret routine windows_partition(root: @U16, manager: @MemoryManager) -> Partiti
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
     list: &List[PartitionManager] <- .construct(manager)
-    roots: &Items[U16, 512] <- .hollow()
+    roots: &Items[U16, 512]
 
     got: U32 = c_get_logical_drive_strings(512, roots.getview().to[@U16]())
     if got == 0 or got >= 512
@@ -678,8 +679,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "windows")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    wpath: &Items[U16, PATH_CAPACITY] <- .hollow()
-    root: &Items[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Items[U16, PATH_CAPACITY]
+    root: &Items[U16, PATH_CAPACITY]
 
     if not wide_path(path, out: wpath.getview().to[@U16]())
         throw path_error(path)

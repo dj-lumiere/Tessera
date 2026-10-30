@@ -207,7 +207,7 @@ secret routine c_free_environment_strings(strings: @U16) -> CInt
 @symbol("GetEnvironmentVariableW")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_get_environment_variable(name: @U16, buffer: @U16, size: U32) -> U32
+secret routine c_get_environment_variable(name: @U16, buffer: @U16?, size: U32) -> U32
 
 ### The {ProcessError} for the Win32 error code a failed start reported.
 ### :param e: The error code.
@@ -226,7 +226,7 @@ secret routine spawn_error(e: U32) -> ProcessError
 ### :returns: `true` when it holds no usable handle.
 @target(os: "windows")
 secret routine is_invalid(h: Addr) -> Bool
-    return h.is_hollow() or h === Addr.hollow() -% 1b
+    return h.is_hollow() or h === Addr.zero() -% 1b
 
 ### Closes `h` unless it holds no usable handle.
 ### :param h: The handle, or null or INVALID_HANDLE_VALUE for none.
@@ -650,8 +650,8 @@ secret routine @PipeReader.destruct() -> None
 ### :returns: The {Handles} with every handle null.
 @target(os: "windows")
 secret common routine Handles.empty() -> Me
-    return Me(out_r: .hollow(), out_w: .hollow(), err_r: .hollow(), err_w: .hollow(),
-        input: .hollow(), output: .hollow(), error: .hollow(), device: .hollow())
+    return Me(out_r: Addr.zero(), out_w: Addr.zero(), err_r: Addr.zero(), err_w: Addr.zero(),
+        input: Addr.zero(), output: Addr.zero(), error: Addr.zero(), device: Addr.zero())
 
 ### Reads the pipe to its end into the reader's buffer, from the malloc heap. The buffer grows from HEAP, which
 ### lives as long as the program: the buffer keeps its manager's address and is given back after this routine returns.
@@ -660,10 +660,10 @@ secret common routine Handles.empty() -> Me
 @reshaping(r)
 secret routine read_pipe(r: @PipeReader) -> None
     n: &U32 <- 0
-    chunk_buffer: &Items[Byte, 4096] <- .hollow()
+    chunk_buffer: &Items[Byte, 4096]
     chunk: @Byte = chunk_buffer.getview().to[@Byte]()
 
-    until c_read_file(r.pipe.peek(), chunk, 4096, n, .hollow()) == 0 or n.load() == 0
+    until c_read_file(r.pipe.peek(), chunk, 4096, n, Addr.zero()) == 0 or n.load() == 0
         r.buffer.append(chunk, n: n.load().to[U64](), manager: HEAP)
     then
         return
@@ -695,13 +695,13 @@ secret routine @Handles.close_child_side() -> None
 secret routine inherited(which: U32) -> Addr
     h: Addr = c_get_std_handle(which)
     if is_invalid(h)
-        return .hollow()
-    copy: &Addr <- .hollow()
+        return Addr.zero()
+    copy: &Addr
     this_process: Addr = c_get_current_process()
     # DUPLICATE_SAME_ACCESS
     if c_duplicate_handle(this_process, h, this_process, copy, 0, 1, 2) != 0
         return copy.load()
-    return .hollow()
+    return Addr.zero()
 
 ### Makes the handles `options` call for: the null device when a stream is the null device, a pipe for each captured
 ### stream (the parent's end not inheritable), and the three handles the child gets.
@@ -716,7 +716,7 @@ secret routine @Handles.make(options: ProcessOptions, sa: @SecurityAttributes) -
         name: &Items[U16, 4] <- [78, 85, 76, 0]
         # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
         device: Addr = c_create_file(name.getview().to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0,
-            .hollow())
+            Addr.zero())
         if is_invalid(device)
             return false
         me.device.poke(device)
@@ -778,9 +778,9 @@ secret routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: 
 failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
     options: ProcessOptions, manager: @MemoryManager) -> ProcessOutput
     h: &Handles <- Handles.empty()
-    pi: &ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
+    pi: &ProcessInformation <- ProcessInformation(process: Addr.zero(), thread: Addr.zero(),
         process_id: 0, thread_id: 0)
-    directory: &Items[U16, PATH_CAPACITY] <- .hollow()
+    directory: &Items[U16, PATH_CAPACITY]
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
@@ -808,7 +808,7 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
             becomes block_units
 
     sa: &SecurityAttributes <- SecurityAttributes(length: sizeof[SecurityAttributes]().to[U32](),
-        descriptor: .hollow(), inherit_handle: 1)
+        descriptor: Addr.zero(), inherit_handle: 1)
     launch: Launch = Launch(h, pi, sa, line, env, directory: directory_units)
     when check start_and_collect(options, launch, manager)
         is ProcessOutput as made =>
@@ -851,13 +851,13 @@ secret failable routine start_and_collect(options: ProcessOptions, launch: Launc
         h.close_child_side()
         throw spawn_error(e)
     # STARTF_USESTDHANDLES
-    si: &StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: .hollow(),
-        desktop: .hollow(), title: .hollow(), x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
-        y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0,
-        reserved2: .hollow(), std_input: h.input.peek(), std_output: h.output.peek(),
-        std_error: h.error.peek())
+    si: &StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: Addr.zero(),
+        desktop: Addr.zero(), title: Addr.zero(), x: 0, y: 0, x_size: 0, y_size: 0,
+        x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0,
+        cb_reserved2: 0, reserved2: Addr.zero(), std_input: h.input.peek(),
+        std_output: h.output.peek(), std_error: h.error.peek())
     # CREATE_UNICODE_ENVIRONMENT
-    made: Bool = c_create_process(.hollow(), launch.line, .hollow(), .hollow(), 1, 0x400,
+    made: Bool = c_create_process(Addr.zero(), launch.line, Addr.zero(), Addr.zero(), 1, 0x400,
         launch.env, launch.directory, si, pi) != 0
     e2: U32 = c_get_last_error()
     h.close_child_side()
@@ -943,10 +943,10 @@ secret routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 @reshaping(buffer)
 secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, manager: @MemoryManager) -> None
     n: &U32 <- 0
-    chunk_buffer: &Items[Byte, 4096] <- .hollow()
+    chunk_buffer: &Items[Byte, 4096]
     chunk: @Byte = chunk_buffer.getview().to[@Byte]()
 
-    until c_read_file(pipe, chunk, 4096, n, .hollow()) == 0 or n.load() == 0
+    until c_read_file(pipe, chunk, 4096, n, Addr.zero()) == 0 or n.load() == 0
         buffer.append(chunk, n: n.load().to[U64](), manager)
     then
         return
@@ -978,7 +978,7 @@ secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffe
 @expensive("allocates a copy of the variable")
 secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     units: &(@U16?) <- None()
-    key: &Items[U16, 256] <- .hollow()
+    key: &Items[U16, 256]
 
     n: Optional[U64] = encode_utf16(text: name, out: key.getview().to[@U16](), capacity: 256)
     if not n.is_present()
@@ -1003,7 +1003,7 @@ secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Optional[Borro
 secret routine env_value(key: @U16, units: @(@U16?),
     manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     c_set_last_error(0)
-    need: U32 = c_get_environment_variable(key, .hollow(), 0)
+    need: U32 = c_get_environment_variable(key, None(), 0)
     # ERROR_ENVVAR_NOT_FOUND
     if need == 0 and c_get_last_error() == 203
         return None()

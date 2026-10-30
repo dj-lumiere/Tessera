@@ -77,8 +77,8 @@ changes, `continue with n: n / 2, steps: steps + 1` passes the next values, and 
 
 **`=` only binds, `<-` borrows.** `x: S64 = a + b` binds a value. `count: &S64 <- 0` borrows a place from a manager
 (the running flow's STACK when no `from` names one) and puts the value in it. A view (`@T`) reads and writes with
-`peek` and `poke`, a place (`&T`) with `load` and `store`. A place may start `<- .hollow()` (all zero) or, when it
-holds no pointer, `<- .uninit()` (nothing written until a routine fills it).
+`peek` and `poke`, a place (`&T`) with `load` and `store`. A place may be declared with no value, `n: &S64` (all zero, for a type whose zero bytes are a value), or `lateinit n: &T` when
+a routine fills it before it is read.
 
 **Copy or share.** Handing a value on copies it. To share something instead, you borrow a place to keep it (`&T` or
 `&[T]`, from STACK or from a memory manager) and hand out its view. A place from STACK is given back by the builder at

@@ -92,8 +92,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
             var annotations = ParseAnnotations();
             if (IsIdent("private") && Cur.Pos.Col == 1) throw Error(PrivateRenamed);
+            bool isLate = false;
+            if (IsIdent("lateinit") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "global" or "secret" }) { Next(); isLate = true; }
             bool isPrivate = IsIdent("secret");
             if (isPrivate) Next();
+            if (!isLate && IsIdent("lateinit") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "global" }) { Next(); isLate = true; }
             bool isFailable = FailableNext();
             if (isFailable) Next();
             bool isCommon = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
@@ -122,6 +125,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "define" => ParseDefine(annotations),
                 _ => ParseConcept(annotations),
             };
+            if (isLate)
+                d = d is PresetDecl { IsGlobal: true } late ? late with { Late = true }
+                    : throw new CompileError(d.Pos, "lateinit marks a global whose value the program fills before it reads it, or a binding with no value");
             if (d is not RoutineDecl && annotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
                     "@expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
@@ -1794,17 +1800,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     Next();
                     var named = ValueName("the name the stolen value goes to");
                     Expr? injected = null;
+                    bool leaveEmpty = false;
                     if (IsIdent("inject"))
                     {
                         if (from is ValueRef)
                             throw Error("inject puts a new value into the place steal takes from, and a name steal hands over ends there: "
                                         + "steal a as b, then give a a new value with a new binding");
                         Next();
-                        injected = ParseExpr();
+                        if (IsIdent("lateinit")) { Next(); leaveEmpty = true; }
+                        else injected = ParseExpr();
                     }
                     ExpectLineEnd();
                     _values!.Add(named.Text);
-                    return new StealStmt(from, named.Text, pos) { NamePos = named.Pos, Inject = injected };
+                    return new StealStmt(from, named.Text, pos) { NamePos = named.Pos, Inject = injected, LeavesEmpty = leaveEmpty };
                 }
                 case "drop":
                 {
@@ -1831,6 +1839,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 }
             }
         }
+        bool lateinit = false;
+        if (IsIdent("lateinit") && PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.Colon)
+        {
+            Next();
+            lateinit = true;
+        }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = ValueName("a value name").Text;
@@ -1838,6 +1852,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var type = ParseType();
             if (Is(TokenKind.Comma))
                 throw Error("a tuple's items take their types from the tuple: write a, b = ... without types");
+            if (lateinit && Is(TokenKind.LeftArrow))
+                throw Error($"lateinit declares a place with no value, filled later: lateinit {name}: {type}");
             if (Accept(TokenKind.LeftArrow))
             {
                 // `x: &T <- value [from manager]`: a place borrowed from the manager (STACK when none is named), with
@@ -1848,6 +1864,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 FillLiteralCount(type, borrowed);
                 return new BindStmt(name, type, borrowed, pos) { Borrows = true };
             }
+            // `x: &T` or `x: T` with no value: the place starts all zero. `lateinit x: &T` is a place filled later.
+            if (Is(TokenKind.Newline) || Is(TokenKind.Eof))
+            {
+                ExpectLineEnd();
+                _values!.Add(name);
+                var zero = new ImplicitCallExpr("hollow", [], [], pos);
+                return new BindStmt(name, type, zero, pos) { Borrows = type.Amp, Bare = true, Late = lateinit };
+            }
+            if (lateinit) throw Error($"lateinit declares a place with no value, filled later: lateinit {name}: {type}");
             Expect(TokenKind.Eq, "'=' (or '<-' to borrow a place)");
             var value = ParseValue(col);
             if (value is AtExpr at)
@@ -2635,6 +2660,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.LParen))
             {
                 var (args, names) = ParseNamedArgs();
+                RejectGone(member.Text, spanPos);
                 return new NsCallExpr(owner, member.Text, memberTypeArgs, args, spanPos) { ArgNames = names };
             }
             if (memberTypeArgs.Count != 0) throw Error("expected '(' after generic arguments");
@@ -2678,7 +2704,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // `.Nothing` without arguments can only be a variant case; the checker says so otherwise.
                 if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
                 var (implicitArgs, implicitNames) = ParseNamedArgs();
-                return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames };
+                if (member.Text == "uninit") RejectGone(member.Text, t.Pos);
+                return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames, Written = true };
             }
             case TokenKind.LParen when LambdaParamCount() is { } lambdaParams:
                 return ParseLambda(lambdaParams, t.Pos);
@@ -2735,7 +2762,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     case "null" when !IsValue(t):
                         // `null` is gone: a pointer that holds nothing is the all-zero value every type has.
                         Next();
-                        Old(t.Pos, "a pointer that holds nothing is written .hollow() (T.hollow() where nothing gives the type), not null");
+                        Old(t.Pos, "a pointer that may hold nothing is an @T? and nothing is None(), not null");
                         return new ImplicitCallExpr("hollow", [], [], t.Pos);
                     case "if": throw Error("you wrote if c then a else b where a value goes, and it is a value only directly "
                                            + "after return: choose the value with when (x: T = when ...) and use its name");
@@ -2745,6 +2772,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             default:
                 throw Error($"expected an expression, found {Describe(t)}");
         }
+    }
+
+    /// `hollow` and `uninit` are gone as routine names: each message says what to write instead.
+    private void RejectGone(string name, Pos pos)
+    {
+        if (name == "hollow")
+            throw new CompileError(pos, "'hollow' is gone: write the zero value as a literal or constructor (0, false, None(), T(...)), "
+                + "start a place with no value (x: &T, every byte zero, only for a type whose zero is a value), or write "
+                + "lateinit x: &T for a place filled later");
+        if (name == "uninit")
+            throw new CompileError(pos, "'uninit' is gone: a place with no value (x: &T) starts all zero, and lateinit x: &T is one filled later");
     }
 
     /// `literal from manager`: a literal in memory from a manager, a `BorrowedSlice[T]` or a `BorrowedCell[T]`. Without `from` the
@@ -2878,6 +2916,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.LParen))
             {
                 var (args, names) = ParseNamedArgs();
+                RejectGone(member.Text, pos);
                 return new NsCallExpr(owner, member.Text, memberTypeArgs, args, pos) { ArgNames = names };
             }
             if (memberTypeArgs.Count != 0) throw Error("expected '(' after generic arguments");

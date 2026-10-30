@@ -2364,6 +2364,10 @@ public sealed partial class Compiler
             _globals.AppendLine($"{name} = external {threadLocal}global {t.Llvm}");
             return name;
         }
+        if (c.Value is null && !c.Late && NoZeroValueWhere(t, t.Name) is { } noZero)
+            throw new CompileError(c.Pos, $"global {c.Name} has no value, and {t} has no all-zero value: it holds a pointer, "
+                + $"memory or a routine that is never empty ({noZero}). Give it one: global {c.Name}: &{t} <- value, "
+                + "or make what may be missing optional (@T? or Callable?, None() when absent), or write lateinit global when the program fills it before it reads it");
         string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
         string linkage = ExposeDefinitions ? "" : "internal ";
         if (ExposeDefinitions) NoteExposed(symbol);
@@ -2513,6 +2517,38 @@ public sealed partial class Compiler
             return $"{{ ptr {address}, {Count.Llvm} {storage.Count} }}";
         }
         return null;
+    }
+
+    /// Where `type` holds a pointer, memory or routine that is never empty (so its all-zero bytes are no value), as a path from
+    /// `path` (`Reader.buf.data`), or null when every byte zero is a value. An optional pointer is one: None is zero.
+    public string? NoZeroValueWhere(DType type, string path, HashSet<string>? seen = null)
+    {
+        seen ??= [];
+        switch (type)
+        {
+            case PtrType { Pointee: null }:
+                return null;
+            case PtrType or CallableType:
+                return path;
+            case ArrayType a:
+                return NoZeroValueWhere(a.Elem, $"{path}[...]", seen);
+            case VectorType v:
+                return NoZeroValueWhere(v.Elem, $"{path}[...]", seen);
+            case RecordType r when seen.Add(r.Key):
+                foreach (var (name, field) in Fields(r))
+                    if (NoZeroValueWhere(field, $"{path}.{name}", seen) is { } found)
+                        return found;
+                return null;
+            case VariantType { IsNullable: true }:
+                return null;
+            case VariantType v when seen.Add(v.Key):
+                foreach (var branch in v.Branches)
+                    if (NoZeroValueWhere(branch, $"{path} as {branch.Name}", seen) is { } found)
+                        return found;
+                return null;
+            default:
+                return null;
+        }
     }
 
     /// `.hollow()` or `T.hollow()`: the all-zero value of the type the memory holds.

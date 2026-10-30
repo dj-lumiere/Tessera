@@ -19,19 +19,19 @@
 
 module Hosted
 
-### The console: what the program shows (`Console.show`), what it reports as a problem (`Console.alert`), and what it
-### asks for (`Console.ask_line()`, `Console.ask[T]()`). `Console.show("x = {x}")` writes one line to standard output,
-### `Console.alert("...")` one line to standard error, and `end:` changes the line end (`end: ""` for none). Every value
-### is the same console, so the routines are called on the type.
-record Console
-    nothing
-
 ### The value Console.input() points at: a ConsoleInput holds nothing, so one serves every caller.
 global CONSOLE_INPUT_VALUE: &ConsoleInput
 ### The value Console.output() points at.
 global CONSOLE_OUTPUT_VALUE: &ConsoleOutput
 ### The value Console.errors() points at.
 global CONSOLE_ERRORS_VALUE: &ConsoleErrors
+
+### The console: what the program shows (`Console.show`), what it reports as a problem (`Console.alert`), and what it
+### asks for (`Console.ask_line()`, `Console.ask[T]()`). `Console.show("x = {x}")` writes one line to standard output,
+### `Console.alert("...")` one line to standard error, and `end:` changes the line end (`end: ""` for none). Every value
+### is the same console, so the routines are called on the type.
+record Console
+    nothing
 
 ### Standard input, read through {Console}. {Console.input} is the pointer a Reader parameter takes.
 record ConsoleInput
@@ -258,7 +258,7 @@ failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
 failable common routine Console.ask[T]() -> T
 needs T obeys Parsable
     b: @InputBuffer = STDIN_BUFFER
-    spill: &[Byte] <- .hollow()
+    lateinit spill: &[Byte]
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
     word: Optional[@[Byte]] = b.word(spill)
@@ -327,7 +327,7 @@ common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Borrowe
 @expensive("allocates what it reads")
 common routine Console.ask_all(manager: @MemoryManager) -> BorrowedSlice[Byte]
     text: &CaptureBuffer <- CaptureBuffer.empty()
-    chunk_buffer: &Items[Byte, 4096] <- .hollow()
+    chunk_buffer: &Items[Byte, 4096]
     chunk: @Byte = chunk_buffer.getview().to[@Byte]()
 
     loop
@@ -421,7 +421,7 @@ failable common routine Console.ask_word(manager: @MemoryManager) -> BorrowedSli
 ### :absent: At the end of the input.
 secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
     text: &CaptureBuffer <- CaptureBuffer.empty()
-    single: &Byte <- .hollow()
+    single: &Byte
 
     # White space up to the word's first byte.
     loop
@@ -746,7 +746,7 @@ secret routine handle_of(stream: StdStream) -> Addr
 ### :returns: `true` when it can be used.
 @target(os: "windows")
 secret routine is_usable(h: Addr) -> Bool
-    return h.is_not_hollow() and h !== Addr.hollow() -% 1b
+    return h.is_not_hollow() and h !== Addr.zero() -% 1b
 
 ### Whether `h` is a console (GetConsoleMode accepts it), not a pipe or a file.
 ### :param h: The handle to test.
@@ -807,7 +807,7 @@ secret routine file_write(h: Addr, data: @Byte, count: U64) -> Bool
     wrote: &U32 <- 0
 
     until remaining == 0 with at: @Byte = data, remaining: U64 = count
-        ok: CInt = c_write_file(h, at, remaining.min(1073741824).to[U32](), wrote, .hollow())
+        ok: CInt = c_write_file(h, at, remaining.min(1073741824).to[U32](), wrote, Addr.zero())
         n: U64 = wrote.load().to[U64]()
         if ok != 0 and n > 0
             continue with at: at.stride(n), remaining: remaining - n
@@ -900,7 +900,7 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64
 secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
     written: &U32 <- 0
     iter: &BytesCharsEmitter <- @[Byte].construct(data, count).chars()
-    unit_buffer: &Items[U16, 2048] <- .hollow()
+    unit_buffer: &Items[U16, 2048]
     units: @U16 = unit_buffer.getview().to[@U16]()
 
     loop with n: U64 = 0
@@ -933,7 +933,7 @@ secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
 secret routine write_units(h: Addr, units: @U16, n: U64, written: @U32) -> Bool
     if n == 0
         return true
-    ok: CInt = c_write_console(h, units, n.to[U32](), written, .hollow())
+    ok: CInt = c_write_console(h, units, n.to[U32](), written, Addr.zero())
     w: U64 = written.peek().to[U64]()
     if ok != 0 and w > 0
         return write_units(h, units: units.stride(w), n: n - w, written)
@@ -953,7 +953,7 @@ secret failable routine stdin_read(buffer: @Byte, count: U64) -> U64
         when check console_read(h, buffer, count)
             is U64 as returned => return returned
     got: &U32 <- 0
-    if c_read_file(h, buffer, count.min(1073741824).to[U32](), got, .hollow()) != 0
+    if c_read_file(h, buffer, count.min(1073741824).to[U32](), got, Addr.zero()) != 0
         return got.load().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     if c_get_last_error() == 109
@@ -979,9 +979,9 @@ secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
         buffer.copy(src: input.bytes.getview().to[@Byte]().stride(start), count: n)
         input.start.poke(start + n)
         return n
-    units: &Items[U16, 4096] <- .hollow()
+    units: &Items[U16, 4096]
     got: &U32 <- 0
-    if not (c_read_console(h, units.getview().to[@U16](), 4096, got, .hollow()) != 0)
+    if not (c_read_console(h, units.getview().to[@U16](), 4096, got, Addr.zero()) != 0)
         throw IoError(code: 0)
     n: U64 = got.load().to[U64]()
     if n == 0
@@ -989,7 +989,7 @@ secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
     if units[0] == 0x1A
         return 0
     units2: @U16 = units.getview().to[@U16]()
-    joined: &Items[U16, 4097] <- .hollow()
+    joined: &Items[U16, 4097]
     high: U16 = input.high.peek()
     lead: U64 = when
         high == 0 => 0

@@ -36,7 +36,7 @@ global RUNNING_FLOW: &(@(@AccessFlow?)?)
 
 ### This thread's own flow, for the code it runs outside every fiber and piece of work.
 @threadlocal
-global THREAD_FLOW: &AccessFlow
+lateinit global THREAD_FLOW: &AccessFlow
 ### The number the next flow takes.
 global NEXT_FLOW: &U64 <- 1
 ### Whether the deadlock check is on: DEADLOCK_CHECK, or what AccessManager.configure set.
@@ -55,10 +55,10 @@ global PARK: &Addr
 global PLACE: &Addr
 
 ### An empty place (no file): a crash report leaves it out.
-global NO_PLACE: &SourceLocation
+lateinit global NO_PLACE: &SourceLocation
 
 ### The pairs the access-order check recorded.
-global ORDERS: &Items[AccessOrder, ORDER_SLOTS]
+lateinit global ORDERS: &Items[AccessOrder, ORDER_SLOTS]
 ### How many of ORDERS are in use.
 global ORDER_COUNT: &U64
 
@@ -579,7 +579,7 @@ secret routine fiber_flow(slot: @(@AccessFlow?)) -> @AccessFlow
     if made_at.is_hollow()
         throw OutOfMemoryError()
     made: @AccessFlow = made_at.to[@AccessFlow]()
-    made.poke(.hollow())
+    made.zeroinit(1)
     made.kind.poke(FLOW_FIBER)
     slot.poke(made)
     return made
@@ -659,14 +659,14 @@ common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool,
 common routine AccessManager.set_park(park: Callable[(@U32?, U32, Duration), None]?) -> None
     when park
         is Callable[(@U32?, U32, Duration), None] as parker => PARK.poke_unbroken(parker.addr())
-        is None => PARK.poke_unbroken(.hollow())
+        is None => PARK.poke_unbroken(Addr.zero())
     return
 
 ### Where the code taking an access is, for the crash reports: the routine set with `configure` writes it. An empty
 ### place when no routine was set, or when neither check is on (nothing would report it).
 ### :returns: The place.
 common routine AccessManager.place_here() -> SourceLocation
-    place: &SourceLocation <- .hollow()
+    lateinit place: &SourceLocation
 
     hook: Addr = PLACE.peek_unbroken()
     if hook.is_hollow()
@@ -714,7 +714,7 @@ secret routine new_node() -> @AccessNode
         chunk: @AccessNode = chunk_at.to[@AccessNode]()
         for i in 0 til NODE_CHUNK
             node: @AccessNode = chunk.stride(i)
-            node.poke(.hollow())
+            node.zeroinit(1)
             node.left.poke(FREE_NODES.peek())
             FREE_NODES.poke(node)
     free: @AccessNode = FREE_NODES.peek().unwrap()
@@ -877,7 +877,8 @@ secret routine held_by(node: @AccessNode, flow: @AccessFlow) -> Bool
 ### :param end: One past its last byte.
 ### :param flow: The flow.
 ### :returns: The node, or None.
-secret routine find_own(subtree: @AccessNode?, start: U64, end: U64, flow: @AccessFlow) -> @AccessNode?
+secret routine find_own(subtree: @AccessNode?, start: U64, end: U64,
+    flow: @AccessFlow) -> @AccessNode?
     if subtree.is_absent()
         return None()
     node: @AccessNode = subtree.unwrap()
@@ -897,7 +898,8 @@ secret routine find_own(subtree: @AccessNode?, start: U64, end: U64, flow: @Acce
 ### :param span: The range and the mode asked for.
 ### :param flow: The flow asking.
 ### :returns: The node, or None.
-secret routine find_blocker(subtree: @AccessNode?, span: AccessSpan, flow: @AccessFlow) -> @AccessNode?
+secret routine find_blocker(subtree: @AccessNode?, span: AccessSpan,
+    flow: @AccessFlow) -> @AccessNode?
     if subtree.is_absent()
         return None()
     node: @AccessNode = subtree.unwrap()
@@ -908,8 +910,7 @@ secret routine find_blocker(subtree: @AccessNode?, span: AccessSpan, flow: @Acce
         return found
     if node.start.peek() >= span.end
         return None()
-    if node.end.peek() > span.start and not held_by(node, flow) and keeps_out(node,
-        mode: span.mode)
+    if node.end.peek() > span.start and not held_by(node, flow) and keeps_out(node, mode: span.mode)
         return node
     return find_blocker(subtree: node.right.peek(), span, flow)
 
@@ -1011,7 +1012,7 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, ask: Acces
     flow.waiting_place.poke(ask.place.peek())
     flow.waiting_end.poke(span.end)
     flow.waiting_mode.poke(span.mode)
-    flow.waiting_holder.poke(.hollow())
+    flow.waiting_holder.poke(Addr.zero())
     flow.waiting_for.poke_unbroken(ask.request.at)
     unlock_table()
     if DEADLOCK_ON.peek()
@@ -1057,7 +1058,7 @@ secret routine give_back_range(at: Addr) -> None
 @target(os: not "none")
 secret routine check_range(at: Addr, size: U64) -> None
     flow: @AccessFlow = current_flow()
-    place: &SourceLocation <- .hollow()
+    lateinit place: &SourceLocation
 
     if HELD_TOTAL.peek_unbroken() == 0
         return
@@ -1085,7 +1086,7 @@ secret routine check_range(at: Addr, size: U64) -> None
 ### :param taken: Where the flow took that access.
 @noreturn
 secret routine crash_give_back_held(taken: SourceLocation) -> None
-    buffer: &Items[Byte, 512] <- .uninit()
+    buffer: &Items[Byte, 512]
     out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 512)
 
     out.write("This gives back or moves memory while this thread or fiber holds an access inside it")
@@ -1180,7 +1181,8 @@ common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
     count: U64 = flow.pending_count.peek()
     if count >= HELD_SLOTS
         throw UnacceptedValueError(description: "A block opens more accesses at once than the AccessManager keeps.")
-    flow.pending.getslot(count).poke(HeldAccess(access, kind, mode, place: .hollow()))
+    flow.pending.getslot(count).poke(HeldAccess(access, kind, mode,
+        place: SourceLocation(file: @[Byte].empty(), line: 0, column: 0)))
     flow.pending_count.poke(count + 1)
     return
 
@@ -1305,7 +1307,7 @@ secret routine note_released(flow: @AccessFlow, access: Addr) -> None
             flow.held.getslot(j).poke(flow.held.getslot(j + 1).peek())
         # One held past the list now belongs at its end, and the list doesn't know it: an empty entry stands there.
         if count > HELD_SLOTS
-            flow.held.getslot(HELD_SLOTS - 1).poke(.hollow())
+            flow.held.getslot(HELD_SLOTS - 1).zeroinit(1)
     flow.count.poke(count - 1)
     return
 
@@ -1393,7 +1395,7 @@ secret routine park(wait: AccessWait, deadline: Duration) -> None
 ### Notes that `flow` no longer waits.
 ### :param flow: The flow.
 secret routine end_wait(flow: @AccessFlow) -> None
-    flow.waiting_for.poke_unbroken(.hollow())
+    flow.waiting_for.poke_unbroken(Addr.zero())
     return
 
 ### For code that waits for an access in its own way (a Roamed entity's lock): publishes that the running flow waits
@@ -1440,8 +1442,8 @@ secret routine search_flow(flow: @AccessFlow, target: @AccessFlow, path: @Deadlo
             return false
         continue
     path.flows.getslot(depth).poke(flow)
-    path.at.getslot(depth).poke(.hollow())
-    path.taken.getslot(depth).poke(.hollow())
+    path.at.getslot(depth).poke(Addr.zero())
+    path.taken.getslot(depth).zeroinit(1)
     path.count.poke(depth + 1)
     waits_for: Addr = flow.waiting_for.peek_unbroken()
     if waits_for.is_not_hollow()
@@ -1513,7 +1515,7 @@ secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
     recheck_at: Duration = Clock.monotonic() +^ DEADLOCK_RECHECK
     word: @U32? = wait.word
     expected: U32 = wait.expected
-    path: &DeadlockPath <- .hollow()
+    lateinit path: &DeadlockPath
 
     if not finds_cycle(flow, path)
         return
@@ -1572,7 +1574,7 @@ secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
 ### :param path: The cycle.
 @noreturn
 secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
-    buffer: &Items[Byte, 2048] <- .uninit()
+    buffer: &Items[Byte, 2048]
     out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 2048)
     words: U8 = WORDS.peek()
     length: U64 = path.count.peek()
@@ -1677,7 +1679,7 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
 ### :param before: Where the first order took its second access.
 @noreturn
 secret routine report_order(place: @SourceLocation, before: SourceLocation) -> None
-    buffer: &Items[Byte, 1024] <- .uninit()
+    buffer: &Items[Byte, 1024]
     out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 1024)
     words: U8 = WORDS.peek()
 

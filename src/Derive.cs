@@ -206,7 +206,7 @@ public static class Derive
                 foreach (var b in v.Branches)
                     sb.Append(holds(b.Type) ? $"        is {b.Type} as held =>\n            drop held\n" : $"        is {b.Type} => nothing\n");
                 // The place the value was taken out of is left as a hollow variant, which a second drop leaves alone.
-                sb.Append("    me.stride(0).poke(.hollow())\n");
+                sb.Append("    lateinit emptied: &Me\n    me.stride(0).poke(emptied.take())\n");
                 break;
         }
         sb.Append("    return\n");

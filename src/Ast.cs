@@ -231,6 +231,9 @@ public sealed record PresetDecl(
     : Decl(File, Annotations, Pos)
 {
     public bool IsGlobal { get; init; }
+
+    /// `lateinit global NAME: &T`: a global with no value, filled by the program before it is read (a type with no all-zero value is allowed).
+    public bool Late { get; init; }
     /// A global, or a preset declared `@T` or `PointedSlice[T]`: the name is an address, not a value.
     public bool IsStorage { get; init; }
     /// Declared `PointedSlice[T]`: the name is a PointedSlice over the memory, whose count the array literal gives.
@@ -282,6 +285,11 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
     /// `x: &T <- value [from manager]`: the line borrows, a place from the manager (STACK when none is named) with the
     /// value put in it, or the thing to give back that the call on the right borrows. The name owes a drop.
     public bool Borrows { get; init; }
+
+    /// `x: &T` with no value: the place starts all zero (the type needs a zero value). With `Late`, `lateinit x: &T`: filled later.
+    public bool Bare { get; init; }
+
+    public bool Late { get; init; }
 
     /// The binding a `<-` line of a borrowed thing (an access, a ticket) stands for, after the builder read it.
     public bool Lowered { get; init; }
@@ -397,6 +405,9 @@ public sealed record StealStmt(Expr From, string Name, Pos Pos) : Stmt(Pos)
 
     /// The value `inject` puts into the place, or null for the form that leaves the place hollow.
     public Expr? Inject { get; init; }
+
+    /// `inject lateinit`: the place is left empty on purpose (all zero) where the build can't follow which one it is.
+    public bool LeavesEmpty { get; init; }
 }
 
 /// `place <- value from manager`: fills a field that holds an `E?` (a `&E`, the place of an E from a manager) with a
@@ -510,6 +521,9 @@ public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<
 {
     /// Each argument's name where the call names it, as on CallExpr.
     public List<string?>? ArgNames { get; init; }
+
+    /// The call was written in the source (`.hollow()` is gone as a spelling, the builder's own zero value is not).
+    public bool Written { get; init; }
 }
 
 /// `.Nothing`: a variant case without a payload, of the variant the value goes to.

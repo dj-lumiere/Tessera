@@ -133,12 +133,12 @@ secret routine c_aligned_free(ptr: Addr) -> None
 @target(os: ("linux", "macos"))
 routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
-    out: &Addr <- .hollow()
+    out: &Addr
     if c_posix_memalign(out, align.to[CSize](), size.to[CSize]()) != 0
-        return .hollow()
+        return Addr.zero()
     return out.load()
 
 ### Allocates `size` bytes with malloc. Windows' free can't take a block aligned past malloc's own.
@@ -149,7 +149,7 @@ routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
 @target(os: "windows")
 routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
     throw UnacceptedValueError(description: "The C heap can't give a block aligned past malloc's own on Windows: use HEAP.")
@@ -163,12 +163,12 @@ routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
 @target(os: ("linux", "macos"))
 routine @HeapManagerByC.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     if align <= MALLOC_ALIGN
         return c_realloc(at, size.to[CSize]())
     fresh: Addr = me.borrow(size, align)
     if fresh.is_hollow()
-        return .hollow()
+        return Addr.zero()
     if at.is_hollow()
         return fresh
     kept: U64 = c_block_size(at).min(size.to[CSize]()).to[U64]()
@@ -184,7 +184,7 @@ routine @HeapManagerByC.reborrow(at: Addr, size: U64, align: U64) -> Addr
 @target(os: "windows")
 routine @HeapManagerByC.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     return c_realloc(at, size.to[CSize]())
 
 ### Gives a block back with free.
@@ -201,7 +201,7 @@ routine @HeapManagerByC.give_back(at: Addr) -> None
 @target(os: "windows")
 routine @HeapManagerByCAligned.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     return c_aligned_malloc(size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### Resizes a block with `_aligned_realloc`, keeping its alignment.
@@ -212,7 +212,7 @@ routine @HeapManagerByCAligned.borrow(size: U64, align: U64) -> Addr
 @target(os: "windows")
 routine @HeapManagerByCAligned.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
-        return .hollow()
+        return Addr.zero()
     return c_aligned_realloc(at, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### Gives a block back with `_aligned_free`.
@@ -303,10 +303,10 @@ routine @HeapManagerByCheckedHeap.borrow(size: U64, align: U64) -> Addr
     when total
         is U64 as bytes =>
             if not fits_c_size(bytes)
-                return .hollow()
+                return Addr.zero()
             raw: Addr = c_malloc(bytes.to[CSize]())
             if raw.is_hollow()
-                return .hollow()
+                return Addr.zero()
             # The first address HEADER_ROOM bytes in that is a multiple of the alignment.
             lowest: U64 = ptrtoint[Addr, U64](raw) + HEADER_ROOM
             aligned: U64 = lowest + step - 1 & ~(step - 1)
@@ -316,7 +316,7 @@ routine @HeapManagerByCheckedHeap.borrow(size: U64, align: U64) -> Addr
             header.size.poke(size)
             header.raw.poke(raw)
             return block_start
-        is None => return .hollow()
+        is None => return Addr.zero()
 
 ### Resizes a block: a new block, the contents copied over (as many bytes as both sizes allow), and the old block
 ### freed through the same checks as `free`.
@@ -335,7 +335,7 @@ routine @HeapManagerByCheckedHeap.reborrow(at: Addr, size: U64, align: U64) -> A
         tag == LIVE =>
             new_ptr: Addr = me.borrow(size, align)
             if new_ptr.is_hollow()
-                return .hollow()
+                return Addr.zero()
             kept: U64 = header.size.peek().min(size)
             new_ptr.to[@Byte]().copy(src: at.to[@Byte](), count: kept)
             release_block(at)

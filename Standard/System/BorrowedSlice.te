@@ -18,8 +18,8 @@
 # The build checks that memory is given back once, and not used after. A second give-back that code the build doesn't
 # follow makes crashes with `DoubleFreeError` under the heap check (`[debug] heap-check`).
 #
-# `.hollow()` is a BorrowedSlice or a BorrowedCell holding nothing (no address, no manager): `drop` on it does nothing, and a read
-# crashes.
+# An empty BorrowedSlice (count 0) holds an aligned address that is never read, and always keeps its manager. A place
+# declared `lateinit` and not yet filled holds all zero bytes: `drop` on it does nothing, and a read crashes.
 
 module System
 
@@ -50,6 +50,20 @@ secret routine check_access_range(at: Addr, size: U64) -> None
 @inline
 secret routine check_access_range(at: Addr, size: U64) -> None
     return
+
+### The address an empty memory holds: aligned for `T` and never zero. It is never read, since every access is range-checked.
+### :typeparam T: The value type.
+### :returns: An aligned, non-zero address.
+@inline
+routine dangling[T]() -> @T
+    r: @T = inttoptr[U64, @T](alignof[T]())
+    return r
+
+### An empty memory from `manager`: no values and nothing taken, so it can't fail.
+### :param manager: Where the memory would come from and goes back to.
+### :returns: The empty memory, which keeps the manager.
+common routine BorrowedSlice[T].empty(manager: @MemoryManager) -> Me
+    return Me(data: dangling[T](), count: 0, manager)
 
 ### Takes room for `count` values of `T` from `manager`.
 ### :typeparam T: The value type.
@@ -102,7 +116,7 @@ obeys ViewingIndexable[BorrowedSlice[T], T]
 @expensive("allocates memory")
 failable common routine BorrowedSlice[T].construct(count: U64, manager: @MemoryManager) -> Me
     if count == 0
-        return Me(data: .hollow(), count: 0, manager)
+        return Me(data: dangling[T](), count: 0, manager)
     data_made: @T? = take_block[T](count, manager)
     if data_made.is_absent()
         throw OutOfMemoryError()
@@ -123,7 +137,7 @@ failable common routine BorrowedSlice[T].construct(values: @[T], times: U64,
     manager: @MemoryManager) -> Me
     if values.count.mul_overflows(times)
         throw OutOfMemoryError()
-    made: &Me <- .hollow()
+    lateinit made: &Me
 
     count: U64 = values.count * times
     when check Me.construct(count, manager)
@@ -253,7 +267,7 @@ failable routine @BorrowedSlice[T].resize(count: U64) -> None
         drop me
         me.manager.poke(manager)
         return
-    elseif data.to[Addr]().is_hollow()
+    elseif me.count.peek() == 0 or data.to[Addr]().is_hollow()
         when check Me.construct(count, manager)
             is Me as memory =>
                 me.poke(steal memory)
@@ -275,14 +289,17 @@ failable routine @BorrowedSlice[T].resize(count: U64) -> None
         me.count.poke(count)
         return
 
-### Gives the memory back to its manager and leaves the value hollow. Does nothing on a hollow or empty value. The
+### Gives the memory back to its manager and leaves an empty value that keeps its manager. Does nothing on an empty value. The
 ### values themselves are not destructed: see `destruct_all`.
 @track_caller
 routine @BorrowedSlice[T].destruct() -> None
     data: @T = me.data.peek()
+    count: U64 = me.count.peek()
     if not data.to[Addr]().is_hollow()
-        give_block[T](data, count: me.count.peek(), manager: me.manager.peek())
-    me.poke(.hollow())
+        if count > 0
+            give_block[T](data, count, manager: me.manager.peek())
+        me.data.poke(dangling[T]())
+        me.count.poke(0)
     return
 
 ### Gives the memory back and puts `value` in its place: how a global that holds memory changes (the program's end
@@ -309,7 +326,8 @@ routine @BorrowedSlice[T].give_back() -> None
 routine @BorrowedSlice[T].take() -> Me
     taken: &Me <- steal me.stride(0)
 
-    me.poke(.hollow())
+    me.data.poke(dangling[T]())
+    me.count.poke(0)
     me.manager.poke(taken.manager.peek())
     return taken
 
@@ -354,7 +372,8 @@ common routine BorrowedCell[T].construct(value: T, manager: @MemoryManager) -> M
 ### :param at: The frame slot, which holds the value.
 ### :returns: The box.
 common routine BorrowedCell[T].over_frame(at: @T) -> Me
-    return Me(at, manager: .hollow())
+    no_manager: @MemoryManager = bitcast[Addr, @MemoryManager](Addr.zero())
+    return Me(at, manager: no_manager)
 
 ### The value's address: what lending passes.
 ### :returns: The address, valid until the box is dropped.
@@ -420,7 +439,7 @@ routine @BorrowedCell[T].destruct() -> None
     manager: @MemoryManager = me.manager.peek()
     if not manager.to[Addr]().is_hollow()
         give_block[T](data: me.at.peek(), count: 1, manager)
-    me.poke(.hollow())
+    me.zeroinit(1)
     return
 
 ### Gives the memory back and puts `value` in its place: how a global that holds a box changes (the program's end

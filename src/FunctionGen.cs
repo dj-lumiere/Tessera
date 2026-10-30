@@ -447,16 +447,16 @@ public sealed partial class FunctionGen
             EmitStealInject(st, held);
             return;
         }
-        if (UnfollowedPlace(st.From) is { } why)
+        if (!st.LeavesEmpty && UnfollowedPlace(st.From) is { } why)
             throw Err(st.From.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
                 + $"Put the new value in at once: steal {new Printer().Expr(st.From, 0)} as {st.Name} inject <new value>, "
-                + "or trade two elements with swap(first, second)");
+                + "or trade two elements with swap(first, second). Where the place stays empty on purpose, write inject lateinit");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
         EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
             new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
         // Left hollow, zeroed in place.
         EvalAny(new MethodCallExpr(st.From, "zeroinit", [], [new IntLit(1, st.Pos)], st.Pos));
-        if (MemOn && PlaceKey(st.From) is { } key)
+        if (MemOn && !st.LeavesEmpty && PlaceKey(st.From) is { } key)
         {
             Mem(new MemoryRules.Acquire(key, "emptied", st.Pos) { Entity = held.Name });
             Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
@@ -1100,7 +1100,12 @@ public sealed partial class FunctionGen
         // A value put back into a place steal emptied: the place holds something again.
         bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && (receiver is null || _filling)
             && PlaceKey(plan.Receiver) is not null && !(plan.Receiver is ValueRef view && _takenViews.Contains(view.Name));
-        if (refilling)
+        // `place.zeroinit(1)` empties a place the way `steal` does: it holds nothing until a value is put back.
+        bool zeroFill = !refilling && plan.Receiver is not null && sig.Decl.Name == "zeroinit" && plan.Args is [IntLit one] && one.Value.IsOne
+            && PlaceKey(plan.Receiver) is not null;
+        if (zeroFill) Mem(new MemoryRules.Store(PlaceKey(plan.Receiver!)!, null, plan.Pos) { Hollow = true });
+        refilling |= zeroFill;
+        if (refilling && !zeroFill)
         {
             string key = PlaceKey(plan.Receiver!)!;
             // A field that holds memory or an entity is poked only while it holds nothing.
@@ -1921,6 +1926,12 @@ public sealed partial class FunctionGen
         {
             case BindStmt { Borrows: true } borrow:
             {
+                if (borrow.Bare && !borrow.Late)
+                {
+                    var written = Resolve(borrow.Type);
+                    CheckBareZero(borrow, IsPlaceType(borrow.Type) && borrow.Type.Name == "BorrowedCell" && borrow.Type.Args[0] is TypeArgType pointee
+                        ? Resolve(pointee.Type) : written);
+                }
                 var (lowered, stack) = LowerBorrow(borrow);
                 EmitStmtCore(lowered);
                 if (stack && !_cur.Terminated) RegisterStackPlace(lowered.Name, lowered.Pos);
@@ -1929,6 +1940,7 @@ public sealed partial class FunctionGen
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
+                CheckBareZero(b, t);
                 if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(b.Pos, borrowedWithEquals);
                 NoteMadeWork(b.Name, b.Value);
                 if (Entities.Holds(t))
@@ -2008,24 +2020,13 @@ public sealed partial class FunctionGen
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);
                 }
-                // `<- .hollow()` zeroes the slot in place (a memset), never through a whole-slot value: a big array's
-                // all-zero value as one store takes LLVM minutes and can crash it. `<- .uninit()` writes nothing.
-                if (b.Value is ClaimExpr { Contents: ImplicitCallExpr { Name: "hollow" or "uninit", Args.Count: 0, TypeArgs.Count: 0 } fill }
-                    && t is PtrType { Pointee: { } slotType })
+                // A place with no value zeroes the slot in place (a memset), never through a whole-slot value: a big array's
+                // all-zero value as one store takes LLVM minutes and can crash it.
+                if (b.Value is ClaimExpr { Contents: ImplicitCallExpr { Name: "hollow", Args.Count: 0, TypeArgs.Count: 0 } fill }
+                    && t is PtrType)
                 {
-                    if (fill.Name == "uninit")
-                    {
-                        if (PointerIn(slotType, slotType.Name, []) is { } where)
-                            throw Err(fill.Pos,
-                                $"'.uninit()' leaves the slot's bytes as they were, and {slotType} holds a pointer ({where}): "
-                                + "a read or a drop would follow whatever was there. Start it with <- .hollow()");
-                        if (_c.UninitFill)
-                            Line($"call void @llvm.memset.p0.{_c.Count.Llvm}(ptr {op}, i8 -86, {_c.Count.Llvm} "
-                                + $"{_c.SizeAlign(slotType, fill.Pos).Size}, i1 false)");
-                    }
-                    else
-                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "zeroinit", [], [new IntLit(1, fill.Pos)], fill.Pos),
-                            VoidType.Instance);
+                    EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "zeroinit", [], [new IntLit(1, fill.Pos)], fill.Pos),
+                        VoidType.Instance);
                     break;
                 }
                 // `claim p: @T <- value` is the claim, then `p.poke(value)`.
@@ -3029,29 +3030,16 @@ public sealed partial class FunctionGen
 
     /// Where `type` holds a pointer (a PointedCell, an Addr, a Callable, or the PointedSlice, BorrowedCell, or BorrowedSlice over one), as a path
     /// from `path` (`Reader.buf.data`), or null when it holds none.
-    private string? PointerIn(DType type, string path, HashSet<string> seen)
+    private string? PointerIn(DType type, string path, HashSet<string> seen) => _c.NoZeroValueWhere(type, path, seen);
+
+    /// A bare `x: &T` (or `x: T`) starts all zero, which is a value only for a type holding no pointer, memory or routine that
+    /// is never empty: otherwise the build says what to write instead.
+    private void CheckBareZero(BindStmt b, DType zeroed)
     {
-        switch (type)
-        {
-            case PtrType or CallableType:
-                return path;
-            case ArrayType a:
-                return PointerIn(a.Elem, $"{path}[...]", seen);
-            case VectorType v:
-                return PointerIn(v.Elem, $"{path}[...]", seen);
-            case RecordType r when seen.Add(r.Key):
-                foreach (var (name, field) in _c.Fields(r))
-                    if (PointerIn(field, $"{path}.{name}", seen) is { } found)
-                        return found;
-                return null;
-            case VariantType v when seen.Add(v.Key):
-                foreach (var branch in v.Branches)
-                    if (PointerIn(branch, $"{path} as {branch.Name}", seen) is { } found)
-                        return found;
-                return null;
-            default:
-                return null;
-        }
+        if (!b.Bare || b.Late || PointerIn(zeroed, zeroed.Name, []) is not { } where) return;
+        throw Err(b.Pos, $"{b.Name} has no value, and {zeroed} has no all-zero value: it holds a pointer, memory or a routine that is "
+            + $"never empty ({where}). Give it one ({b.Name}: {b.Type} <- value), or write lateinit {b.Name}: {b.Type} when it is "
+            + "filled before it is read");
     }
 
     private Val EvalClaim(ClaimExpr a, DType expected)
@@ -4843,8 +4831,21 @@ public sealed partial class FunctionGen
                 InferTypeArgs(r, env, c.Args, expected, 0);
                 return new CallPlan(r, env, null, c.Args, c.Pos);
             }
-            case ImplicitCallExpr { Name: "uninit" } uninit:
-                throw Err(uninit.Pos, "'.uninit()' only starts a slot whose routine fills it: local buf: @T <- .uninit()");
+            case ImplicitCallExpr { Name: "hollow", Written: true } gone:
+            {
+                string write = expected switch
+                {
+                    null => "the zero value",
+                    { Name: "Addr" } => "Addr.zero()",
+                    VariantType { IsNullable: true } => "None()",
+                    BoolType => "false",
+                    FloatType => "0.0",
+                    IntType => "0",
+                    _ => "the zero value as a constructor",
+                };
+                throw Err(gone.Pos, $"'.hollow()' is gone: write `{write}` here. A place with no value is x: &T (all zero), "
+                    + "and lateinit x: &T is one filled later");
+            }
             case ImplicitCallExpr ic:
             {
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.

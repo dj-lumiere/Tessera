@@ -163,7 +163,7 @@ routine start() -> None
   one call, `m.borrow_and_fill[T](t: v)` of `protocol ResourceManageable[M]` (a `MemoryManager` obeys it). With no `from` (or `from
   STACK`, or `from StackManager.current()`) the manager is the running flow's stack, and the place is one frame slot
   with no fields. `x: &[T] <- [v] * n from HEAP` borrows a run (a `BorrowedSlice[T]`), `node: &Node <- (value: 1, next:
-  .hollow()) from HEAP` one value (a `BorrowedCell[T]`). `&T` is short for `BorrowedCell[T]` and `&[T]` for `BorrowedSlice[T]` (the long names
+  None()) from HEAP` one value (a `BorrowedCell[T]`). `&T` is short for `BorrowedCell[T]` and `&[T]` for `BorrowedSlice[T]` (the long names
   stay valid), the way `@T` is `PointedCell[T]`. `@T` / `@[T]` only view: they come from `getview`, `getslot`, `getslice`, and
   are never places. `=` binds a value or a view (`x: S64 = 3`, `cell: @Cell = m.getslot(i)`), never a `&T` / `&[T]`
   (build error: "a &List[S64] is a place borrowed from a manager, and '=' only binds a value or a view: xs:
@@ -191,13 +191,14 @@ routine start() -> None
   `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
   `&List[S64]`'s `getview()` is the List's span. Passing a `&T` where a `@T` is expected lends its view. Returning a
   STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
-- A place that a routine fills later (an out parameter, `out.construct(...)`, an emitter's place) starts as
-  `p: &T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
-  collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
-  memset in place). A place whose type holds no pointer (no `PointedCell`, `Addr`, `Callable`, `@[T]`, `BorrowedCell`, `BorrowedSlice`) may
-  start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill
-  (`--uninit-fill` / `[debug] uninit-fill = true` fills such places with 0xAA bytes to make an early read stand out).
-  `.uninit()` elsewhere, or on a type holding a pointer, is a build error. An array value comes from `[1, 2, x]` or a
+- A place with no value starts all zero: `p: &T` (or `p: T`), for a type whose all-zero bytes are a value (numbers, `Bool`,
+  choices, `Addr`, `T?`, and records, arrays and vectors of those). It is a memset in place. A type holding a pointer, a
+  routine value, or memory that is never empty (`@T`, `@[T]`, `Callable`, `BorrowedCell`, `BorrowedSlice`, and every type
+  holding one: the collections, `Text`) has no zero value: `p: &T` for one is a build error. Give it a value, or write
+  `lateinit p: &T` when a routine fills it before it is read (an out parameter, `out.construct(...)`, an emitter's place).
+  `T.hollow()`, `.hollow()` and `.uninit()` are gone (writing them is a build error that names what to write): a zero
+  value is a literal or constructor (`0`, `false`, `None()`, `Addr.zero()`, `@[Byte].empty()`,
+  `BorrowedSlice[T].empty(manager)`), and `place.zeroinit(1)` empties a place in memory. An array value comes from `[1, 2, x]` or a
   load (COUNT values at `first: @T` are `first.to[@Items[T, COUNT]]().peek()`);
   a bare `[1, 2]` isn't a value. `[a, b] * 3` repeats the elements (`a, b, a, b, a, b`). A bracket literal followed by `*` is always that repeat, so a Vector literal is bound to a name before it is multiplied. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
@@ -217,7 +218,7 @@ routine start() -> None
   plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
   with `steal m` to a routine that takes a `BorrowedSlice` / `BorrowedCell` by value (that routine gives it back then). `drop x` is
   `x.destruct()`, and a `BorrowedCell` / `BorrowedSlice` holds its manager, so its `destruct` gives the memory back to it (a `BorrowedCell`'s ends its value first, so `drop node` of a `&Node` from HEAP runs the Node's destruct): a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
-  drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow: `.hollow()` holds
+  drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow (all zero): it holds
   nothing, `drop` on it does nothing, a read crashes with `UnacceptedValueError`.
 - **The elements of a BorrowedSlice.** A `BorrowedSlice[T]` reads and writes nothing itself, and reaches its elements the way a
   `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
@@ -275,7 +276,7 @@ routine start() -> None
   caught (on a hosted target the write faults).
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
-  `node: &Node <- (value: 1, next: .hollow()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
+  `node: &Node <- (value: 1, next: None()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
   call `BorrowedCell[T].construct(value, manager)`). The program gives these back with `drop`. Without `from` the place is a
   slot of the routine's frame, which the routine borrowed from its flow's `StackManager` (below): `x: &S64 <- 5 from
   STACK` is the same place as `x: &S64 <- 5`, follows rule 3 (no view of it leaves the routine), and the builder
@@ -300,7 +301,7 @@ routine start() -> None
     holds live memory. Drop it first, or use `replace(value: new)`.
   - `'q.m' holds a &[S64], and this poke overwrites it without giving it back`: a field that holds a BorrowedSlice, a BorrowedCell,
     or an entity is changed with `q.m.replace(value: new)` (it gives the old one back first). A `poke` into it is allowed
-    only while it holds nothing: after `steal q.m as old`, or when its place was filled with `.hollow()` and the field
+    only while it holds nothing: after `steal q.m as old`, or when its place was emptied with `zeroinit(1)` and the field
     wasn't poked since.
   - `'Q.destruct' never gives back 'me.m'`: a `destruct` gives back every field of `me` that holds a BorrowedSlice, a BorrowedCell, or an
     entity (`drop me.m`, `me.m.give_back()`, `me.m.destruct_all()`, `me.m.take()`, or `steal me.m as old` handed on) on
@@ -493,7 +494,7 @@ routine start() -> None
   the size). The tables are ready before `start`, and every routine that borrows memory takes one as `@MemoryManager`:
   `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` to name it. A `StackManager`
   (`bottom`, `top`, `sp`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: `sp` is the flow's
-  stack pointer while it is stopped (a fiber switched away writes it there, the switch back reads it), `.hollow()` while
+  stack pointer while it is stopped (a fiber switched away writes it there, the switch back reads it), zero while
   it runs and always for a thread's first stack, and `used()` / `remaining()` count from `sp` when it is set, else from
   the caller's stack pointer. It has no table: every routine borrows its frame from the running flow's StackManager,
   the builder calling `StackManager.borrow_frame(size)` right after the prologue and `StackManager.give_back_frame()`
@@ -512,8 +513,8 @@ routine start() -> None
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
   program's `when_power_on` calls it).
 - **A memory manager is a type that obeys `MemoryManageable`** (System/Memory): three routines taking `me` by its address (`routine @M.borrow(...)`),
-  `borrow(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `reborrow(at: Addr, size: U64, align: U64) ->
-  Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
+  `borrow(size: U64, align: U64) -> Addr` (`Addr.zero()` when it can't), `reborrow(at: Addr, size: U64, align: U64) ->
+  Addr` (`Addr.zero()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `give_back(at: Addr) -> None`. Memory from a manager is borrowed: the program gives it back, and the manager
   takes it back. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
   `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
@@ -543,8 +544,9 @@ routine start() -> None
   build error naming `manager`. Memory C frees or reallocates, or
   memory from C's malloc, goes through `C_HEAP` (plain malloc in every build). On a target without an OS, naming `HEAP`
   is a build error that says the target has none, and the program passes a manager of its own.
-- **Globals are places, filled with `<-`. Presets are values, written with `=`.** `p: &T <- v` (a STACK place, `<-
-  .hollow()` if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), and the span form
+- **Globals are places, filled with `<-`. Presets are values, written with `=`.** `p: &T <- v` (a STACK place, `lateinit p: &T`
+  if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value, and a type with no zero value needs
+  `<- value` or `lateinit global NAME: &T` when the program fills it before it reads it), and the span form
   above: `global COUNT: &U64 <- 0`, `global TABLE: &Items[U32, _] <- [...]`. `global COUNT: &U64 = 5` is a build error
   ("a global is a place, filled with '<-': global COUNT: &U64 <- value"), and so is `global COUNT: @U64 <- 5` ("a global
   is a place, written &T or &[T] (@T and @[T] only view)"). A preset is a value the build knows, `preset NAME: T =
@@ -561,12 +563,11 @@ routine start() -> None
   (`TABLE.getitem(i)`, `TABLE[2]`, `TABLE.getview()`), and it is viewed where a `@T` or a `@[T]` of it goes (`v: @[U32]
   = TABLE`, `total(TABLE)` for a `@[U32]` parameter). Writing it is a build error ("'TABLE' is a preset; its memory is
   read-only"). Globals and presets are part of the program image, there before `start` runs (nothing runs before it to
-  compute one, on any target), so their contents are known at build time: literals, presets, `.hollow()`, `[...]` (an
+  compute one, on any target), so their contents are known at build time: literals, presets, `[...]` (an
   array), `T(field: value)` (a record field by field), a routine for a `Callable` (`f.to[Callable]()`), and in a global
-  the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node
-  <- .hollow()`). A global's name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`,
+  the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node?`). A global's name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`,
   `K.getitem(i)`. Only a folded preset is a buildtime constant (`Items[S64, N]` with `preset N: U64 = 4`).
-  A global that holds an entity (`global G: &Noisy <- .hollow()`) is filled with `G.poke(v)`. A poke into an entity
+  A global that holds an entity (`lateinit global G: &Noisy`) is filled with `G.poke(v)`. A poke into an entity
   slot (a global like that, or a STACK place `x: &Noisy`) ends what the slot held itself: once `v` is made, a slot that
   isn't hollow (all zero, checked at run time, since any routine may fill a global) has its value's `destruct` run
   first. `drop G` and `steal x as old` leave the slot hollow, and `steal G as old inject new` hands the old value to
@@ -965,7 +966,7 @@ routine start() -> None
   by `7`). `Decimal` has no `%` or `//`.
   There is no decimal literal: a value comes from text (`"19.99".to[Decimal]()`, failable: `EmptyTextError`,
   `InvalidValueError`, and for `Decimal` `OutOfRangeError`), from an integer (`n.to[D64]()`, `S64.to[Decimal](3)`
-  on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (`.hollow()` is the all-zero bits, a zero at the
+  on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (the all-zero bits are a zero at the
   lowest exponent, not `0`). `d.to[S64]()` and the other integers truncate toward zero and throw
   `IntegerOverflowError` past the range or on an infinity or a NaN. Widening (`D32.to[D64]()`, `D64.to[D128]()`,
   `Decimal.to[D128]()`) is plain, narrowing (`D64.to[D32]()`) throws `NumericOverflowError` for a finite value that
@@ -990,7 +991,7 @@ routine start() -> None
   `routine @[Byte].trim()` is on a span and `routine @@[Byte].clear()` takes a span's address. `me` and `Me` are
   reserved: no parameter, binding, or place is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
   type is expected (a binding, an argument, a carried value, a return), a leading `.` leaves it out:
-  `xs: &List[S64] <- .construct(manager)`, `p: Point = .hollow()`, `return .hollow()`. Not at the head of a chain or as a statement.
+  `xs: &List[S64] <- .construct(manager)`, `p: Point = .construct(x: 1, y: 2)`, `return .construct(x: 1, y: 2)`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
@@ -1212,7 +1213,7 @@ routine start() -> None
   C). An `@export` routine returns a `T` or a `Result[T, TErrorCode]` (Standard/System/Result.te), never a variant (a
   build error): a C record of `value` then `code`, both always there (`struct { int64_t value; int32_t code; }` for a
   `Result[S64, RatioError]` over a choice without a written type). `TErrorCode` is a choice (a build error otherwise),
-  so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` a `.hollow()` value,
+  so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` an all-zero value,
   `r.is_ok()` tests the code, and the routine turns its failures into codes with `when check`. Make 0 the success
   code, the choice's first member (the build doesn't check it). Inside, code uses failable routines, not `Result`.
 - **The `Crash` service** (System, one per program) reports a crash and a failure nothing received, then
@@ -1262,7 +1263,7 @@ routine start() -> None
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
 - **Events: `CpuEventManager`** (`CpuEvents.te` of Hosted with an OS, of Unhosted without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
-  and hands back the one before so it can be put back (`.hollow()` is the system's action):
+  and hands back the one before so it can be put back (`None()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
   decides, it calls `ProcessManager.exit_process` to end, and when it returns the program goes on, except that
   Windows ends the process itself after a closed console window, a logoff or a shutdown),
@@ -1407,7 +1408,7 @@ routine start() -> None
 - `steal place as old inject new` takes an entity out of a place and puts another in, in one step: `new` is computed
   first (it may read the place), then the place's value goes to `old` and `new` goes into the place, so the place is
   never hollow (`steal a.getslot(i) as old inject Counter.construct(n: 0)`, `steal p.left as was inject
-  Counter.construct(n: 7)`). `inject .hollow()` leaves the place holding nothing on purpose (a ticket list taken apart).
+  Counter.construct(n: 7)`). `inject lateinit` leaves the place holding nothing on purpose (a ticket list taken apart), and so does `steal p as old` on a place the build follows.
   The builder follows a hollow place by how it is written: a name, a field chain from one, or an element at a constant
   index (`xs.getslot(0)`). An element at an index that is a variable or a computation (`xs.getslot(i)`) is not
   followed (`j: U64 = i` then `xs.getslot(j)` reaches the same place), so a `steal` that would leave one hollow is a
@@ -1469,7 +1470,7 @@ routine start() -> None
   `Check[T]` has `T` and the crashables its check can give.
 - **`T?` is `Optional[T]`**, the one named type whose kind follows what it holds: the builder lays it out by `T`'s
   kind. For a `T` whose values hold nothing with a release duty it is a value laid out as `{ i1, T }` (the present
-  flag, then the value; `{ i1, [0 x T], T }` in the IR, the same bytes), so its all-zero `.hollow()` is `None`, and it
+  flag, then the value; `{ i1, [0 x T], T }` in the IR, the same bytes), so its all-zero value is `None`, and it
   is copied, a preset, a field of a record. `@T?` and `Callable[...]?` are the address alone (`ptr`, 8 bytes), null
   for None, so they cost nothing over the `@T` and pass to C as a pointer: an `@export` routine may take and give
   them. An `@T` always points at a value, so `p.is_hollow()` / `p.is_not_hollow()` on an `@T` is a build error that
@@ -1502,10 +1503,10 @@ routine start() -> None
   A fill without a manager is a build error that names `from HEAP`, and so is an E written where the field goes
   (`Me(next: Node.construct(1))`: write `None()` and fill it on a line of its own). The field must hold nothing:
   a fill the build knows follows another one is a build error ("this line would lose it: drop first.next first, or
-  take it out with steal first.next as old inject .hollow()"), and one it can't follow checks while running and
-  crashes with `UnacceptedValueError`. A construct writes `None()` (or `.hollow()`) for it. Emptying it gives back
+  take it out with steal first.next as old"), and one it can't follow checks while running and
+  crashes with `UnacceptedValueError`. A construct writes `None()` for it. Emptying it gives back
   what it holds: `drop me.next` (the E's destruct, then the place back to its manager, the field hollow), or `steal
-  me.next as old inject .hollow()` (`old` is a `&Node` place the routine ends). `when me.next` observes it without
+  me.next as old` (`old` is a `&Node` place the routine ends). `when me.next` observes it without
   moving it: `is Node as n` names the E where it is, a `@Node` (so a walk is `loop with cur: @Node = first`, `when
   cur.next`, `is Node as next => continue with cur: next`, `is None => break`), `is None` a hollow field, and it reads
   a field after its `drop` as None. The holder's destruct (the builder's walk, or `drop me.next` in one written by
@@ -1544,7 +1545,7 @@ routine start() -> None
   identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
   (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
-  (gone at `-O`). An all-zero (`.hollow()`) variant holds no branch, and a `when` on it crashes with
+  (gone at `-O`). An all-zero variant holds no branch, and a `when` on it crashes with
   `UnacceptedValueError`.
 - A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a flags type
   all but Comparable, a variant each only when every branch has it), skipping what it declares itself; `@derive(...)` lists exactly what
@@ -1840,7 +1841,7 @@ retrieve before releasing what it points to (the build checks it: the escape che
 at a time: `put_work` / `put_callable` or `drop t` while the work runs crashes with `TicketBusyError`, and `retrieve`
 with no work with `NoWorkError`. A ticket is an entity: the `<-` name is the place that holds it, `drop t` gives it
 back, a list takes it with `steal` (`ts.add_last(steal t)`), a `Slots` gives one up with `steal xs.getslot(i) as t
-inject .hollow()`, and `waitfor` gives the ticket's address (`@Thread[T]`), so `t.waitfor(5ms).retrieve()` reads it
+inject lateinit`, and `waitfor` gives the ticket's address (`@Thread[T]`), so `t.waitfor(5ms).retrieve()` reads it
 in place. `cancel()` asks the
 work to stop: the work asks `cancel_requested()` where stopping is safe and returns. `retrieve()` of cancelled work
 throws `CancelRequested` (a `Thread[None]` / `Fiber[None]` / `PassableFiber[None]` one too), so a bare call stops there
@@ -2048,7 +2049,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, manager)` (the `PartitionManager`
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
-- listing: `list(at, iter)` starts a `DirEmitter` (a place, `iter: &DirEmitter <- .hollow()`), then
+- listing: `list(at, iter)` starts a `DirEmitter` (a place, `lateinit iter: &DirEmitter`), then
   `for entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
 - paths: `absolute(at, manager)`, `canonical(at, manager)`.
 
@@ -2198,8 +2199,8 @@ makes and keeps in globals:
 ```tessera
 import Unhosted
 
-global GIC: &InterruptManagerByGic <- .hollow()
-global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+lateinit global GIC: &InterruptManagerByGic
+lateinit global THREADS: &ThreadManagerByRoundRobin
 global STACKS: &Items[U64, 8192]   # 64 KiB for the threads' slots
 
 routine start() -> None
@@ -2208,7 +2209,7 @@ routine start() -> None
     GIC.start()
     THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
         slice: Duration.from_milliseconds(1), interrupts: GIC))
-    THREADS.launch(entry: worker.to[Callable](), arg: .hollow())   # false when no slot is free
+    THREADS.launch(entry: worker.to[Callable](), arg: Addr.zero())   # false when no slot is free
     THREADS.run()   # returns once every thread launched has returned
     psci_power_off()
     return
@@ -2321,16 +2322,14 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 that `to[T]`, which would call itself there. It keeps the shape under its own name, `x.soft_to[B16]()`
 (System/Numerics/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
-**The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a place that
-`finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has
-`.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `BorrowedSlice`, a `BorrowedCell`, a
-`@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
+**The empty value: `.empty()`, `.zero()`, or `None()`.** A type's ready-made empty value (the "nothing yet" of a record) is a
+typewise routine without arguments. A type whose all-zero bytes are a value has a place with no value (`x: &T`). `@[T].empty()` is
+a view of no elements and `BorrowedSlice[T].empty(manager)` memory with no values, which keeps its manager (an empty slice holds an
+aligned address that is never read, so a collection always has a manager). A type whose empty value means something of its own names it
 `.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Optional[T]` is empty as `None()`, and a pointer that may point at nothing is an
-`@T?` whose None is that, so there is no `none()` or `nothing()` routine, and no `null`: writing it is a build
-error. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
-an argument to a generic routine), name it, `PointedCell[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
-isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
+numbers) has `.zero()`: `Vector[T, LANES].zero()`, and `Addr.zero()` is the address 0. `Optional[T]` is empty as `None()`, and a pointer that may point
+at nothing is an `@T?` whose None is that, so there is no `none()` or `nothing()` routine, and no `null`: writing it is a build
+error. A default that isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
 **The memory manager comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
 `List[T].construct(manager)`, `BorrowedSlice[T].construct(count, manager)`, `allocate[T](count, manager)`,

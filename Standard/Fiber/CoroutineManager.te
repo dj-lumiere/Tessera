@@ -39,7 +39,7 @@ import Hosted
 ### This thread's coroutine manager, made on first use with DEFAULT_FIBER_STACK stacks of pages from PAGES.
 @threadlocal
 @target(os: not "none")
-global FIBERS: &CoroutineManager
+lateinit global FIBERS: &CoroutineManager
 
 # A fiber's wake_state. A wake turns RUNNING or PARKING into NOTIFIED, and PARKED back into RUNNING (and queues the
 # fiber). park turns RUNNING into PARKING (or takes a NOTIFIED back to RUNNING and returns), and its manager, once the
@@ -163,13 +163,13 @@ routine take_stack(size: ByteSize, pages: @MemoryManager) -> StackManager
 
     base: Addr = pages.reserve(length)
     if base.is_hollow()
-        return .hollow()
+        return StackManager(bottom: Addr.zero(), top: Addr.zero(), sp: Addr.zero())
     if not pages.commit(at: base, size: length)
         pages.release(at: base, size: length)
-        return .hollow()
+        return StackManager(bottom: Addr.zero(), top: Addr.zero(), sp: Addr.zero())
     if not pages.protect(at: base, size: page, access: PageAccess.NONE)
         pages.release(at: base, size: length)
-        return .hollow()
+        return StackManager(bottom: Addr.zero(), top: Addr.zero(), sp: Addr.zero())
     bottom: Addr = base +% ByteSize.construct(bytes: page)
     guard_overflow_room(bottom, size: usable, page)
     return StackManager.construct(bottom, top: bottom +% ByteSize.construct(bytes: usable))
@@ -203,10 +203,10 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
 ### :param mold: Its `mold`.
 ### :returns: The new value.
 @target(os: not "none")
-common routine FiberState.construct(stack: StackManager, manager: @CoroutineManager?, slot: WorkSlot,
-    work: @WorkSlot, then: Callable[(@CoroutineManager, @Me), None], wake_state: U32, timer: U64,
-    trace_depth: U64, access: @AccessFlow?, race: Addr, next_idle: @Me?, next_all: @Me?,
-    pool: @ThreadPoolManager?, mold: Addr) -> Me
+common routine FiberState.construct(stack: StackManager, manager: @CoroutineManager?,
+    slot: WorkSlot, work: @WorkSlot, then: Callable[(@CoroutineManager, @Me), None],
+    wake_state: U32, timer: U64, trace_depth: U64, access: @AccessFlow?, race: Addr,
+    next_idle: @Me?, next_all: @Me?, pool: @ThreadPoolManager?, mold: Addr) -> Me
     return Me(stack: steal stack, manager, slot: steal slot, work, then, wake_state, timer,
         trace_depth, access, race, next_idle, next_all, pool, mold)
 
@@ -258,12 +258,12 @@ routine TimerKey.compare(other: Me) -> S32
 @target(os: not "none")
 common routine CoroutineManager.construct(stack_size: ByteSize, stack_manager: @MemoryManager,
     manager: @MemoryManager) -> Me
-    return Me(manager, stack_manager, stack_size, owner: thread_mark(), home: .hollow(),
-        home_race: .hollow(), current: None(),
+    return Me(manager, stack_manager, stack_size, owner: thread_mark(), home: Addr.zero(),
+        home_race: Addr.zero(), current: None(),
         ready: RotatableList[@FiberState].construct(manager), inbox_guard: 0,
         inbox: RotatableList[@FiberState].construct(manager), epoch: 0, alert: None(), busy: 0,
-        idle: None(), all: None(),
-        timers: PriorityQueue[TimerKey, @FiberState].construct(manager), timer_seq: 0)
+        idle: None(), all: None(), timers: PriorityQueue[TimerKey, @FiberState].construct(manager),
+        timer_seq: 0)
 
 ### Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
 ### stand.
@@ -283,7 +283,7 @@ routine @CoroutineManager.destruct() -> None
     me.ready.destruct()
     me.inbox.destruct()
     me.timers.destruct()
-    me.poke(.hollow())
+    me.zeroinit(1)
     return
 
 ### Makes the manager on first use, if it is a hollow one (FIBERS starts hollow).
@@ -345,7 +345,7 @@ secret routine @CoroutineManager.make_fiber() -> @FiberState
         slot: .construct(manager: me.manager.peek()), work: fiber.slot,
         then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
         access: None(), race: race_stack_new(), next_idle: None(), next_all: me.all.peek(),
-        pool: None(), mold: .hollow()))
+        pool: None(), mold: Addr.zero()))
     me.all.poke(fiber)
     return fiber
 
@@ -876,7 +876,7 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     race_stack_switch(fiber.race.peek())
     # The fiber's stack pointer is the CPU's while it runs, and its switch away writes it back.
     resume_at: Addr = fiber.stack.sp.peek()
-    fiber.stack.sp.poke(.hollow())
+    fiber.stack.sp.poke(Addr.zero())
     switch_stack(from: me.home, to: resume_at)
     RUNNING_STACK.poke(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
