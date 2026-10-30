@@ -2217,7 +2217,7 @@ routine start() -> None
     GIC.start()
     THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
         slice: Duration.from_milliseconds(1), interrupts: GIC))
-    THREADS.launch(entry: worker.to[Callable](), arg: Addr.zero())   # false when no slot is free
+    THREADS.launch(entry: worker.to[Callable]())   # false when no slot is free
     THREADS.run()   # returns once every thread launched has returned
     psci_power_off()
     return
@@ -2247,8 +2247,10 @@ routine start() -> None
   tests/rr_clock_now). `@refused("why")` does the same on every target: `PointedCell[T].is_hollow()` carries it.
 - `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.te`): preemptive threads on one core. The region is cut into slots of
   `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
-  `StackManager`). `launch(entry: Callable[(Addr,), None], arg)` takes a free slot (the slot comes back when `entry`
-  returns), `launch_round_robin(entry, arg, state)` is the same with the manager's address as `state`.
+  `StackManager`). `launch(entry: Callable[(@T,), None], arg: @T)` (`arg` outlives the thread: a global or a preset) or
+  `launch(entry: Callable[(), None])` takes a free slot (the slot comes back when `entry` returns), and
+  `launch_round_robin(entry, arg, state)` is the `ThreadManager` form, the argument an address and the manager's
+  address as `state`.
   `run()` turns the timer's line and the timer on, joins the threads on the caller's stack, and returns once every
   thread launched has returned. Inside a thread: `yield_now()`, `sleep(span)`, `wait_on(at: @U32, expected)` (returns
   at once when the word holds another value, may return without a wake: check in a loop), `wake_one(at)` (the

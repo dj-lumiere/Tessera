@@ -65,9 +65,11 @@ secret entity RoundRobinThread
     wake_at: U64
     ### The word it waits on, while WAITING.
     waits_on: Addr
-    ### The routine the thread runs, and what it is given.
+    ### The routine the thread runs, and the address of what it is given.
     entry: Callable[(Addr,), None]?
     arg: Addr
+    ### The routine the thread runs when it is given nothing.
+    plain_entry: Callable[(), None]?
     ### Its crash trace depth while it isn't running.
     trace_depth: U64
     ### Its number, counted from 1 in the order threads were launched, 0 for the idle thread and the flow of `run`.
@@ -123,7 +125,7 @@ entity ThreadManagerByRoundRobin
 @target(arch: "aarch64", os: "none")
 secret common routine RoundRobinThread.construct(stack: StackManager, state: RoundRobinState) -> Me
     return Me(stack: steal stack, state, next: None(), wake_at: 0, waits_on: Addr.zero(),
-        entry: None(), arg: Addr.zero(), trace_depth: 0, number: 0, thread_locals: Addr.zero())
+        entry: None(), arg: Addr.zero(), plain_entry: None(), trace_depth: 0, number: 0, thread_locals: Addr.zero())
 
 ### Gives the boot flow's and the idle thread's stack managers back (the memory under them is the program's).
 @target(arch: "aarch64", os: "none")
@@ -163,11 +165,33 @@ common routine ThreadManagerByRoundRobin.construct(region: Addr, size: ByteSize,
 
 ### Starts a thread that runs `entry(arg)`, in a free slot: it is ready, and runs once `run` gives it the core. Its
 ### slot comes back when `entry` returns.
+### :typeparam T: The type of what the thread is given.
 ### :param entry: The thread's routine.
-### :param arg: What it is given.
+### :param arg: What it is given, which must outlive the thread (a global, or memory given back after `run`).
 ### :returns: False when no slot is free.
 @target(arch: "aarch64", os: "none")
-routine @ThreadManagerByRoundRobin.launch(entry: Callable[(Addr,), None], arg: Addr) -> Bool
+routine @ThreadManagerByRoundRobin.launch[T](entry: Callable[(@T,), None], arg: @T) -> Bool
+needs AnyType T
+    erased: Callable[(Addr,), None] = bitcast(entry)
+    state: Addr = arg
+    return me.launch_erased(entry: erased, plain: None(), arg: state)
+
+### Starts a thread that runs `entry()`, in a free slot: it is ready, and runs once `run` gives it the core. Its slot
+### comes back when `entry` returns.
+### :param entry: The thread's routine.
+### :returns: False when no slot is free.
+@target(arch: "aarch64", os: "none")
+routine @ThreadManagerByRoundRobin.launch(entry: Callable[(), None]) -> Bool
+    return me.launch_erased(entry: None(), plain: entry, arg: Addr.zero())
+
+### Starts a thread in a free slot: `entry(arg)`, or `plain()` when it is given.
+### :param entry: The routine given `arg`, or None.
+### :param plain: The routine given nothing, or None.
+### :param arg: The address `entry` is given.
+### :returns: False when no slot is free.
+@target(arch: "aarch64", os: "none")
+secret routine @ThreadManagerByRoundRobin.launch_erased(entry: Callable[(Addr,), None]?, plain: Callable[(), None]?,
+    arg: Addr) -> Bool
     was: U64 = mask_interrupts()
     me.prepare_slots()
     free: @RoundRobinThread? = me.free.peek()
@@ -178,6 +202,7 @@ routine @ThreadManagerByRoundRobin.launch(entry: Callable[(Addr,), None], arg: A
     me.free.poke(thread.next.peek())
     thread.entry.poke(entry)
     thread.arg.poke(arg)
+    thread.plain_entry.poke(plain)
     thread.number.poke(me.next_number.peek())
     me.next_number.peek().add(1).poke_into(me.next_number)
     thread.trace_depth.poke(0)
@@ -191,13 +216,13 @@ routine @ThreadManagerByRoundRobin.launch(entry: Callable[(Addr,), None], arg: A
 ### Starts a thread for a caller that hands over the manager as an address: `(entry, arg, state)` with the
 ### manager's address as `state`.
 ### :param entry: The thread's routine.
-### :param arg: What it is given.
+### :param arg: The address of what it is given.
 ### :param state: The ThreadManagerByRoundRobin.
 ### :returns: False when no slot is free.
 @target(arch: "aarch64", os: "none")
 routine launch_round_robin(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
     manager: @ThreadManagerByRoundRobin = state.to[@ThreadManagerByRoundRobin]()
-    return manager.launch(entry, arg)
+    return manager.launch_erased(entry, plain: None(), arg)
 
 ### Runs the threads launched: turns the timer's line and the timer on, joins them on the stack of the flow that calls
 ### it, and returns once every thread launched (before or while it runs) has returned. Threads launched later wait for
@@ -527,8 +552,9 @@ secret routine round_robin_thread_main() -> None
     RUNNING_MOLD.poke(reserve_failure_mold())
     ThreadLocalManager.reset()
     unmask_interrupts()
-    entry: Callable[(Addr,), None] = thread.entry.peek().unwrap()
-    entry.call(thread.arg.peek())
+    when thread.plain_entry.peek()
+        is Callable[(), None] as plain => plain.call()
+        is None => thread.entry.peek().unwrap().call(thread.arg.peek())
     mask_interrupts()
     manager.check_stack(thread)
     thread.state.poke(RoundRobinState.FREE)
