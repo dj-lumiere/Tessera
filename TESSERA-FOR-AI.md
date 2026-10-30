@@ -1269,7 +1269,7 @@ routine start() -> None
   keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
 - **Events: `CpuEventManager`** (`CpuEvents.te` of Hosted with an OS, of Unhosted without one) holds
-  one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
+  one handler per kind of event, a `Callable[(CpuEvent,), None]?` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`None()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
   decides, it calls `ProcessManager.exit_process` to end, and when it returns the program goes on, except that
@@ -2226,8 +2226,8 @@ routine start() -> None
   .construct(base: 0x09000000)`, then `port.write("n = {n}\n")`. It waits for room in the
   transmit queue and sets nothing up.
 - `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
-  (`stop()` puts the one before back), `when_line_raised(line, holder)` holds a `Callable[(U32,), None]` per line
-  (below `GIC_LINES`, 128) and hands back the one before, `turn_on(line)` / `turn_off(line)`. It acknowledges the line
+  (`stop()` puts the one before back), `when_line_raised(line, holder)` holds a `Callable[(U32,), None]?` per line
+  (below `GIC_LINES`, 128) and hands back the one before (None for none), `turn_on(line)` / `turn_off(line)`. It acknowledges the line
   (GICC_IAR, GICC_EOIR) before calling its handler, so a handler may switch threads. Handlers run with interrupts
   masked and never nest: a level line still raised after its handler comes again. An interrupt on a line nobody holds
   crashes with `HardwareFault`. `mask_interrupts()` (gives the DAIF before), `restore_interrupts(was)`,

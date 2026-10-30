@@ -38,8 +38,8 @@ entity InterruptManagerByGic
     cpu_interface: Addr
     ### The handler of each line, by its number, null for none.
     handlers: Items[Addr, GIC_LINES]
-    ### The handler that held the CpuEventManager's interrupt slot before start.
-    before: Addr
+    ### The handler that held the CpuEventManager's interrupt slot before start, None for none.
+    before: Callable[(CpuEvent,), None]?
 
 ### Makes the manager of the GICv2 whose distributor and CPU interface are at these addresses.
 ### :param distributor: The distributor's first register (GICD_CTLR).
@@ -48,7 +48,7 @@ entity InterruptManagerByGic
 @target(arch: "aarch64", os: "none")
 common routine InterruptManagerByGic.construct(distributor: Addr, cpu_interface: Addr) -> Me
     empty: &Items[Addr, GIC_LINES]
-    return Me(distributor, cpu_interface, handlers: empty.load(), before: Addr.zero())
+    return Me(distributor, cpu_interface, handlers: empty.load(), before: None())
 
 ### Turns the controller on and takes the CpuEventManager's interrupt slot: from now on an interrupt on a line goes to
 ### that line's handler. The lines themselves stay off until `turn_on`.
@@ -59,8 +59,7 @@ routine @InterruptManagerByGic.start() -> None
     me.register(at: me.cpu_interface.peek(), offset: 0x004).poke_volatile(0xFF)
     me.register(at: me.cpu_interface.peek(), offset: 0x000).poke_volatile(1)
     RUNNING_GIC.poke(me)
-    before: Callable[(CpuEvent,), None] = CpuEventManager.when_interrupt_requested(gic_interrupt.to[Callable]())
-    me.before.poke(before.addr())
+    me.before.poke(CpuEventManager.when_interrupt_requested(gic_interrupt.to[Callable]()))
     return
 
 ### Turns the controller off and puts the handler that held the CpuEventManager's interrupt slot before `start` back.
@@ -68,24 +67,36 @@ routine @InterruptManagerByGic.start() -> None
 routine @InterruptManagerByGic.stop() -> None
     me.register(at: me.cpu_interface.peek(), offset: 0x000).poke_volatile(0)
     me.register(at: me.distributor.peek(), offset: 0x000).poke_volatile(0)
-    before: Callable[(CpuEvent,), None] = bitcast(me.before.peek())
-    CpuEventManager.when_interrupt_requested(before)
+    CpuEventManager.when_interrupt_requested(me.before.peek())
     RUNNING_GIC.poke(None())
     return
 
 ### Puts `holder` in the slot of line `line`.
 ### :param line: The line's number, below GIC_LINES.
-### :param holder: The handler, given the line's number, or `.hollow()` for none.
-### :returns: The handler that held the line before, `.hollow()` for none.
+### :param holder: The handler, given the line's number, or None for none.
+### :returns: The handler that held the line before, None for none.
 ### :throws: Crashes with `IndexOutOfBoundsError` for a line past GIC_LINES.
 @target(arch: "aarch64", os: "none")
 @track_caller
 routine @InterruptManagerByGic.when_line_raised(line: U32,
-    holder: Callable[(U32,), None]) -> Callable[(U32,), None]
+    holder: Callable[(U32,), None]?) -> Callable[(U32,), None]?
     slot: @Addr = me.handlers.getslot(line.to[U64]())
-    before: Addr = slot.peek()
-    slot.poke(holder.addr())
-    return bitcast(before)
+    before: Callable[(U32,), None]? = line_handler_at(slot.peek())
+    address: Addr = when holder
+        is Callable[(U32,), None] as given => given.addr()
+        is None => Addr.zero()
+    slot.poke(address)
+    return before
+
+### The line handler at an address a slot of `handlers` holds.
+### :param at: The address, zero for none.
+### :returns: The handler, or None for zero.
+@target(arch: "aarch64", os: "none")
+secret routine line_handler_at(at: Addr) -> Callable[(U32,), None]?
+    if at.is_hollow()
+        return None()
+    held: Callable[(U32,), None] = bitcast(at)
+    return held
 
 ### Turns line `line` on: the controller passes its interrupts to this core.
 ### :param line: The line's number.
@@ -148,10 +159,10 @@ secret routine gic_interrupt(event: CpuEvent) -> None
     gic.register(at: gic.cpu_interface.peek(), offset: 0x010).poke_volatile(taken)
     if line.to[U64]() >= GIC_LINES
         throw HardwareFault(description: "An interrupt came on a line past GIC_LINES, which no handler can hold.")
-    holder: Callable[(U32,), None] = bitcast(gic.handlers.getslot(line.to[U64]()).peek())
-    if holder.addr().is_hollow()
+    held: Callable[(U32,), None]? = line_handler_at(gic.handlers.getslot(line.to[U64]()).peek())
+    if held.is_absent()
         throw HardwareFault(description: "An interrupt came on a line no InterruptManagerByGic.when_line_raised handler holds.")
-    holder.call(line)
+    held.unwrap().call(line)
     return
 
 # -- the core's interrupt mask --------------------------------------------------------------------------------------

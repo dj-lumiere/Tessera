@@ -113,8 +113,8 @@ entity ThreadManagerByRoundRobin
     preemptions: U64
     ### The interrupt lines the timer's line is on.
     interrupts: @InterruptManagerByGic
-    ### The handler of the timer's line before `run`.
-    timer_before: Addr
+    ### The handler of the timer's line before `run`, None for none.
+    timer_before: Callable[(U32,), None]?
 
 ### A thread's record over `stack`, in no list, with no routine yet.
 ### :param stack: Its stack.
@@ -159,7 +159,7 @@ common routine ThreadManagerByRoundRobin.construct(region: Addr, size: ByteSize,
         sleeping: None(), waiting: None(), running: None(),
         boot: RoundRobinThread.construct(stack: StackManager.construct(bottom: Addr.zero(), top: Addr.zero()), state: RoundRobinState.RUNNING),
         idle: None(), live: 0, finished: 0, next_number: 1, idle_wakes: 0, preemptions: 0,
-        interrupts, timer_before: Addr.zero())
+        interrupts, timer_before: None())
 
 ### Starts a thread that runs `entry(arg)`, in a free slot: it is ready, and runs once `run` gives it the core. Its
 ### slot comes back when `entry` returns.
@@ -214,9 +214,8 @@ routine @ThreadManagerByRoundRobin.run() -> None
     me.running.poke(me.boot)
     RUNNING_ROUND_ROBIN.poke(me)
     gic: @InterruptManagerByGic = me.interrupts.peek()
-    before: Callable[(U32,), None] = gic.when_line_raised(line: CPU_TIMER_LINE,
-        holder: round_robin_tick.to[Callable]())
-    me.timer_before.poke(before.addr())
+    me.timer_before.poke(gic.when_line_raised(line: CPU_TIMER_LINE,
+        holder: round_robin_tick.to[Callable]()))
     gic.turn_on(CPU_TIMER_LINE)
     me.arm_timer()
     unmask_interrupts()
@@ -229,7 +228,7 @@ routine @ThreadManagerByRoundRobin.run() -> None
     mask_interrupts()
     cpu_timer_stop()
     gic.turn_off(CPU_TIMER_LINE)
-    gic.when_line_raised(line: CPU_TIMER_LINE, holder: bitcast(me.timer_before.peek()))
+    gic.when_line_raised(line: CPU_TIMER_LINE, holder: me.timer_before.peek())
     RUNNING_ROUND_ROBIN.poke(None())
     me.running.poke(None())
     restore_interrupts(was)

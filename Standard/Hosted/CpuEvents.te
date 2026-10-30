@@ -72,52 +72,70 @@ secret routine slot_of(kind: CpuEventKind) -> U64
 
 ### Puts `holder` in `kind`'s slot.
 ### :param kind: The slot.
-### :param holder: The new handler, or `.hollow()` for none.
-### :returns: The handler that held the slot before, `.hollow()` for none.
+### :param holder: The new handler, or None for none.
+### :returns: The handler that held the slot before, None for none.
 @target(os: not "none")
 secret common routine CpuEventManager.replace(kind: CpuEventKind,
-    holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     slot: @Addr = HOLDERS.getslot(slot_of(kind))
-    before: Addr = slot.swap_unbroken(holder.addr())
-    return bitcast(before)
+    return handler_at(slot.swap_unbroken(handler_address(holder)))
+
+### The address of a handler, zero for None: what a slot of HOLDERS holds.
+### :param holder: The handler, or None.
+### :returns: Its address, or zero.
+@target(os: not "none")
+secret routine handler_address(holder: Callable[(CpuEvent,), None]?) -> Addr
+    when holder
+        is Callable[(CpuEvent,), None] as given => return given.addr()
+        is None => return Addr.zero()
+
+### The handler at an address a slot of HOLDERS holds.
+### :param at: The address, zero for none.
+### :returns: The handler, or None for zero.
+@target(os: not "none")
+secret routine handler_at(at: Addr) -> Callable[(CpuEvent,), None]?
+    if at.is_hollow()
+        return None()
+    held: Callable[(CpuEvent,), None] = bitcast(at)
+    return held
 
 ### The handler that holds `kind`'s slot.
 ### :param kind: The slot.
-### :returns: The handler, `.hollow()` for none.
+### :returns: The handler, None for none.
 @target(os: not "none")
-common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]
-    return bitcast(HOLDERS.getslot(slot_of(kind)).peek_unbroken())
+common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]?
+    return handler_at(HOLDERS.getslot(slot_of(kind)).peek_unbroken())
 
 ### Sets the handler of a request to end the process: SIGTERM on Linux and macOS, a console window closed, a logoff,
 ### or a shutdown on Windows. The handler decides: to end, it calls {ProcessManager.exit_process}, and when it returns
 ### the program goes on (on Windows the system still ends the process once the handler of a closed console window, a
 ### logoff or a shutdown returns).
-### :param holder: The handler, or `.hollow()` to let the system end the process.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to let the system end the process.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: not "none")
-common routine CpuEventManager.when_terminated(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
-    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.TERMINATED, holder)
-    listen(kind: CpuEventKind.TERMINATED, on: holder.addr().is_not_hollow())
+common routine CpuEventManager.when_terminated(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
+    before: Callable[(CpuEvent,), None]? = Me.replace(kind: CpuEventKind.TERMINATED, holder)
+    listen(kind: CpuEventKind.TERMINATED, on: holder.is_present())
     return before
 
 ### Sets the handler of an interrupt from the keyboard: SIGINT, Ctrl+C or Ctrl+Break on Windows. When it returns, the
 ### program goes on. An interrupt that comes while it is still running is ignored.
-### :param holder: The handler, or `.hollow()` to let the system end the process.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to let the system end the process.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: not "none")
-common routine CpuEventManager.when_interrupted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
-    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.INTERRUPTED, holder)
-    listen(kind: CpuEventKind.INTERRUPTED, on: holder.addr().is_not_hollow())
+common routine CpuEventManager.when_interrupted(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
+    before: Callable[(CpuEvent,), None]? = Me.replace(kind: CpuEventKind.INTERRUPTED, holder)
+    listen(kind: CpuEventKind.INTERRUPTED, on: holder.is_present())
     return before
 
 ### Sets the handler of a fault, in place of the fault report. The fault ends the process when it returns, as it would
 ### have.
-### :param holder: The handler, or `.hollow()` for the fault report.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None for the fault report.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: not "none")
-common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
-    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.FAULT, holder)
-    if holder.addr().is_not_hollow()
+common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
+    before: Callable[(CpuEvent,), None]? = Me.replace(kind: CpuEventKind.FAULT, holder)
+    if holder.is_present()
         install_fault_handlers()
     return before
 
@@ -127,9 +145,10 @@ common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None])
 ### :returns: False when no handler holds the slot, so the system's own action is due.
 @target(os: not "none")
 secret routine deliver(event: CpuEvent) -> Bool
-    holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(event.kind)
-    if holder.addr().is_hollow()
+    held: Callable[(CpuEvent,), None]? = CpuEventManager.holder(event.kind)
+    if held.is_absent()
         return false
+    holder: Callable[(CpuEvent,), None] = held.unwrap()
     if event.kind != CpuEventKind.INTERRUPTED
         holder.call(event)
         return true
@@ -271,9 +290,10 @@ secret routine interrupt_dispatch(pending: @U32) -> None
         if ctrl == 0
             wait_on(at: pending, expected: 0)
             continue
-        holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(CpuEventKind.INTERRUPTED)
-        if holder.addr().is_hollow()
+        held: Callable[(CpuEvent,), None]? = CpuEventManager.holder(CpuEventKind.INTERRUPTED)
+        if held.is_absent()
             ProcessManager.exit_process(CONTROL_C_EXIT)
+        holder: Callable[(CpuEvent,), None] = held.unwrap()
         holder.call(CpuEvent(kind: CpuEventKind.INTERRUPTED, code: (ctrl - 1).to[U64](),
             place: Addr.zero(), address: Addr.zero()))
         INTERRUPT_RUNNING.poke_unbroken(0)
@@ -296,7 +316,7 @@ secret routine on_console_event(ctrl: U32) -> CInt
         if deliver(event)
             return 1
         return 0
-    if CpuEventManager.holder(CpuEventKind.INTERRUPTED).addr().is_hollow()
+    if CpuEventManager.holder(CpuEventKind.INTERRUPTED).is_absent()
         return 0
     if INTERRUPT_RUNNING.swap_unbroken(1) == 1
         return 1

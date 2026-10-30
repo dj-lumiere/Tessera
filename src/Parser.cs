@@ -2395,7 +2395,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The name after `as`, now a value of the arm.
     private ValueRef BindName()
     {
-        var name = Expect(TokenKind.Ident, "a name after 'as'");
+        var name = ValueName("a name after 'as'");
         _values?.Add(name.Text);
         return new ValueRef(name.Text, name.Pos);
     }

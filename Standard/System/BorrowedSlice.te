@@ -13,7 +13,7 @@
 # is (it passes `getview()`).
 #
 # A literal names the manager with `from`: `xs: &[U64] <- [0] * n from HEAP` is a BorrowedSlice of n zeros (the count may be
-# known only while running), and `node: &Node <- (value: 1, next: .hollow()) from HEAP` a BorrowedCell of one value.
+# known only while running), and `node: &Node <- (value: 1, next: None()) from HEAP` a BorrowedCell of one value.
 #
 # The build checks that memory is given back once, and not used after. A second give-back that code the build doesn't
 # follow makes crashes with `DoubleFreeError` under the heap check (`[debug] heap-check`).
@@ -158,16 +158,9 @@ routine @BorrowedSlice[T].count() -> U64
 
 ### The values as a view: what lending passes where a `@[T]` is expected.
 ### :returns: A span over every value, valid until the memory is given back or resized.
-### :throws: Crashes with `UnacceptedValueError` when the memory is hollow and holds values.
 @track_caller
 routine @BorrowedSlice[T].getslice() -> @[T]
-    data: @T = me.data.peek()
-    count: U64 = me.count.peek()
-    if count == 0
-        return @[T].construct(data, count: 0)
-    if data.to[Addr]().is_hollow()
-        throw UnacceptedValueError(description: "This memory holds nothing: it is hollow, or was given back.")
-    return @[T].construct(data, count)
+    return @[T].construct(data: me.data.peek(), count: me.count.peek())
 
 ### The `count` values from `start` as a view.
 ### :param start: The position of the first value.
@@ -199,8 +192,7 @@ routine @BorrowedSlice[T].getslot(index: U64) -> @T
     return me.getslice().getslot(index)
 
 ### The address of the first value: for C code that takes the values' address.
-### :returns: `data`, hollow for an empty memory.
-### :throws: Crashes with `UnacceptedValueError` when the memory is hollow and holds values.
+### :returns: `data`, an aligned address that is not zero and holds nothing for an empty memory.
 @track_caller
 routine @BorrowedSlice[T].to[@T]() -> @T
     return me.getslice().data
@@ -267,7 +259,7 @@ failable routine @BorrowedSlice[T].resize(count: U64) -> None
         drop me
         me.manager.poke(manager)
         return
-    elseif me.count.peek() == 0 or data.to[Addr]().is_hollow()
+    elseif me.count.peek() == 0
         when check Me.construct(count, manager)
             is Me as memory =>
                 me.poke(steal memory)
@@ -293,11 +285,9 @@ failable routine @BorrowedSlice[T].resize(count: U64) -> None
 ### values themselves are not destructed: see `destruct_all`.
 @track_caller
 routine @BorrowedSlice[T].destruct() -> None
-    data: @T = me.data.peek()
     count: U64 = me.count.peek()
-    if not data.to[Addr]().is_hollow()
-        if count > 0
-            give_block[T](data, count, manager: me.manager.peek())
+    if count > 0
+        give_block[T](data: me.data.peek(), count, manager: me.manager.peek())
         me.data.poke(dangling[T]())
         me.count.poke(0)
     return
@@ -410,7 +400,7 @@ needs AnyType T
     dest.store(steal me)
     return
 
-### Moves the value out and leaves the place hollow (`.hollow()`): how an element of a `BorrowedSlice[T]` is taken out, an
+### Moves the value out and leaves the place all zero: how an element of a `BorrowedSlice[T]` is taken out, an
 ### entity value included.
 ### :returns: The value that was there.
 ### :throws: Crashes with `UnacceptedValueError` when the box is hollow.

@@ -62,54 +62,73 @@ common routine CpuEventManager.construct() -> Me
 
 ### Puts `holder` in `kind`'s slot.
 ### :param kind: The slot.
-### :param holder: The new handler, or `.hollow()` for none.
-### :returns: The handler that held the slot before, `.hollow()` for none.
+### :param holder: The new handler, or None for none.
+### :returns: The handler that held the slot before, None for none.
 @target(os: "none")
 secret common routine CpuEventManager.replace(kind: CpuEventKind,
-    holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     slot: @Addr = HOLDERS.getslot(slot_of(kind))
-    before: Addr = slot.peek()
-    slot.poke(holder.addr())
-    return bitcast(before)
+    before: Callable[(CpuEvent,), None]? = handler_at(slot.peek())
+    slot.poke(handler_address(holder))
+    return before
+
+### The address of a handler, zero for None: what a slot of HOLDERS holds.
+### :param holder: The handler, or None.
+### :returns: Its address, or zero.
+@target(os: "none")
+secret routine handler_address(holder: Callable[(CpuEvent,), None]?) -> Addr
+    when holder
+        is Callable[(CpuEvent,), None] as given => return given.addr()
+        is None => return Addr.zero()
+
+### The handler at an address a slot of HOLDERS holds.
+### :param at: The address, zero for none.
+### :returns: The handler, or None for zero.
+@target(os: "none")
+secret routine handler_at(at: Addr) -> Callable[(CpuEvent,), None]?
+    if at.is_hollow()
+        return None()
+    held: Callable[(CpuEvent,), None] = bitcast(at)
+    return held
 
 ### Sets the handler of a request to power off (an ACPI shutdown, a power button), which the program's handler of the
 ### board's interrupt passes on with {CpuEventManager.power_off}. It cleans up, then the core halts.
-### :param holder: The handler, or `.hollow()` to halt at once.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to halt at once.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: "none")
-common routine CpuEventManager.when_power_off(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+common routine CpuEventManager.when_power_off(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     return Me.replace(kind: CpuEventKind.POWER_OFF, holder)
 
 ### Sets the handler of a fault: an instruction the CPU stopped on. The core halts when the handler returns, since
 ### going back would run the same instruction again.
-### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to crash with `HardwareFault`.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: "none")
-common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     return Me.replace(kind: CpuEventKind.FAULT, holder)
 
 ### Sets the handler of a supervisor call (`svc #n` on ARM, `ecall` on RISC-V). The program goes on after the call
 ### when the handler returns.
-### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to crash with `HardwareFault`.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: "none")
-common routine CpuEventManager.when_supervisor_called(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+common routine CpuEventManager.when_supervisor_called(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     return Me.replace(kind: CpuEventKind.SUPERVISOR_CALL, holder)
 
 ### Sets the handler of an interrupt. The program goes on where it was when the handler returns, so the handler
 ### clears what asked (the device's or the timer's register) first.
-### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
-### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+### :param holder: The handler, or None to crash with `HardwareFault`.
+### :returns: The handler before, None for none: pass it back to put it back.
 @target(os: "none")
-common routine CpuEventManager.when_interrupt_requested(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+common routine CpuEventManager.when_interrupt_requested(holder: Callable[(CpuEvent,), None]?) -> Callable[(CpuEvent,), None]?
     return Me.replace(kind: CpuEventKind.INTERRUPT, holder)
 
 ### The handler that holds `kind`'s slot.
 ### :param kind: The slot.
-### :returns: The handler, `.hollow()` for none.
+### :returns: The handler, None for none.
 @target(os: "none")
-common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]
-    return bitcast(HOLDERS.getslot(slot_of(kind)).peek())
+common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]?
+    return handler_at(HOLDERS.getslot(slot_of(kind)).peek())
 
 ### Runs the handler of a request to power off, then halts the core: what the program's handler of the board's
 ### shutdown interrupt calls.
@@ -153,9 +172,9 @@ secret routine slot_of(kind: CpuEventKind) -> U64
 ### :param event: The event.
 @target(os: "none")
 secret routine deliver(event: CpuEvent) -> None
-    holder: Callable[(CpuEvent,), None] = bitcast(HOLDERS.getslot(slot_of(event.kind)).peek())
-    if holder.addr().is_not_hollow()
-        holder.call(event)
+    held: Callable[(CpuEvent,), None]? = handler_at(HOLDERS.getslot(slot_of(event.kind)).peek())
+    if held.is_present()
+        held.unwrap().call(event)
         if event.kind == CpuEventKind.FAULT
             halt()
         return
