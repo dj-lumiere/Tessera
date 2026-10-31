@@ -503,7 +503,11 @@ routine start() -> None
     (`first(xs)` returning `@S64`), and a value holding one of those (an emitter from `xs.emitter()`, a record made
     with `xs.getslice(...)`). A view of `xs` itself (the `@List[S64]` a `&List[S64]` lends, a second name of an
     `items: @List[S64]` parameter) stays: the place is still there. A global list's place never ends, but what it
-    holds moves the same way. A view of an element of one slot (`row: @List[S64] = rows.getslot(0)`) moves only with
+    holds moves the same way. A view of what a global `G` holds also ends at any call to a routine that can reach `G`:
+    one in `G`'s module or in a module importing it (directly or through other imports). A standard library routine
+    doesn't reach a program's global, except one taking a `Callable`, which reaches every global the routine value's
+    module can see (every global when the value's origin isn't known). The error then says `..., is used after grow()
+    on line N, which can reach 'NUMBERS': take the view again after line N`. A view of an element of one slot (`row: @List[S64] = rows.getslot(0)`) moves only with
     that slot's own `@reshaping` calls (`row.add_last(3)` ends `row.getslot(0)`, not `rows.getslot(1)`). Using an
     ended view is `'first', a view of what 'xs' holds, is used after grow(...) on line N, which may move it: take the
     view again after line N`, and for a value holding one `'e' holds a view of what 'xs' holds, and it is used after

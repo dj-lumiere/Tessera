@@ -140,6 +140,10 @@ public static class MemoryRules
     /// spells the call (`xs.add_last(...)`).
     public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos)
     {
+        /// The call is to a routine that can reach the global `Root` (in its module or one importing it), not one that
+        /// says it moves it: the message names that reach instead.
+        public bool Reaches { get; init; }
+
         /// The view named here is a part of `Root` (a slot of a list, a field), and the call moves only the memory that
         /// part holds (a dict's storage, not the list holding the dict): only views taken from inside it go stale.
         public string? Inner { get; init; }
@@ -275,7 +279,7 @@ public static class MemoryRules
 
         /// Each view's memory, and the views a reshaping call left behind: where, and which call.
         public Dictionary<string, string> Views = [];
-        public Dictionary<string, (Pos Pos, string How)> Stale = [];
+        public Dictionary<string, (Pos Pos, string How, string Why)> Stale = [];
 
         /// The views that hold their root's slot (ViewOf.Holds).
         public HashSet<string> Holding = [];
@@ -603,12 +607,13 @@ public static class MemoryRules
                     case Reshape rs:
                         // A view of what the reshaped name holds ends, and a view of the name itself stays: the place
                         // is still there, its contents may not be.
+                        string why = rs.Reaches ? $"which can reach '{rs.Root}'" : "which may move it";
                         foreach (var (view, root) in state.Views)
                             if (root == rs.Root && contents.TryGetValue(view, out var seenIn) && Moves(seenIn, rs.Inner))
-                                state.Stale[view] = (rs.Pos, rs.How);
+                                state.Stale[view] = (rs.Pos, rs.How, why);
                         foreach (var (holder, held) in state.ContentHolders)
                             if (held.Any(h => h.Root == rs.Root && Moves(h.Contents, rs.Inner)))
-                                state.Stale[holder] = (rs.Pos, rs.How);
+                                state.Stale[holder] = (rs.Pos, rs.How, why);
                         break;
                     case HoldsContents hc when hc.Kept is not { } kept || keeps?.Invoke(kept.Callee, kept.From, kept.Into) == true:
                         if (hc.Fresh)
@@ -723,14 +728,14 @@ public static class MemoryRules
                         {
                             if (contents.TryGetValue(uv.Name, out var viewedIn) && state.Views.ContainsKey(uv.Name))
                                 Report(uv.Pos, $"'{uv.Name}', a view of what '{viewedIn}' holds, is used after {moved.How} on line "
-                                    + $"{moved.Pos.Line}, which may move it: take the view again after line {moved.Pos.Line}, or use it before");
+                                    + $"{moved.Pos.Line}, {moved.Why}: take the view again after line {moved.Pos.Line}, or use it before");
                             else if (state.ContentHolders.TryGetValue(uv.Name, out var heldIn) && heldIn.Count > 0 && viewHolders.Contains(uv.Name))
                                 Report(uv.Pos, $"'{uv.Name}', a view of what '{heldIn.Select(h => h.Contents).Order(StringComparer.Ordinal).First()}' "
-                                    + $"holds, is used after {moved.How} on line {moved.Pos.Line}, which may move it: take the view again "
+                                    + $"holds, is used after {moved.How} on line {moved.Pos.Line}, {moved.Why}: take the view again "
                                     + $"after line {moved.Pos.Line}, or use it before");
                             else if (state.ContentHolders.TryGetValue(uv.Name, out heldIn) && heldIn.Count > 0)
                                 Report(uv.Pos, $"'{uv.Name}' holds a view of what '{heldIn.Select(h => h.Contents).Order(StringComparer.Ordinal).First()}' "
-                                    + $"holds, and it is used after {moved.How} on line {moved.Pos.Line}, which may move it: make "
+                                    + $"holds, and it is used after {moved.How} on line {moved.Pos.Line}, {moved.Why}: make "
                                     + $"'{uv.Name}' again after line {moved.Pos.Line}, or finish with it before");
                         }
                         break;

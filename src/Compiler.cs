@@ -157,6 +157,8 @@ public sealed partial class Compiler
             }
         }
         AddImplicitOwnerParams();
+        foreach (var (file, imported) in _fileImports)
+            (_moduleImports.TryGetValue(ModuleOf(file), out var into) ? into : _moduleImports[ModuleOf(file)] = []).UnionWith(imported);
         foreach (var m in _userModules) CheckModuleCollision(m);
         foreach (var imp in _imports)
         {
@@ -1156,6 +1158,24 @@ public sealed partial class Compiler
 
     /// The module a file declares, or "" for the solution's root.
     public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
+
+    /// The modules each module's files import, filled once every declaration is read.
+    private readonly Dictionary<string, HashSet<string>> _moduleImports = [];
+
+    /// Whether code in module `from` can reach a global of module `to`: it is that module, or it imports it, directly or
+    /// through the modules it imports.
+    public bool ModuleReaches(string from, string to)
+    {
+        var seen = new HashSet<string> { from };
+        var next = new Queue<string>([from]);
+        while (next.TryDequeue(out var module))
+        {
+            if (module == to) return true;
+            foreach (var imported in _moduleImports.GetValueOrDefault(module) ?? [])
+                if (seen.Add(imported)) next.Enqueue(imported);
+        }
+        return false;
+    }
 
     /// Whether `file` reaches a `secret` declaration: a file of the declaration's module or of a module under it.
     public bool PrivateReaches(Decl d, string file) => IsUnder(ModuleOf(file), d.Module);

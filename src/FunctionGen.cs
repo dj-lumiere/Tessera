@@ -846,19 +846,63 @@ public sealed partial class FunctionGen
         _ => null,
     };
 
-    /// Whether `r` names a global of the program rather than a preset.
+    /// Whether `r` names a global of the program rather than a preset. A global named so is kept, for the calls
+    /// that can reach it (CheckGlobalReachingCall).
     private bool IsGlobalName(PresetRef r)
     {
-        try { return _c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is { IsGlobal: true }; }
+        try
+        {
+            if (_c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is not { IsGlobal: true } global) return false;
+            _namedGlobals.TryAdd(r.Name, global);
+            return true;
+        }
         catch (CompileError) { return false; }
     }
+
+    /// The globals this routine names as the root of what it views, by name.
+    private readonly Dictionary<string, PresetDecl> _namedGlobals = [];
+
+    /// Rule 11 for a global reached by a call: a view of what a global holds ends at a call to a routine that can reach
+    /// the global, since that routine may change it. A routine can reach a global when it is in the global's module, or
+    /// in a module that imports it (directly or through other imports). A standard library routine imports no module
+    /// of the program, so it reaches one only through a routine value it is handed: that value reaches the globals its
+    /// own module can see, and every global when where it comes from isn't known.
+    private void CheckGlobalReachingCall(CallPlan plan)
+    {
+        if (_namedGlobals.Count == 0) return;
+        var from = new List<string?>();
+        if (!plan.Decl.IsLibrary) from.Add(plan.Decl.Module);
+        int offset = plan.Receiver is null ? 0 : 1;
+        for (int i = 0; i < plan.Args.Count && i + offset < plan.Decl.Params.Count; i++)
+            if (TakesRoutineValue(plan, plan.Decl.Params[i + offset]))
+                from.Add(RoutineValueModule(plan.Args[i]));
+        if (from.Count == 0) return;
+        foreach (var (name, global) in _namedGlobals)
+            if (from.Any(module => module is null || _c.ModuleReaches(module, global.Module)))
+                Mem(new MemoryRules.Reshape(name, SpelledCall(plan), plan.Pos) { Reaches = true });
+    }
+
+    /// Whether the parameter takes a routine value: a Callable, or a type parameter the call binds to one.
+    private static bool TakesRoutineValue(CallPlan plan, Param p) =>
+        p.Type.Name == "Callable" || plan.Env.Get(p.Type.Name) is CallableType;
+
+    /// The module whose globals a routine value handed to a call can reach: a named routine's module, this routine's for
+    /// a lambda written here, or null when the value comes from elsewhere.
+    private string? RoutineValueModule(Expr value) => value switch
+    {
+        RoutineRef named => _c.FindFree(named.Name, _env.File, named.Pos)?.Module,
+        NsCallExpr { Name: "to", Owner: { Args.Count: 0 } owner } when _c.FindFree(owner.Name, _env.File, owner.Pos) is { } named =>
+            named.Module,
+        LambdaExpr => _decl.Module,
+        _ => null,
+    };
 
     /// The name a `#reshaping` call's memory is followed by: a value of this routine (RootName) or a global.
     private string? ShapeRoot(Expr e) => RootName(e) ?? GlobalRoot(e);
 
-    /// What a call spells in a message about what it may move: `xs.add_last(...)`, `grow(...)`.
+    /// What a call spells in a message about what it may move: `xs.add_last(...)`, `grow()`, `grow(...)`.
     private static string SpelledCall(CallPlan plan) =>
-        (plan.Receiver is { } receiver ? Spelled(receiver) + "." : "") + plan.Decl.Name + "(...)";
+        (plan.Receiver is { } receiver ? Spelled(receiver) + "." : "") + plan.Decl.Name + (plan.Args.Count == 0 ? "()" : "(...)");
 
     /// The parameters a `#reshaping` routine may move the memory of: the ones named, or `me` alone.
     private static List<string> ReshapedParams(RoutineDecl r)
@@ -4836,13 +4880,32 @@ public sealed partial class FunctionGen
 
     // ── Calls ───────────────────────────────────────────────────────────────
 
-    /// Whether a value arm's expression is a call to a routine that never returns. An expression that cannot be planned
-    /// without the type the arm is given (a method of that type) is no such call.
+    /// Whether a value arm's expression is a call to a routine that never returns. The arm's type isn't known yet, so
+    /// the call isn't planned: the routines its name may mean are looked up, and it never returns when every one of them
+    /// is @noreturn.
     private bool ArmNeverReturns(Expr e)
     {
-        if (e is not (CallExpr or NsCallExpr)) return false;
-        try { return IsNoReturn(e); }
-        catch (CompileError) { return false; }
+        if (AddrOfCallable(e) is not null) return false;
+        List<RoutineDecl> named = e switch
+        {
+            CallExpr c => _c.FreeCandidates(c.Name, _env.File, c.Pos, c.Path),
+            NsCallExpr { Owner.AsIndex: null } n when TryResolveOwner(n.Owner) is { } owner =>
+                _c.MethodCandidates(owner, n.Name, _env.File, n.Pos),
+            NsCallExpr { Owner: { Args.Count: 0, AsIndex: null } receiver } n =>
+                MethodsOfValue(new PresetRef(null, receiver.Name, receiver.Pos), n.Name, n.Pos),
+            MethodCallExpr m => MethodsOfValue(m.Receiver, m.Name, m.Pos),
+            _ => [],
+        };
+        return named.Count > 0 && named.All(d => d.AnnotationNamed("noreturn") is not null);
+    }
+
+    /// The routines named `name` on the type of `receiver`, or on what it views, without choosing among them. None when
+    /// the receiver's type isn't known before the call is planned (an untyped literal).
+    private List<RoutineDecl> MethodsOfValue(Expr receiver, string name, Pos pos)
+    {
+        if (Infer(receiver) is not { } type) return [];
+        var own = _c.MethodCandidates(type, name, _env.File, pos);
+        return own.Count == 0 && type is PtrType { Pointee: { } viewed } ? _c.MethodCandidates(viewed, name, _env.File, pos) : own;
     }
 
     private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
@@ -6137,6 +6200,7 @@ public sealed partial class FunctionGen
         NoteCallerHeldRefill(plan, sig);
         if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
             NoteTable(slot.Name, held, plan.Pos);
+        CheckGlobalReachingCall(plan);
         if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan);
         CheckGlobalMemoryCall(plan);
 
