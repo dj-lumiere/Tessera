@@ -1365,7 +1365,7 @@ routine start() -> None
   `common routine T.construct(...)` (returning `Me`; a variant's values are made from its branches), a build error
   otherwise that names what it holds. A `BorrowedCell`, a `BorrowedSlice` and an entity hold something, and so does a
   type with a field (a branch, for a variant) that is a value of a type parameter or a value of a type that itself
-  holds something (a `List`, a `CStr`, a record with such a field). Its `destruct` is the builder's unless it writes
+  holds something (a `List`, a `CStr`, an entity with such a field). Its `destruct` is the builder's unless it writes
   one: a walk over the fields in reverse declaration order, dropping each field that holds something (an array field
   element by element, the last first; a variant the value of its branch, through `when steal`). A `destruct` written
   by hand, `routine @T.destruct() -> None` with no other parameter (a build error: "a destruct takes no arguments, ...:
