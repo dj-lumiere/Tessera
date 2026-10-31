@@ -10,6 +10,12 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
+    /// Whether the standard library's exported routines (the default crash report, the half and bfloat conversions LLVM calls)
+    /// are emitted even when nothing here calls them. A program needs them, and so does a library whose host resolves
+    /// them from it (Ingrid's runtime). A library built into a RazorForge program next to that runtime (Anvila's
+    /// IngridTessera) leaves them out.
+    public bool EmitLibraryExports { get; init; } = true;
+
     /// The libraries and library directories the build adds to the link (the manifest's `-L` and `-l` flags): with the
     /// target's own C libraries, the libraries whose names an `@export` must not take.
     public IReadOnlyList<string> LinkArguments { get; init; } = [];
@@ -671,8 +677,9 @@ public sealed partial class Compiler
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
-        foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
-            CheckRoot(r);
+        if (EmitLibraryExports)
+            foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
+                CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         // The entry comes after the program's own routines, so an error in one of them is reported first.
         PlanEntry();

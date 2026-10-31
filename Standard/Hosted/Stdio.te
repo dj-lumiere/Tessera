@@ -357,7 +357,8 @@ failable common routine Console.ask_line(manager: @MemoryManager) -> BorrowedSli
         is BorrowedSlice[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_line")
 
-### The next line, without its "\n" (or "\r\n"), in memory from manager. The lock is held.
+### The next line, without its "\n" (or "\r\n"), in memory from manager. The lock is held. A line that the buffer
+### holds whole is copied once, into memory of its own size. A longer one is put together from each bufferful.
 ### :param manager: The memory manager for the line.
 ### :returns: The line.
 ### :absent: At the end of the input.
@@ -365,23 +366,56 @@ secret routine @InputBuffer.line(manager: @MemoryManager) -> Optional[BorrowedSl
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
     loop with any: Bool = false
-        c: Optional[Byte] = try me.emit()
-        when c
-            is Byte as byte =>
-                if byte == b'\n'
-                    line: &[Byte] <- text.take_all()
-                    drop text
-                    return trim_cr(steal line)
-                single: &Byte <- byte
-                text.append(chunk: single, n: 1, manager)
-                continue with any: true
-            is None =>
-                rest: &[Byte] <- text.take_all()
-                drop text
-                if any
-                    return trim_cr(steal rest)
-                drop rest
-                return None()
+        if me.start.peek() == me.end.peek() and not me.fill()
+            rest: &[Byte] <- text.take_all()
+            drop text
+            if any
+                return trim_cr(steal rest)
+            drop rest
+            return None()
+        from: U64 = me.start.peek()
+        end: U64 = me.end.peek()
+        buffered: @Byte = me.bytes.getview().to[@Byte]()
+        stop: U64 = line_end(buffered, from, end)
+        if stop < end and not any
+            me.start.poke(stop + 1)
+            drop text
+            return trim_cr(copy_bytes(first: buffered.stride(from), count: stop - from, manager))
+        if stop > from
+            text.append(chunk: buffered.stride(from), n: stop - from, manager)
+        if stop < end
+            me.start.poke(stop + 1)
+            line: &[Byte] <- text.take_all()
+            drop text
+            return trim_cr(steal line)
+        me.start.poke(end)
+        continue with any: true
+
+### Where the first "\n" in the bytes from `from` up to `end` is.
+### :param buffered: The first byte of the buffer.
+### :param from: Where the search starts.
+### :param end: Where the bytes end.
+### :returns: The index of the "\n", or `end` when there is none.
+secret routine line_end(buffered: @Byte, from: U64, end: U64) -> U64
+    until at == end with at: U64 = from
+        if buffered.stride(at).peek() == b'\n'
+            return at
+        continue with at: at + 1
+    then
+        return end
+
+### `count` bytes from `first`, copied into memory of their own from `manager`.
+### :param first: The first byte.
+### :param count: How many bytes.
+### :param manager: The memory manager for the copy.
+### :returns: The copy.
+### :throws: Crashes with `OutOfMemoryError` when `manager` has no memory to give.
+secret routine copy_bytes(first: @Byte, count: U64, manager: @MemoryManager) -> BorrowedSlice[Byte]
+    if count == 0
+        return BorrowedSlice[Byte].empty(manager)
+    copy: &[Byte] <- BorrowedSlice[Byte].construct(count, manager)
+    copy.getslot(0).copy(src: first, count)
+    return copy
 
 ### `line` without a "\r" at its end. The memory and its memory manager stay the same, only the count drops.
 ### :param line: The line.
