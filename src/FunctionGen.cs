@@ -769,8 +769,8 @@ public sealed partial class FunctionGen
         IndexExpr ix => RootName(ix.Base),
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: FieldExpr field } m
             when PointsAtMemory(InferQuiet(m)) && ManagedMemory(InferQuiet(field.Base)) is null => null,
-        // An Addr is a number: a view made from one (`a.to[@T]()`) has no source the build follows, and neither has the
-        // Addr made from a view (`v.to[Addr]()`).
+        // An Addr is a number: the builder doesn't follow a view made from one (`a.to[@T]()`), whose writer answers for
+        // the memory, nor the Addr made from a view (`v.to[Addr]()`).
         MethodCallExpr { Name: "to" } m when IsAddr(InferQuiet(m.Receiver)) || IsAddr(InferQuiet(m)) => null,
         MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
             => RootName(m.Receiver),
@@ -812,6 +812,54 @@ public sealed partial class FunctionGen
         return name;
     }
 
+    /// The views bound to what a value holds (`s: @[S64] = xs.getview()`, `xs.getslot(0)`), not to the value itself.
+    private readonly HashSet<string> _contentViews = [];
+
+    /// Whether the view `e` (of type `t`) is taken from what the value it comes from holds, its elements or its buffer: a
+    /// call that gives another view than one of the value itself. A field, a `to` conversion, and the view a `&T` lends
+    /// (`getview()` of a BorrowedCell) stay on the value itself, while a List's own `getview()` is its elements.
+    private bool TakesContents(Expr e, DType t) =>
+        AsValueCall(e) is MethodCallExpr { Name: not "to" } m
+        && !(t is PtrType { Pointee: { } viewed } && InferQuiet(m.Receiver) is { } from && Equals(PlacedValue(from), viewed));
+
+    /// The name whose contents the view `name` sees, through the names it was taken from: `xs` for `xs.getslot(0)` and
+    /// for a copy of that view, or null for a view of a value itself.
+    private string? ContentsOf(string name)
+    {
+        for (int i = 0; i < 64 && _rootOf.TryGetValue(name, out var from) && from != name; i++)
+        {
+            if (_contentViews.Contains(name)) return from;
+            name = from;
+        }
+        return null;
+    }
+
+    /// The global a place or a view is rooted at (`G` in `G.getview()`, `G.items.getslot(i)`), or null. A global's place
+    /// never ends, but what it holds may move.
+    private string? GlobalRoot(Expr e) => AsValueCall(e) switch
+    {
+        PresetRef { Owner: null } r when IsGlobalName(r) => r.Name,
+        FieldExpr f => GlobalRoot(f.Base),
+        IndexExpr ix => GlobalRoot(ix.Base),
+        MethodCallExpr { Name: "to" } m when IsAddr(InferQuiet(m.Receiver)) || IsAddr(InferQuiet(m)) => null,
+        MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m => GlobalRoot(m.Receiver),
+        _ => null,
+    };
+
+    /// Whether `r` names a global of the program rather than a preset.
+    private bool IsGlobalName(PresetRef r)
+    {
+        try { return _c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is { IsGlobal: true }; }
+        catch (CompileError) { return false; }
+    }
+
+    /// The name a `#reshaping` call's memory is followed by: a value of this routine (RootName) or a global.
+    private string? ShapeRoot(Expr e) => RootName(e) ?? GlobalRoot(e);
+
+    /// What a call spells in a message about what it may move: `xs.add_last(...)`, `grow(...)`.
+    private static string SpelledCall(CallPlan plan) =>
+        (plan.Receiver is { } receiver ? Spelled(receiver) + "." : "") + plan.Decl.Name + "(...)";
+
     /// The parameters a `#reshaping` routine may move the memory of: the ones named, or `me` alone.
     private static List<string> ReshapedParams(RoutineDecl r)
     {
@@ -848,7 +896,7 @@ public sealed partial class FunctionGen
             int index = plan.Decl.Params.FindIndex(p => p.Name == name);
             Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
                 : index - offset >= 0 && index - offset < plan.Args.Count ? plan.Args[index - offset] : null;
-            if (arg is null || RootName(arg) is not { } root) continue;
+            if (arg is null || ShapeRoot(arg) is not { } root) continue;
             // A view of a part (`merged: @Dict = sets.getslot(a)`) moves only what that part holds: through names that
             // are the same thing again, the reshaped one is the first that is a part of what it comes from.
             string? inner = null;
@@ -866,7 +914,7 @@ public sealed partial class FunctionGen
                 throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{root}', which the for loop on line "
                     + $"{walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the changes and make them "
                     + $"after the loop, or walk by position (for i in 0 til {root}.count())");
-            Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos) { Inner = inner });
+            Mem(new MemoryRules.Reshape(root, SpelledCall(plan), plan.Pos) { Inner = inner });
             if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
                 throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
                     + $"@reshaping): mark it {(root == "me" ? "@reshaping" : $"@reshaping({root})")}, so its callers know a view "
@@ -1970,7 +2018,7 @@ public sealed partial class FunctionGen
         At(s.Source ?? s.Pos);
         // `e: &ListEmitter[T] <- xs.emitter()` (or the place a `for` over `xs.emitter()` holds it in) walks `xs`.
         if (s is BindStmt { Value: MethodCallExpr { Name: "emitter", Args.Count: 0 } emitterCall } madeBind &&
-            RootName(emitterCall.Receiver) is { } walked)
+            ShapeRoot(emitterCall.Receiver) is { } walked)
             _emitterWalks[madeBind.Name] = ResolveRoot(walked);
         switch (s)
         {
@@ -2028,12 +2076,13 @@ public sealed partial class FunctionGen
                 NoteReadOnlyView(b.Name, b.Value, t);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 NoteWorkName(b.Name, t, b.Value, b.Pos);
-                if (PointsAtMemory(t) && !IsAddr(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
+                if (PointsAtMemory(t) && !IsAddr(t) && b.Value is not ClaimExpr && ShapeRoot(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
                     if (TakesPart(b.Value)) _partViews.Add(b.Name);
+                    if (TakesContents(b.Value, t)) _contentViews.Add(b.Name);
                     _viewNames.Add(b.Name);
-                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos) { Chain = ViewChain(b.Name) });
+                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos) { Chain = ViewChain(b.Name), Contents = ContentsOf(b.Name) });
                 }
                 if (b.Value is ClaimExpr) _claimedSlots.Add(b.Name);
                 if ((b.Value is ClaimExpr { Contents: { } claimed } ? claimed : b.Value) is { } made2

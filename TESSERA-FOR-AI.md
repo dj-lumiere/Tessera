@@ -276,18 +276,22 @@ routine start() -> None
   a string literal: it is read-only). `xs: &[T] <- [0] * 64` puts the values in the routine's frame (STACK), with a
   count the build knows (a literal count or a preset). An array literal passed as an argument where a span is expected
   is a frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine.
-- **Literals, presets and `=` views.** An array literal is an `Items[T, N]` value, and a string literal is a `@[Byte]`, a
-  view of read-only data the builder emits. That is their type where nothing else names one (a generic routine's `T`
-  inferred from the argument). `Items[T, _]` takes its count from the literal in a binding, a preset or a global:
+- **Literals, presets and `=` views.** An array literal is an `Items[T, N]` value. A text literal is a preset place
+  without a name, a `&[Byte]` of read-only memory in the program image that nothing gives back: where a `@[Byte]` goes it
+  lends its view, as any `&T` does, and that view is its type where nothing else names one (a generic routine's `T`
+  inferred from the argument). Writing into it is the preset error below. `Items[T, _]` takes its count from the literal in a binding, a preset or a global:
   `xs: Items[S32, _] = [1, 2, 3]`, `g: Items[Byte, _] = "hello"` (5 bytes), `c: Items[Char, _] = "루미"` (2),
   `slots: &Items[S64, _] <- [0] * 4`. A `_` anywhere else is a build error. With `=`, a `@T` or `@[T]` view is taken
   only of read-only data: a string literal, an array literal whose elements are all constants (`xs: @[S64] = [1, 2, 3]`,
   `p: @Items[S32, _] = [5, 6]`, placed in read-only data), and a preset (`v: @[U8] = TABLE`). Writing through such a
   view or a part of it (`getslot`, `getslice`, a field) is a build error ("'v' views the preset 'TABLE', which is
-  read-only data ..."). An array literal with a variable in it has no fixed place, so `xs: @[S32] = [a, 2]` is a build
-  error that points to `xs: Items[S32, _] = [...]`, or to `xs: &Items[S32, _] <- [...]` and `xs.getview()`. The check
-  follows views inside one routine: a read-only view handed to a routine that writes through its parameter isn't
-  caught (on a hosted target the write faults).
+  read-only data ...", and `"hello" is a text literal, a preset without a name; its memory is read-only: ... copy:
+  &[Byte] <- "hello"` for a write into a literal itself). So is handing such a view to a routine whose body (or a
+  routine it calls) writes through that parameter: `mark("hello") hands 'mark' a view of the text literal "hello",
+  which is read-only memory, and 'mark' writes through its 'text': copy the values into a place first and hand that
+  place, copy: &[Byte] <- "hello"`. A standard library routine counts as writing a parameter only where it is
+  `@reshaping` on it. An array literal with a variable in it has no fixed place, so `xs: @[S32] = [a, 2]` is a build
+  error that points to `xs: Items[S32, _] = [...]`, or to `xs: &Items[S32, _] <- [...]` and `xs.getview()`.
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
   `node: &Node <- (value: 1, next: None()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
@@ -343,13 +347,14 @@ routine start() -> None
     STACK place in a body, borrow it outside the body or keep the value, not the view. A routine keeps a view when its
     body stores it in what another parameter reaches (`xs.add_last(m.getslice())`, `keep(out: q, v: m.getslice())`),
     which the build works out from the bodies, so `q` carries `m` from the call on.
-  - **Memory that is never given back has no source.** A view of a global, a preset, a string literal, and a view
-    made from an `Addr` (`a.to[@T]()`, `a.to[@T?]()`) has an empty source set and goes anywhere. An `Addr` is a
-    number: the build follows no lifetime through it (`v.to[Addr]()` of a view, or `o.to[Addr]()` of a `@T?`, zero for
-    None), and the program is responsible for the memory it names.
-  - **Entity fields and globals don't keep a view with a source.** A `poke` (or `store`, `<-`) of a value that holds
+  - **Every view has a source, and two kinds of source never end.** The memory of a global, a preset, a text
+    literal, and an `at` address is never given back: a view of it goes anywhere, and only a `@reshaping` call on a
+    global moves what it holds (below). The builder doesn't follow a view made from an `Addr` (`a.to[@T]()`,
+    `a.to[@T?]()`): whoever writes the `.to[@T]()` answers for how long that memory lives. An `Addr` is a number, and
+    no lifetime goes through it (`v.to[Addr]()` of a view, or `o.to[Addr]()` of a `@T?`, zero for None).
+  - **Entity fields and globals don't keep a view whose source can end.** A `poke` (or `store`, `<-`) of a value that holds
     a view into a field of an entity that is made already, or into a global (or memory a global reaches), is a build
-    error when the view has a source: `me.next.poke(t) keeps 't' (a view the caller handed in) in a field of the
+    error when the view's source can end (a place of the routine or its caller): `me.next.poke(t) keeps 't' (a view the caller handed in) in a field of the
     entity Node, which any routine that reaches the entity may use later, and the build can't compare those later uses
     with where that view's place is given back: keep an Addr there ...`. Keep an `Addr` (turned back with
     `.to[@T?]()` and a `when`) for links inside a structure the program keeps right itself (scheduler queues, a
@@ -492,9 +497,18 @@ routine start() -> None
   - A `for` over an emitter (`for x in xs.emitter()`, or `for x in e` with `e <- xs.emitter()`) views `xs` until
     the loop ends, so a `@reshaping` call on `xs` in its body is an error: `'List[T].add_last' may move the memory of
     'xs', which the for loop on line N walks`. Collect the changes and make them after the loop, or walk by position.
-  - In every routine, a view (an address or a span) of memory used after a `@reshaping` call
-    that may move it is an error: `'first' is a view of 'xs', and 'grow' on line N may have moved that memory`. Keep
-    a position (a `U64` index) and take the view again after the call:
+  - In every routine, a `@reshaping` call on `xs` (or through a view of it, or handing it to a routine that is
+    `@reshaping` on that parameter) ends every view of what `xs` holds made before it: `xs.getview()` and
+    `xs.getslice(...)` of a List, `xs.getslot(i)`, a view a routine gives of an element of what it is handed
+    (`first(xs)` returning `@S64`), and a value holding one of those (an emitter from `xs.emitter()`, a record made
+    with `xs.getslice(...)`). A view of `xs` itself (the `@List[S64]` a `&List[S64]` lends, a second name of an
+    `items: @List[S64]` parameter) stays: the place is still there. A global list's place never ends, but what it
+    holds moves the same way. A view of an element of one slot (`row: @List[S64] = rows.getslot(0)`) moves only with
+    that slot's own `@reshaping` calls (`row.add_last(3)` ends `row.getslot(0)`, not `rows.getslot(1)`). Using an
+    ended view is `'first', a view of what 'xs' holds, is used after grow(...) on line N, which may move it: take the
+    view again after line N`, and for a value holding one `'e' holds a view of what 'xs' holds, and it is used after
+    xs.add_last(...) on line N, which may move it: make 'e' again after line N`. Keep a position (a `U64` index) and
+    take the view again after the call:
 
     ```tessera
     @reshaping(items)
@@ -1140,7 +1154,7 @@ routine start() -> None
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
   `split(separator:, manager:)` and `words(manager:)` (a `BorrowedSlice[@[Byte]]` of views into the text, RazorForge's and
   Suflae's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
-  `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
+  `compare`, `hash`, ...). A literal lends a `@[Byte]` of the program image (a preset place without a name, above), `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the emitters, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
@@ -1759,8 +1773,8 @@ gives `Optional[T]`. `setitem` (on `List`, `RotatableList`, `BitList`, `Bits` an
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Optional`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
 `Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
-`getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
-says `@reshaping(name)`.
+`getslot` / `getview` / `getslice` / emitter taken before one is not used after it (a view of the collection itself
+is), and a routine that calls one on a collection parameter says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|

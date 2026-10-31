@@ -114,9 +114,30 @@ public static class MemoryRules
         /// The names between the view and `Root`, nearest first, each with whether the step to it goes into a part of
         /// it (`sets.getslot(a)`, a field, an element) rather than naming the same thing again (`b = a`).
         public IReadOnlyList<(string Name, bool Part)> Chain { get; init; } = [];
+
+        /// The name whose contents the view sees (`xs` in `s: @[S64] = xs.getview()` or `xs.getslot(0)`), or null when
+        /// it sees that thing itself (`whole: @List[S64] = items`, a field, a `to` conversion). A `#reshaping` call that
+        /// may move those contents ends the view, and a view of the thing itself stays.
+        public string? Contents { get; init; }
     }
 
-    /// A `#reshaping` routine may move the memory `Root` names: the views of it no longer see it.
+    /// `Name` holds a view of what `Contents` holds (a record or an emitter made with `xs.getslice(...)` or
+    /// `xs.emitter()`), `Contents` reached from `Root`: a `#reshaping` call that may move those contents ends it.
+    public sealed record HoldsContents(string Name, string Contents, string Root, Pos Pos) : Event(Pos)
+    {
+        /// The binding made `Name` here, so what it held before (a pass of a loop body before) is gone.
+        public bool Fresh { get; init; }
+
+        /// `Name` is a view itself (`f: @S64 = first(xs)`), not a value holding one: the message says so.
+        public bool View { get; init; }
+
+        /// When set, `Name` holds it only if `Callee` keeps its parameter `From` in its parameter `Into` (known once every
+        /// routine is built), as MayHoldViewOf.
+        public (string Callee, int From, int Into)? Kept { get; init; }
+    }
+
+    /// A `#reshaping` routine may move the memory `Root` names: the views of what it holds no longer see it. `How`
+    /// spells the call (`xs.add_last(...)`).
     public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos)
     {
         /// The view named here is a part of `Root` (a slot of a list, a field), and the call moves only the memory that
@@ -203,6 +224,22 @@ public static class MemoryRules
                && rest.Count(c => c == '(') == 1;
     }
 
+    /// Whether a place name is reached through a call with a named argument (`xs.getslot(i)`, not `xs.getslot(0)`): a
+    /// loop's next pass may name another place with it.
+    private static bool NamedByPass(string name)
+    {
+        int open = name.IndexOf('(');
+        while (open >= 0)
+        {
+            int close = name.IndexOf(')', open);
+            if (close < 0) return false;
+            foreach (var arg in name[(open + 1)..close].Split(','))
+                if (arg.Trim() is { Length: > 0 } a && (char.IsLetter(a[0]) || a[0] == '_')) return true;
+            open = name.IndexOf('(', close);
+        }
+        return false;
+    }
+
     private static bool GaveBack(Group g) => g.How is { } how && (g.Access is not null && how != "returned" || how.StartsWith("drop ", StringComparison.Ordinal)
         || how.StartsWith(AutoEndHow, StringComparison.Ordinal)
         || how.EndsWith(".destruct_all()", StringComparison.Ordinal) || HandedOver(g));
@@ -243,6 +280,9 @@ public static class MemoryRules
         /// The views that hold their root's slot (ViewOf.Holds).
         public HashSet<string> Holding = [];
 
+        /// The values that hold views of what a name holds (HoldsContents): each such name, and the name it is reached from.
+        public Dictionary<string, HashSet<(string Contents, string Root)>> ContentHolders = [];
+
         /// The group each view saw when it was made, and the groups a name holds views of (HoldsViewOf).
         public Dictionary<string, string> ViewGroups = [];
         public Dictionary<string, HashSet<string>> HeldViews = [];
@@ -269,6 +309,7 @@ public static class MemoryRules
         public State Copy() => new()
         {
             Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding),
+            ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string)>(h.Value)),
             ViewGroups = new(ViewGroups), HeldViews = HeldViews.ToDictionary(h => h.Key, h => new HashSet<string>(h.Value)),
             CallerHeldEnded = new(CallerHeldEnded), HollowSlots = new(HollowSlots), Filled = new(Filled), Managers = new(Managers),
             Working = new(Working), Changed = new(Changed), Lent = new(Lent),
@@ -297,6 +338,7 @@ public static class MemoryRules
                 Views = new(Views),
                 Stale = new(Stale),
                 Holding = new(Holding),
+                ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string)>(h.Value)),
                 ViewGroups = ViewGroups.Where(v => rename.ContainsKey(v.Value)).ToDictionary(v => v.Key, v => rename[v.Value]),
                 HeldViews = HeldViews.ToDictionary(h => h.Key,
                     h => h.Value.Where(rename.ContainsKey).Select(id => rename[id]).ToHashSet()),
@@ -315,6 +357,8 @@ public static class MemoryRules
             + "|" + string.Join(";", Views.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
             + "|" + string.Join(";", Stale.Keys.Order(StringComparer.Ordinal))
             + "|" + string.Join(";", Holding.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", ContentHolders.OrderBy(h => h.Key, StringComparer.Ordinal)
+                .Select(h => $"{h.Key}>{string.Join(",", h.Value.Select(c => $"{c.Contents}@{c.Root}").Order(StringComparer.Ordinal))}"))
             + "|" + string.Join(";", ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
             + "|" + string.Join(";", HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal)
                 .Select(h => $"{h.Key}>{string.Join(",", h.Value.Order(StringComparer.Ordinal))}"))
@@ -344,21 +388,18 @@ public static class MemoryRules
 
         // A value is bound once, so the names a view was taken through are the same on every path.
         var chains = new Dictionary<string, IReadOnlyList<(string Name, bool Part)>>();
+        var contents = new Dictionary<string, string>();
         foreach (var v in events.Values.SelectMany(l => l).OfType<ViewOf>())
-            if (v.Chain.Count > 0) chains[v.Name] = v.Chain;
-
-        // Whether `view` is taken from inside `inner`: through it, with a step into a part on the way.
-        bool InsideOf(string view, string inner)
         {
-            if (!chains.TryGetValue(view, out var chain)) return false;
-            bool part = false;
-            foreach (var (name, isPart) in chain)
-            {
-                part |= isPart;
-                if (name == inner) return part;
-            }
-            return false;
+            if (v.Chain.Count > 0) chains[v.Name] = v.Chain;
+            if (v.Contents is { } viewed) contents[v.Name] = viewed;
         }
+        var viewHolders = events.Values.SelectMany(l => l).OfType<HoldsContents>().Where(h => h.View).Select(h => h.Name).ToHashSet();
+
+        // Whether a #reshaping call on `reshaped` (null: on the root as a whole) moves what `of` holds: `of` is the
+        // reshaped name, or that name is one `of` was taken through.
+        bool Moves(string of, string? reshaped) =>
+            reshaped is null || of == reshaped || chains.TryGetValue(of, out var through) && through.Any(c => c.Name == reshaped);
 
         var entry = events.ContainsKey("") ? "" : firstBlock;
         var seen = new HashSet<string>();
@@ -560,9 +601,23 @@ public static class MemoryRules
                             (state.HeldViews.TryGetValue(v.Name, out var mine) ? mine : state.HeldViews[v.Name] = []).UnionWith(inherited);
                         break;
                     case Reshape rs:
+                        // A view of what the reshaped name holds ends, and a view of the name itself stays: the place
+                        // is still there, its contents may not be.
                         foreach (var (view, root) in state.Views)
-                            if (root == rs.Root && (rs.Inner is not { } inner || InsideOf(view, inner)))
+                            if (root == rs.Root && contents.TryGetValue(view, out var seenIn) && Moves(seenIn, rs.Inner))
                                 state.Stale[view] = (rs.Pos, rs.How);
+                        foreach (var (holder, held) in state.ContentHolders)
+                            if (held.Any(h => h.Root == rs.Root && Moves(h.Contents, rs.Inner)))
+                                state.Stale[holder] = (rs.Pos, rs.How);
+                        break;
+                    case HoldsContents hc when hc.Kept is not { } kept || keeps?.Invoke(kept.Callee, kept.From, kept.Into) == true:
+                        if (hc.Fresh)
+                        {
+                            state.ContentHolders.Remove(hc.Name);
+                            state.Stale.Remove(hc.Name);
+                        }
+                        (state.ContentHolders.TryGetValue(hc.Name, out var holds) ? holds : state.ContentHolders[hc.Name] = [])
+                            .Add((hc.Contents, hc.Root));
                         break;
                     case GlobalStore gs:
                         if (gs.Restoring) state.Changed.Remove(gs.Global);
@@ -664,9 +719,20 @@ public static class MemoryRules
                             Report(uv.Pos, $"'{uv.Name}' is the table of the manager '{manager}', which ended at {mg.How} on line "
                                 + $"{managerEnd.Line}, so the table points at a manager that isn't there: a manager outlives its "
                                 + $"table. Use '{uv.Name}' before line {managerEnd.Line}, or end '{manager}' after the table's last use");
-                        if (state.Stale.TryGetValue(uv.Name, out var moved) && state.Views.TryGetValue(uv.Name, out var viewed))
-                            Report(uv.Pos, $"'{uv.Name}' is a view of '{viewed}', and {moved.How} on line {moved.Pos.Line} may have moved that memory: "
-                                + $"use the view before, or keep a position (a U64) and take the view again after");
+                        if (state.Stale.TryGetValue(uv.Name, out var moved))
+                        {
+                            if (contents.TryGetValue(uv.Name, out var viewedIn) && state.Views.ContainsKey(uv.Name))
+                                Report(uv.Pos, $"'{uv.Name}', a view of what '{viewedIn}' holds, is used after {moved.How} on line "
+                                    + $"{moved.Pos.Line}, which may move it: take the view again after line {moved.Pos.Line}, or use it before");
+                            else if (state.ContentHolders.TryGetValue(uv.Name, out var heldIn) && heldIn.Count > 0 && viewHolders.Contains(uv.Name))
+                                Report(uv.Pos, $"'{uv.Name}', a view of what '{heldIn.Select(h => h.Contents).Order(StringComparer.Ordinal).First()}' "
+                                    + $"holds, is used after {moved.How} on line {moved.Pos.Line}, which may move it: take the view again "
+                                    + $"after line {moved.Pos.Line}, or use it before");
+                            else if (state.ContentHolders.TryGetValue(uv.Name, out heldIn) && heldIn.Count > 0)
+                                Report(uv.Pos, $"'{uv.Name}' holds a view of what '{heldIn.Select(h => h.Contents).Order(StringComparer.Ordinal).First()}' "
+                                    + $"holds, and it is used after {moved.How} on line {moved.Pos.Line}, which may move it: make "
+                                    + $"'{uv.Name}' again after line {moved.Pos.Line}, or finish with it before");
+                        }
                         break;
                     case ArmBegin:
                         arms.Push(state.Copy());
@@ -717,17 +783,23 @@ public static class MemoryRules
                         bool Sees(string name) => name.StartsWith("access:", StringComparison.Ordinal) || routineWide.Contains(name)
                             || ex.Visible?.Contains(name) == true
                             || name.IndexOf('.') is > 0 and var dot && Sees(name[..dot]);
+                        // A place named by a value of the loop's pass (`base.stride(from)`, `from` bound in the body) is
+                        // another place on the next pass: what a pass did to it stays behind.
+                        bool loop = ex.Region && ex.Block!.Contains(".loop", StringComparison.Ordinal);
                         foreach (var (name, id) in state.Names)
-                            if (Sees(name)) next.Names[name] = id;
+                            if (Sees(name) && !(loop && NamedByPass(name))) next.Names[name] = id;
                         foreach (var (param, arg) in ex.Args)
                             if (state.Names.TryGetValue(arg, out var id)) next.Names[param] = id;
                         foreach (var (view, root) in state.Views)
                             if (Sees(view))
                             {
                                 next.Views[view] = root;
-                                if (state.Stale.TryGetValue(view, out var stale)) next.Stale[view] = stale;
                                 if (state.Holding.Contains(view)) next.Holding.Add(view);
                             }
+                        foreach (var (name, stale) in state.Stale)
+                            if (Sees(name)) next.Stale[name] = stale;
+                        foreach (var (holder, held) in state.ContentHolders)
+                            if (Sees(holder)) next.ContentHolders[holder] = [.. held];
                         foreach (var (view, id) in state.ViewGroups)
                             if (Sees(view)) next.ViewGroups[view] = id;
                         foreach (var (holder, ids) in state.HeldViews)

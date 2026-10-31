@@ -76,6 +76,10 @@ public sealed class EscapeCheck
         /// The arguments that are views of an exclusive access this routine holds: what the callee changes through
         /// them, it changes under that access.
         public HashSet<int>? Exclusive { get; init; }
+
+        /// The arguments that view read-only memory (a text literal, a preset, a view of one), each with what it views:
+        /// a callee that writes through that parameter writes there.
+        public Dictionary<int, (string Origin, string Copy)>? ReadOnly { get; init; }
     }
 
     /// A store: the place written (an address) and the value written there.
@@ -573,6 +577,17 @@ public sealed class EscapeCheck
             List<CompileError>? errors, int depth)
         {
             if (Of(callee) is not { } e) return;
+            if (errors is not null && depth == 0 && call.ReadOnly is { } readOnly)
+                foreach (var param in e.Writes.Order())
+                    if (readOnly.TryGetValue(param, out var data))
+                    {
+                        var decl = all.GetValueOrDefault(callee)?.Inst.Decl;
+                        string name = decl is not null && param < decl.Params.Count ? $"'{decl.Params[param].Name}'" : $"parameter {param + 1}";
+                        errors.Add(new CompileError(call.Pos, $"{call.Text} hands '{Callee(callee)}' a view of {data.Origin}, which is "
+                            + $"read-only memory, and '{Callee(callee)}' writes through its {name}: copy the values into a place "
+                            + $"first and hand that place, {data.Copy}"));
+                        break;
+                    }
             if (!facts.Inst.Decl.IsLibrary)
             {
                 foreach (var param in e.Writes)

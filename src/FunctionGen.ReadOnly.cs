@@ -79,7 +79,7 @@ public sealed partial class FunctionGen
         e = AsStride(AsField(AsIndexed(e)));
         return e switch
         {
-            StrLit => (e, "a string literal"),
+            StrLit text => (e, $"the text literal {Quoted(text.Value)}"),
             ArrayLit { IsTuple: false } lit => (e, $"the array literal on line {lit.Pos.Line}"),
             PresetRef r when ResolvePresetQuiet(r) is { IsReadOnly: true } => (e, $"the preset '{r.Name}'"),
             ValueRef v when _readOnlyData.TryGetValue(v.Name, out var origin) => (e, origin),
@@ -89,6 +89,10 @@ public sealed partial class FunctionGen
             _ => null,
         };
     }
+
+    /// A text literal as a message shows it: quoted, and cut short after 24 characters.
+    private static string Quoted(string text) =>
+        "\"" + (text.Length > 24 ? text[..24] + "..." : text).Replace("\n", "\\n") + "\"";
 
     /// Records that the view `name` of type `t`, bound from `value`, sees read-only data.
     private void NoteReadOnlyView(string name, Expr value, DType t)
@@ -112,9 +116,23 @@ public sealed partial class FunctionGen
     {
         PresetRef r => Err(pos, $"'{r.Name}' is a preset; its memory is read-only: to change the values, copy them into "
             + $"a place first, copy: &{(ResolvePresetQuiet(r)?.Type is { } t ? (t is PtrType { Pointee: { } held } ? held : t).ToString() : "T")} <- {r.Name}"),
+        // A text literal is a preset place without a name: its memory is read-only like a preset's.
+        StrLit text => Err(pos, $"{Quoted(text.Value)} is a text literal, a preset without a name; its memory is read-only: to "
+            + $"change the bytes, copy them into a place first, copy: &[Byte] <- {Quoted(text.Value)}"),
         ValueRef v => Err(pos, $"'{v.Name}' views {origin}, which is read-only data: a view taken with '=' of a literal or "
             + $"a preset only reads. To change the values, copy them into a place first, {CopyHint(v)}"),
         _ => Err(pos, $"this writes into {origin}, which is read-only data"),
+    };
+
+    /// The place read-only data handed as `handed` is copied into, so a routine can write there: `copy: &[Byte] <- "hi"`
+    /// for a text literal, `copy: &Items[U32, 4] <- TABLE` for a preset.
+    private string CopyHintFor(Expr root, Expr handed) => root switch
+    {
+        StrLit text when handed is StrLit => $"copy: &[Byte] <- {Quoted(text.Value)}",
+        PresetRef r when handed is PresetRef && ResolvePresetQuiet(r)?.Type is { } t =>
+            $"copy: &{(t is PtrType { Pointee: { } held } ? held : t)} <- {r.Name}",
+        _ when handed is ValueRef v => CopyHint(v),
+        _ => "copy: &T <- ...",
     };
 
     /// The place a read-only view's values are copied into to change them: `copy: &S64 <- v.peek()` for a `@S64`,

@@ -351,17 +351,28 @@ public sealed partial class FunctionGen
         if (plan.Receiver is not null) args.Add(Atoms(plan.Receiver, Param(0)));
         int offset = args.Count;
         for (int i = 0; i < plan.Args.Count; i++) args.Add(Atoms(plan.Args[i], Param(i + offset)));
+        var handed = plan.Receiver is { } receiver ? plan.Args.Prepend(receiver).ToList() : plan.Args;
+        // A view of read-only memory (a text literal, a preset) handed where the routine takes a view: a routine that
+        // writes through that parameter is a build error once every routine is built.
+        var readOnly = new Dictionary<int, (string, string)>();
+        for (int i = 0; i < handed.Count; i++)
+            if (Param(i) is { } taken && (taken is PtrType { Pointee: not null } || Compiler.IsCoreSpan(taken, out _))
+                && ReadOnlyOrigin(handed[i]) is var (root, origin))
+                readOnly[i] = (origin, CopyHintFor(root, handed[i]));
         // A call handed no address may still give one back: the address of the callee's thread-local.
-        if (args.All(a => a.Count == 0) && !CarriesAddress(callee.Ret)) return;
+        if (args.All(a => a.Count == 0) && !CarriesAddress(callee.Ret) && readOnly.Count == 0) return;
         string text = _dropping is not null && plan.Decl.Name == "destruct"
             ? $"drop {Spelled(_dropping)}"
             : Spelled(plan.Receiver is not null
                 ? new MethodCallExpr(plan.Receiver, plan.Decl.Name, [], plan.Args, plan.Pos)
                 : new CallExpr(plan.Decl.Name, [], plan.Args, plan.Pos));
         _escapeCalls[(plan.Pos, plan.Decl.Name)] = _escape.Calls.Count;
-        var handed = plan.Receiver is { } receiver ? plan.Args.Prepend(receiver).ToList() : plan.Args;
         var exclusive = Enumerable.Range(0, handed.Count).Where(i => UnderExclusiveAccess(handed[i])).ToHashSet();
-        _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text) { Exclusive = exclusive.Count > 0 ? exclusive : null });
+        _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text)
+        {
+            Exclusive = exclusive.Count > 0 ? exclusive : null,
+            ReadOnly = readOnly.Count > 0 ? readOnly : null,
+        });
     }
 
     /// Records a call through a Callable value: the value's atoms say which routine it may be.
@@ -443,7 +454,7 @@ public sealed partial class FunctionGen
             // A view a call gives back (or a value holding one) comes from the views and places it was handed: its
             // sources are theirs together (`first(m: m)`, `m.find(x)`, `Pair(a: x.getview(), b: 1)`). Memory or an entity
             // it gives back is its own, and what is handed over with steal goes along with the value. An Addr is a
-            // number, with no source.
+            // number, which the builder doesn't follow.
             // An entity a call makes holds no view of what it was handed unless its type holds a view (a matcher over
             // the text it searches).
             case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && (!Tracked(made) || HoldsView(made))
@@ -461,11 +472,93 @@ public sealed partial class FunctionGen
         return roots;
     }
 
+    /// What each value of this routine holds views of the contents of (an emitter, a record made with a slice): the
+    /// name whose contents it sees, and the name that is reached from.
+    private readonly Dictionary<string, HashSet<(string Contents, string Root)>> _heldContents = [];
+
+    /// The names whose contents the value of `e` views or holds views of (`xs` for `xs.getslice(start: 0, count: 2)`,
+    /// `xs.emitter()`, `Wrap(s: xs.getview())`, or a call that gives a view of an element of what it is handed), each with
+    /// the name it is reached from. A view of a value itself (`items`, a `&T` lent where a `@T` goes) sees no contents.
+    private HashSet<(string Contents, string Root)> ContentRefs(Expr e)
+    {
+        var refs = new HashSet<(string, string)>();
+        e = AsValueCall(e);
+        switch (e)
+        {
+            case ValueRef r:
+                if (ContentsOf(r.Name) is { } contents) refs.Add((contents, ResolveRoot(contents)));
+                if (_heldContents.TryGetValue(r.Name, out var held)) refs.UnionWith(held);
+                break;
+            case FieldExpr f:
+                refs.UnionWith(ContentRefs(f.Base));
+                break;
+            case IndexExpr ix:
+                refs.UnionWith(ContentRefs(ix.Base));
+                break;
+            case RecordLit lit:
+                foreach (var f in lit.Fields) refs.UnionWith(ContentRefs(f.Value));
+                break;
+            case ArrayLit array:
+                foreach (var element in array.Elements) refs.UnionWith(ContentRefs(element));
+                break;
+            case StealExpr { Value: var stolen }:
+                refs.UnionWith(ContentRefs(stolen));
+                break;
+            case AtExpr { Value: var placed }:
+                refs.UnionWith(ContentRefs(placed));
+                break;
+            case UnaryExpr { Op: "try" or "check", Operand: var recovered }:
+                refs.UnionWith(ContentRefs(recovered));
+                break;
+            case MethodCallExpr { Name: "to" } m when IsAddr(InferQuiet(m.Receiver)) || IsAddr(InferQuiet(m)):
+                break;
+            case MethodCallExpr { Name: "to" } m:
+                refs.UnionWith(ContentRefs(m.Receiver));
+                break;
+            // A view read out of a slot (`me.slots.peek()`) is the view kept there: it sees what that view sees.
+            case MethodCallExpr { Name: "peek", Args.Count: 0 } m when InferQuiet(m) is { } read && PointsAtMemory(read):
+                refs.UnionWith(ContentRefs(m.Receiver));
+                break;
+            // A call gives what its arguments hold the contents of. A view it gives of something it was handed, other than
+            // that thing itself, and an emitter, see what that thing holds.
+            case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && CarriesAddress(made) && !IsAddr(made):
+                var numbers = _numberArgs.GetValueOrDefault((e.Pos, CalledName(e) ?? ""));
+                bool givesView = PointsAtMemory(made) || e is MethodCallExpr { Name: "emitter", Args.Count: 0 };
+                foreach (var (part, index) in CallParts(e).Select((p, i) => (p, i)))
+                {
+                    if (numbers?.Contains(index) == true) continue;
+                    refs.UnionWith(ContentRefs(part));
+                    if (part is StealExpr || !givesView || ShapeRoot(part) is not { } named) continue;
+                    if (made is PtrType { Pointee: { } viewed } && InferQuiet(part) is { } handed && Equals(PlacedValue(handed), viewed)) continue;
+                    refs.Add((named, ResolveRoot(named)));
+                }
+                break;
+        }
+        return refs;
+    }
+
+    /// Notes that `holder` holds views of the contents `refs` names (MemoryRules.HoldsContents). `fresh` when a binding
+    /// makes it here, `kept` when a call keeps them in it only if the callee's body does.
+    private void NoteHeldContents(string holder, HashSet<(string Contents, string Root)> refs, Pos pos, bool fresh,
+        (string Callee, int From, int Into)? kept = null, bool view = false)
+    {
+        refs.RemoveWhere(r => r.Contents == holder || r.Root == holder);
+        if (!MemOn || refs.Count == 0) return;
+        _viewNames.Add(holder);
+        (_heldContents.TryGetValue(holder, out var known) ? known : _heldContents[holder] = []).UnionWith(refs);
+        bool first = fresh;
+        foreach (var (contents, root) in refs.OrderBy(r => r.Contents, StringComparer.Ordinal))
+        {
+            Mem(new MemoryRules.HoldsContents(holder, contents, root, pos) { Fresh = first, Kept = kept, View = view });
+            first = false;
+        }
+    }
+
     /// The receiver-first positions of each call's arguments that the routine takes as an Addr or a value with no
     /// address in it, by the call's place and the routine's name.
     private readonly Dictionary<(Pos Pos, string Name), HashSet<int>> _numberArgs = [];
 
-    /// Notes which arguments of a call the routine takes as numbers: a view handed there carries no source.
+    /// Notes which arguments of a call the routine takes as numbers: the builder follows nothing through a view handed there.
     private void NoteNumberArgs(CallPlan plan, Instance sig)
     {
         var numbers = new HashSet<int>();
@@ -516,10 +609,15 @@ public sealed partial class FunctionGen
         // holds what the value put in it holds: the place carries the value's sources.
         if (b.Value is ClaimExpr { Contents: { } filled })
         {
-            if (HoldsView(PlacedValue(t))) NoteHeldViews(b.Name, ViewRoots(filled), b.Pos);
+            if (HoldsView(PlacedValue(t)))
+            {
+                NoteHeldViews(b.Name, ViewRoots(filled), b.Pos);
+                NoteHeldContents(b.Name, ContentRefs(filled), b.Pos, fresh: true);
+            }
             return;
         }
-        if (b.Value is ClaimExpr || !CarriesAddress(t) || RootName(b.Value) is not null) return;
+        if (b.Value is ClaimExpr || !CarriesAddress(t) || ShapeRoot(b.Value) is not null) return;
+        NoteHeldContents(b.Name, ContentRefs(b.Value), b.Pos, fresh: true, view: PointsAtMemory(t));
         var roots = ViewRoots(b.Value);
         // Memory handed into the same value with its view (`Me(path: path.getview(), storage: steal path)`) lives as
         // long as the value: the view goes along with it.
@@ -607,7 +705,11 @@ public sealed partial class FunctionGen
         Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
         CheckKeptHolder(plan, sig, value, into);
-        if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
+        if (RootName(into) is { } root && !_routineParams.ContainsKey(root))
+        {
+            NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
+            NoteHeldContents(ResolveRoot(root), ContentRefs(value), plan.Pos, fresh: false);
+        }
         // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
         if ((value is StealExpr { Value: ValueRef stolenTicket } ? stolenTicket : value) is ValueRef ticket && IsWorkTicket(InferQuiet(ticket)))
             Mem(new MemoryRules.WorkStored(ResolveRoot(ticket.Name), plan.Pos));
@@ -630,12 +732,14 @@ public sealed partial class FunctionGen
             if ((parts[from] is StealExpr { Value: ValueRef stolen } ? stolen : parts[from]) is ValueRef handedOver
                 && callee.Params.ElementAtOrDefault(from) is not (null or PtrType))
                 roots.Remove(ResolveRoot(handedOver.Name));
-            if (roots.Count == 0) continue;
+            var contents = ContentRefs(parts[from]);
+            if (roots.Count == 0 && contents.Count == 0) continue;
             for (int into = 0; into < parts.Count; into++)
             {
                 if (into == from || RootName(parts[into]) is not { } named || _routineParams.ContainsKey(named) || !BoundInRoutine(named))
                     continue;
                 string holder = ResolveRoot(named);
+                NoteHeldContents(holder, [.. contents], plan.Pos, fresh: false, kept: (callee.Symbol, from, into));
                 foreach (var root in roots)
                     if (root != holder)
                     {
