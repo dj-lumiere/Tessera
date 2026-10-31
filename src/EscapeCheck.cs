@@ -84,6 +84,13 @@ public sealed class EscapeCheck
         /// An unbroken store, one into this thread's own copy of a global, or one through the view of an exclusive access:
         /// safe from other threads.
         public bool Unshared { get; init; }
+
+        /// The value written holds a view (a `@T`, a `@[T]`, or a record, tuple or entity with one in it): one whose
+        /// source place may be given back must not go where the build can't compare its later uses with that give back.
+        public bool HoldsView { get; init; }
+
+        /// The entity the place is a field of, when it is one (`me.next` of a `RoundRobinThread`), or null.
+        public string? EntityField { get; init; }
     }
 
     /// A returned value.
@@ -204,6 +211,7 @@ public sealed class EscapeCheck
         var errors = new List<CompileError>();
         foreach (var facts in _facts.Values)
             if (facts.Reports) new Resolver(facts, effects, _facts).Collect(new Effects(), errors);
+            else new Resolver(facts, effects, _facts).CollectStoredViews(errors);
         return errors.GroupBy(e => e.Pos).Select(g => g.First())
             .OrderBy(e => e.Pos.File, StringComparer.Ordinal).ThenBy(e => e.Pos.Line).ThenBy(e => e.Pos.Col).ToList();
     }
@@ -407,6 +415,42 @@ public sealed class EscapeCheck
             $"each thread has its own '{global}', which is gone once that thread ends. Hand on the value itself "
             + $"({global}.peek()), or keep the address only in this thread (a name, or another @threadlocal global)";
 
+        /// Only the views kept in an entity's field or a global: what an instance of a generic routine of the standard
+        /// library reports (its other escapes are by design, and only give their effects to its callers).
+        public void CollectStoredViews(List<CompileError> errors)
+        {
+            foreach (var s in facts.Stores)
+                if (StoredView(s, Lands(s.Place), Resolve(s.Value)) is { } stored) errors.Add(stored);
+        }
+
+        /// A view whose source place may be given back, kept in a field of an entity or in a global: the build can't
+        /// compare the uses of that field or global, in whatever routine reaches it later, with the give back.
+        private CompileError? StoredView(StoreFact s, HashSet<Atom> place, HashSet<Atom> value)
+        {
+            if (!s.HoldsView) return null;
+            var global = place.OfType<GlobalAtom>().FirstOrDefault();
+            if (s.EntityField is null && global is null || Source(value) is not { } source) return null;
+            string where = s.EntityField is { } entity
+                ? $"a field of the entity {entity}, which any routine that reaches the entity may use later"
+                : $"the global '{global!.Name}', which every routine reaches";
+            return new CompileError(s.Pos, $"{s.Text} keeps {source} in {where}, and the build can't compare those later uses "
+                + "with where that view's place is given back: keep an Addr there (the view's .to[Addr](), turned back with "
+                + ".to[@T?]() and a when), make the field an &E? when one holder keeps the value, or hand the view as an "
+                + "argument to the routines that use it" + Note);
+        }
+
+        /// What a value that holds a view views, said for a message, when the place it views may be given back: memory of
+        /// this routine (a frame slot, memory it holds), or what a parameter reaches (the caller's, given back where this
+        /// routine can't see). Null when every view in it is of memory that is never given back (a global, a preset, a
+        /// string literal, an address made from an Addr).
+        private string? Source(HashSet<Atom> value)
+        {
+            if (Reaches(value) is { } frame) return $"a view of {frame.What}";
+            if (value.OfType<ParamAtom>().OrderBy(p => p.Level).FirstOrDefault() is not { } param) return null;
+            string name = param.Index < facts.Inst.Decl.Params.Count ? facts.Inst.Decl.Params[param.Index].Name : $"argument {param.Index + 1}";
+            return param.Level <= 0 ? $"'{name}' (a view the caller handed in)" : $"a view read out of '{name}'";
+        }
+
         /// The first frame atom a value reaches (level 0 or less), or null.
         private static FrameAtom? Reaches(HashSet<Atom> value, int level = 0) =>
             value.OfType<FrameAtom>().Where(f => f.Level + level <= 0).OrderBy(f => f.Level).FirstOrDefault();
@@ -448,7 +492,9 @@ public sealed class EscapeCheck
                     (local, shared) => new CompileError(s.Pos, $"this keeps the address of the thread-local '{local.Name}' in "
                         + $"the global '{shared.Name}', which every thread reaches and which outlives the thread: "
                         + ThreadLocalFix(local.Name) + Note), errors);
-                if (errors is not null && Outside(place) && Reaches(value) is { } sees)
+                if (errors is not null && StoredView(s, place, value) is { } stored)
+                    errors.Add(stored);
+                else if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
                         + $"'{Routine}': that memory is gone once the routine returns. Keep the values there, or keep the "
                         + "view in this routine only" + Note));

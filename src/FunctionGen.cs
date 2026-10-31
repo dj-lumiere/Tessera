@@ -769,10 +769,16 @@ public sealed partial class FunctionGen
         IndexExpr ix => RootName(ix.Base),
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: FieldExpr field } m
             when PointsAtMemory(InferQuiet(m)) && ManagedMemory(InferQuiet(field.Base)) is null => null,
+        // An Addr is a number: a view made from one (`a.to[@T]()`) has no source the build follows, and neither has the
+        // Addr made from a view (`v.to[Addr]()`).
+        MethodCallExpr { Name: "to" } m when IsAddr(InferQuiet(m.Receiver)) || IsAddr(InferQuiet(m)) => null,
         MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
             => RootName(m.Receiver),
         _ => null,
     };
+
+    /// Whether `t` is `Addr`, an address as a number: the build follows no memory through it.
+    private static bool IsAddr(DType? t) => t is PtrType { Pointee: null };
 
     /// The views bound to a part of what they come from (`merged: @Dict = sets.getslot(a)`, a field, an element), not to
     /// the same thing under another name (`b = a`, a conversion).
@@ -2022,7 +2028,7 @@ public sealed partial class FunctionGen
                 NoteReadOnlyView(b.Name, b.Value, t);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 NoteWorkName(b.Name, t, b.Value, b.Pos);
-                if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
+                if (PointsAtMemory(t) && !IsAddr(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
                     if (TakesPart(b.Value)) _partViews.Add(b.Name);
@@ -2593,7 +2599,22 @@ public sealed partial class FunctionGen
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
             ? new IndexExpr(m.Receiver, n, m.Pos)
-            : e;
+            : ThroughPlace(e);
+
+    /// `p.value` on a `&T` (a `BorrowedCell[T]`) is the field of the value it holds, through its view: `p.getview().value`,
+    /// a place like any field of a `@T`. The BorrowedCell's own fields are its library's, reached only there.
+    private Expr ThroughPlace(Expr e)
+    {
+        if (e is not FieldExpr f || f.Base is MethodCallExpr { Name: "getview", Args.Count: 0 }) return e;
+        var baseType = Infer(f.Base);
+        var cell = baseType is PtrType { Pointee: { } pointee } ? pointee : baseType;
+        if (cell is not RecordType { Decl.Name: "BorrowedCell", Args: [RecordType held] } box || box.Decl.Module != Compiler.SystemModule)
+            return e;
+        bool own = _c.Fields(box).Any(field => field.Name == f.Name);
+        if (own && _decl.IsLibrary && _decl.Module == Compiler.SystemModule) return e;
+        if (_c.Fields(held).All(field => field.Name != f.Name)) return e;
+        return f with { Base = new MethodCallExpr(f.Base, "getview", [], [], f.Pos) };
+    }
 
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
     /// `Infer`, or null where it would complain: the migration and the operator rule only want a type when there is one.
@@ -6035,6 +6056,7 @@ public sealed partial class FunctionGen
         CheckOptionalRefill(plan, sig, args, offset);
         ReleaseBeforePoke(plan, sig);
         MemCall(plan, sig, offset);
+        NoteNumberArgs(plan, sig);
         CheckStoreEscape(plan, sig);
         RecordStore(plan, sig);
         NoteGlobalStore(plan, sig);

@@ -27,7 +27,8 @@ crashable ChannelClosedError
 ### One transmitter or receiver waiting on a channel, on the frame of the routine that waits.
 secret record ChannelWait
     waiter: Waiter
-    next: @ChannelWait?
+    ### The address of the next one waiting, zero for none.
+    next: Addr
 
 ### What both kinds of channel are: a ring of values under one exclusive access, the open transmitters and receivers, and who waits.
 ### :typeparam T: The type of the values.
@@ -44,10 +45,10 @@ secret entity ChannelCore[T]
     transmitters: U32
     ### The receivers that haven't closed.
     receivers: U32
-    ### Receivers waiting for a value.
-    getters: @ChannelWait?
-    ### Transmitters waiting for room.
-    putters: @ChannelWait?
+    ### The address of the first receiver waiting for a value, zero for none.
+    getters: Addr
+    ### The address of the first transmitter waiting for room, zero for none.
+    putters: Addr
 
 ### A channel with one receiver: values from any number of transmitters, in order, through room for a fixed number.
 ### :typeparam T: The type of the values.
@@ -78,7 +79,7 @@ common routine ChannelCore[T].construct(capacity: U64, manager: @MemoryManager) 
     if capacity == 0
         throw UnacceptedValueError(description: "A channel needs room for at least one value.")
     return Me(guard: 0, items: .construct(count: capacity, manager: manager), head: 0, count: 0,
-        transmitters: 1, receivers: 1, getters: None(), putters: None())
+        transmitters: 1, receivers: 1, getters: Addr.zero(), putters: Addr.zero())
 
 ### An empty channel with room for `capacity` values from `manager`, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
@@ -218,7 +219,7 @@ routine @SharedChannel[T].close_receiving() -> None
 @target(os: not "none")
 failable routine @ChannelCore[T].transmit(value: T) -> None
     waiter: Waiter = current_waiter()
-    node: &ChannelWait <- ChannelWait(waiter, next: None())
+    node: &ChannelWait <- ChannelWait(waiter, next: Addr.zero())
 
     loop
         held: Authorized[U8] <- me.guard.get_exclusive_access()
@@ -230,7 +231,7 @@ failable routine @ChannelCore[T].transmit(value: T) -> None
             drop held
             return
         node.next.poke(me.putters.peek())
-        me.putters.poke(node)
+        me.putters.poke(node.to[Addr]())
         drop held
         if blocked_until_cancelled(waiter)
             held2: Authorized[U8] <- me.guard.get_exclusive_access()
@@ -260,7 +261,7 @@ routine @ChannelCore[T].transmit_if_room(value: T) -> Bool
 @target(os: not "none")
 failable routine @ChannelCore[T].receive() -> T
     waiter: Waiter = current_waiter()
-    node: &ChannelWait <- ChannelWait(waiter, next: None())
+    node: &ChannelWait <- ChannelWait(waiter, next: Addr.zero())
 
     loop
         held: Authorized[U8] <- me.guard.get_exclusive_access()
@@ -272,7 +273,7 @@ failable routine @ChannelCore[T].receive() -> T
             drop held
             throw ChannelClosedError()
         node.next.poke(me.getters.peek())
-        me.getters.poke(node)
+        me.getters.poke(node.to[Addr]())
         drop held
         if blocked_until_cancelled(waiter)
             held2: Authorized[U8] <- me.guard.get_exclusive_access()
@@ -309,7 +310,7 @@ routine @ChannelCore[T].close_transmitting() -> None
     if me.transmitters.peek() == 0
         throw UnacceptedValueError(description: "Every transmitter of this channel has closed already.")
     me.transmitters.poke(me.transmitters.peek() - 1)
-    wake_list(me.getters.peek())
+    wake_list(me.getters.peek().to[@ChannelWait?]())
     drop held
     return
 
@@ -324,7 +325,7 @@ routine @ChannelCore[T].close_receiving() -> None
     me.receivers.poke(me.receivers.peek() - 1)
     if me.receivers.peek() == 0
         me.count.poke(0)
-        wake_list(me.putters.peek())
+        wake_list(me.putters.peek().to[@ChannelWait?]())
     drop held
     return
 
@@ -336,7 +337,7 @@ secret routine @ChannelCore[T].push(value: T) -> None
     at: U64 = (me.head.peek() + me.count.peek()) % capacity
     me.items.getslot(at).poke(steal value)
     me.count.poke(me.count.peek() + 1)
-    wake_list(me.getters.peek())
+    wake_list(me.getters.peek().to[@ChannelWait?]())
     return
 
 ### Takes the oldest value and wakes the waiting transmitters. The lock is held and there is a value.
@@ -348,7 +349,7 @@ secret routine @ChannelCore[T].pop() -> T
     value: T = steal me.items.to[@T]().stride(head)
     me.head.poke((head + 1) % me.items.count())
     me.count.poke(me.count.peek() - 1)
-    wake_list(me.putters.peek())
+    wake_list(me.putters.peek().to[@ChannelWait?]())
     return value
 
 ### Wakes every waiter in the list. Each takes itself out when it runs again.
@@ -358,7 +359,7 @@ secret routine wake_list(first: @ChannelWait?) -> None
     until at.is_absent() with at: @ChannelWait? = first
         node: @ChannelWait = at.unwrap()
         node.waiter.peek().wake()
-        continue with at: node.next.peek()
+        continue with at: node.next.peek().to[@ChannelWait?]()
     then
         return
 
@@ -366,14 +367,14 @@ secret routine wake_list(first: @ChannelWait?) -> None
 ### :param list: The place of the list's first node.
 ### :param node: The node.
 @target(os: not "none")
-secret routine unlink(list: @(@ChannelWait?), node: @ChannelWait) -> None
-    loop with link: @(@ChannelWait?) = list
-        linked: @ChannelWait? = link.peek()
+secret routine unlink(list: @Addr, node: @ChannelWait) -> None
+    loop with link: @Addr = list
+        linked: @ChannelWait? = link.peek().to[@ChannelWait?]()
         if linked.is_absent()
             return
         current2: @ChannelWait = linked.unwrap()
         if current2 === node
             link.poke(node.next.peek())
-            node.next.poke(None())
+            node.next.poke(Addr.zero())
             return
         continue with link: current2.next

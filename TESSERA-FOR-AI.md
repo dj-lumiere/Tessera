@@ -189,7 +189,8 @@ routine start() -> None
   takes the value out. A routine of `@T` called on a `&T` works on its view (the builder inserts `getview`, an
   effect-free step: `count.peek()`, `bump(count)` for a `@S64` parameter), while effectful steps (`store`, `poke`,
   `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
-  `&List[S64]`'s `getview()` is the List's span. Passing a `&T` where a `@T` is expected lends its view. Returning a
+  `&List[S64]`'s `getview()` is the List's span. A field of the value is a place through the view the same way:
+  `p.value` on a `p: &Box` is `p.getview().value`, read with `p.value.peek()` and written with `p.value.poke(v)`. Passing a `&T` where a `@T` is expected lends its view. Returning a
   STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
 - **Writing over a place: `y <- v`.** On a place that holds a value already, `y <- v` writes `v` into the same memory
   (`v.store_into(y)`): nothing new is borrowed and the place is given back once, where it always was. For an entity the
@@ -290,7 +291,13 @@ routine start() -> None
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
   `node: &Node <- (value: 1, next: None()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
-  call `BorrowedCell[T].construct(value, manager)`). The program gives these back with `drop`. Without `from` the place is a
+  call `BorrowedCell[T].construct(value, manager)`). The program gives these back with `drop`. With `try` or `check`
+  in front of the value the line receives both failures, the value's own and the manager having no memory:
+  `x: &Box? <- try Box.construct(value: 7) from HEAP` gives None, `x: Check[&Box] <- check ... from m` the failure
+  (`OutOfMemoryError` or the value's). It calls `BorrowedCell[T].construct_or_fail(value, manager)`: the value is made
+  first (a failure there borrows nothing), and when the manager has no memory it ends (its `destruct`) before the
+  failure goes on. Take it apart with `when steal x` (`is &Box as box => ... drop box`). Without `try`, a line from a
+  manager gives a `&T`, and `x: &Box? <- value from m` is a build error that shows both forms. Without `from` the place is a
   slot of the routine's frame, which the routine borrowed from its flow's `StackManager` (below): `x: &S64 <- 5 from
   STACK` is the same place as `x: &S64 <- 5`, follows rule 3 (no view of it leaves the routine), and the builder
   gives it back.
@@ -320,22 +327,37 @@ routine start() -> None
     entity (`drop me.m`, `me.m.give_back()`, `me.m.destruct_all()`, `me.m.take()`, or `steal me.m as old` handed on) on
     some path. A path that returns early (the field is hollow there) is allowed. Giving one back twice on a path is
     `'me.m' ended already` or `'me.m' is used after drop me.m`.
-  - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
-    (`m.getslice()`, `m.getslot(i)`, `getslice`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
-    passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
-    of an `if` counts). Use it before the drop. The builder's give back of a STACK place at the end of its body counts
-    too: a view of a `xs: &List[S64]` borrowed in an `if` or loop body, kept in a place bound outside it
-    (`p.store(xs.getslot(0))`), and read after the body is `'p' holds a view of 'xs', whose memory was given back at
-    the end of the body that borrowed 'xs' on line N (the body ends on line M)`, M the body's last line (inside a
-    nested `if`, `when` or loop when the body ends with one). Borrow the List outside the body, or keep the value, not the view. The same holds after `steal m` or after `m` is handed to a routine that
-    takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
-    give it back`.
-  - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a
-    field of `q`, a record built with one, a pointer a routine gave back from `m` passed to it, `first(m: m)`, a view a
-    routine keeps in `q`: `xs.add_last(m.getslice())`, `keep(out: q, v: m.getslice())`, and a view read back out of `q`:
-    `xs[0]`) is used after `drop m`, its own `drop` included (its `destruct` would read the view). Finish with `q`
-    first. A routine keeps a view when its body stores it in what another parameter reaches, which the build works out
-    from the bodies (a routine that copies the values a view shows keeps nothing).
+  - **A view can't be used after its source place has ended.** Every `@T` / `@[T]` carries the places it was made
+    from, its sources: `m.getslice()`, `m.getslot(i)`, `stride`, `offset`, `to[@U]()`, a `&T` lent where a `@T` goes,
+    and views made from those have `{m}`. A value that holds views (a record or tuple with a view in it, an entity
+    made with one, a list a view was added to) carries all their sources. A call that gives back a view, or a value
+    holding one, carries the sources of every view and place handed to it (`first(m: m)`, `Pair(a: x.getview(), b:
+    1)`, `m.find(x)`), except what goes in with `steal` and what the routine takes as an `Addr` or a plain number. A
+    source ends at `drop m`, at `steal m` or when `m` is handed to a routine that takes it by value (a routine that gives
+    a place back takes it by value, so the caller writes `steal`), and at the builder's give back of a STACK place
+    (the end of the body that borrowed it, each pass of a loop body included). Using the view after that, on any path,
+    is `'v', a view of 'm', is used after drop m on line N ended it` (`steal m on line N ended it, and whoever took it
+    may give it back`, `the body that borrowed 'xs' on line N gave it back at its end (line M)`, M the body's last
+    line), and for a value holding one `'q' holds a view of 'm', and it is used after drop m on line N ended it`, its
+    own `drop` included (its `destruct` would read the view). Use it before, or end `m` after its last use; for a
+    STACK place in a body, borrow it outside the body or keep the value, not the view. A routine keeps a view when its
+    body stores it in what another parameter reaches (`xs.add_last(m.getslice())`, `keep(out: q, v: m.getslice())`),
+    which the build works out from the bodies, so `q` carries `m` from the call on.
+  - **Memory that is never given back has no source.** A view of a global, a preset, a string literal, and a view
+    made from an `Addr` (`a.to[@T]()`, `a.to[@T?]()`) has an empty source set and goes anywhere. An `Addr` is a
+    number: the build follows no lifetime through it (`v.to[Addr]()` of a view, or `o.to[Addr]()` of a `@T?`, zero for
+    None), and the program is responsible for the memory it names.
+  - **Entity fields and globals don't keep a view with a source.** A `poke` (or `store`, `<-`) of a value that holds
+    a view into a field of an entity that is made already, or into a global (or memory a global reaches), is a build
+    error when the view has a source: `me.next.poke(t) keeps 't' (a view the caller handed in) in a field of the
+    entity Node, which any routine that reaches the entity may use later, and the build can't compare those later uses
+    with where that view's place is given back: keep an Addr there ...`. Keep an `Addr` (turned back with
+    `.to[@T?]()` and a `when`) for links inside a structure the program keeps right itself (scheduler queues, a
+    node's `next`), make the field an `&E?` when one holder keeps the value, or hand the view as an argument to the
+    routines that use it. An entity made with a view (`Me(source: text, ...)`, a matcher over text) is a value
+    holding it: it carries the source like a record. A BorrowedCell's and a BorrowedSlice's own address and manager
+    fields, a `@MemoryManager` (the link to where memory goes back, which the manager check below follows), and a
+    `SourceLocation` (the builder's read-only text) don't count as views here.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
     outlive it. Give `m` back first.

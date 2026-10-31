@@ -17,7 +17,7 @@ module Hosted
 ### The hosted thread manager: the operating system's threads, with the work blocks from HEAP. Ready before
 ### `start` runs.
 @target(os: not "none")
-global DEFAULT_THREADS: &ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: Addr.zero(), guard: 0, idle: None(), manager: HEAP)
+global DEFAULT_THREADS: &ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: Addr.zero(), guard: 0, idle: Addr.zero(), manager: HEAP)
 
 ### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
 ### none), until it is given back with `drop`.
@@ -31,7 +31,7 @@ entity Thread[T]
 secret entity ThreadWorker
     slot: WorkSlot
     ### The next idle worker of the manager.
-    next: @ThreadWorker?
+    next: Addr
     manager: @ThreadManager
 
 ### Hands out threads. Its routine starts a thread, and the threads it started and got back wait among the idle ones
@@ -44,7 +44,7 @@ entity ThreadManager
     ### The byte whose exclusive access guards `idle`.
     guard: U8
     ### The threads given back, asleep until a ticket takes one.
-    idle: @ThreadWorker?
+    idle: Addr
     ### Where the workers and the work blocks come from.
     manager: @MemoryManager
 
@@ -85,7 +85,7 @@ routine @Thread[T].destruct() -> None
     manager: @ThreadManager = worker.manager.peek()
     held: Authorized[U8] <- manager.guard.get_exclusive_access()
     worker.next.poke(manager.idle.peek())
-    manager.idle.poke(worker)
+    manager.idle.poke(worker.to[Addr]())
     drop held
     return
 
@@ -98,15 +98,15 @@ routine @Thread[T].destruct() -> None
 common routine ThreadManager.construct(
     launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool], state: Addr,
     manager: @MemoryManager) -> Me
-    return Me(launch_fn, state, guard: 0, idle: None(), manager)
+    return Me(launch_fn, state, guard: 0, idle: Addr.zero(), manager)
 
 ### A manager of the operating system's threads, with the workers and the work blocks from `manager`.
 ### :param manager: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
 @target(os: not "none")
 common routine ThreadManager.construct(manager: @MemoryManager) -> Me
-    return Me(launch_fn: os_launch_fn.to[Callable](), state: Addr.zero(), guard: 0, idle: None(),
-        manager)
+    return Me(launch_fn: os_launch_fn.to[Callable](), state: Addr.zero(), guard: 0,
+        idle: Addr.zero(), manager)
 
 ### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 ### that is gone, and its thread never ends.
@@ -114,7 +114,7 @@ routine @ThreadManager.destruct() -> None
     held: Authorized[U8] <- me.guard.get_exclusive_access()
 
     loop
-        idle: @ThreadWorker? = me.idle.peek()
+        idle: @ThreadWorker? = me.idle.peek().to[@ThreadWorker?]()
         if idle.is_absent()
             break
         worker2: @ThreadWorker = idle.unwrap()
@@ -167,7 +167,7 @@ needs AnyType T
 @track_caller
 secret routine @ThreadManager.take_worker() -> @ThreadWorker
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    idle_or_none: @ThreadWorker? = me.idle.peek()
+    idle_or_none: @ThreadWorker? = me.idle.peek().to[@ThreadWorker?]()
     if idle_or_none.is_absent()
         drop held
         manager: @MemoryManager = me.manager.peek()
@@ -175,7 +175,7 @@ secret routine @ThreadManager.take_worker() -> @ThreadWorker
         if worker_at.is_hollow()
             throw OutOfMemoryError()
         worker: @ThreadWorker = worker_at.to[@ThreadWorker]()
-        worker.poke(ThreadWorker(slot: .construct(manager), next: None(), manager: me))
+        worker.poke(ThreadWorker(slot: .construct(manager), next: Addr.zero(), manager: me))
         place: Addr = worker
         if me.launch_fn.peek().call(worker_main.to[Callable](), place, me.state.peek())
             return worker
@@ -184,7 +184,7 @@ secret routine @ThreadManager.take_worker() -> @ThreadWorker
     idle: @ThreadWorker = idle_or_none.unwrap()
     me.idle.poke(idle.next.peek())
     drop held
-    idle.next.poke(None())
+    idle.next.poke(Addr.zero())
     idle.slot.state.poke_unbroken(TICKET_EMPTY)
     return idle
 
@@ -200,13 +200,13 @@ secret routine worker_main(raw: Addr) -> None
         if state2 == TICKET_RUNNING
             # Every piece of work starts from the thread-local values a new thread has.
             ThreadLocalManager.reset()
-            RUNNING_WORK.poke(worker.slot)
+            RUNNING_WORK.poke(worker.slot.to[Addr]())
             runner: Callable[(Addr,), None] = worker.slot.runner.peek()
             runner.call(worker.slot.work.peek())
             when THREAD_CLEANUP.peek()
                 is Callable[(), None] as cleanup => cleanup.call()
                 is None => nothing
-            RUNNING_WORK.poke(None())
+            RUNNING_WORK.poke(Addr.zero())
             worker.slot.complete()
             continue
         if state2 == TICKET_QUIT

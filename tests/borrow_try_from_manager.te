@@ -1,0 +1,127 @@
+# A line that borrows from a manager with try or check in front of its value: None (or the failure) when making the
+# value fails or the manager has no memory, and a value that was made ends when the manager has none for it.
+
+import Hosted
+
+### A manager that gives memory `left` more times, then none.
+record Budget
+    left: U64
+
+### A box that says when it ends.
+entity Box
+    value: S64
+
+obeys MemoryManageable[Budget]
+
+### C's malloc.
+### :param size: The bytes.
+### :returns: The block, or zero.
+@external("c")
+@symbol("malloc")
+routine c_malloc(size: CSize) -> Addr
+
+### C's realloc.
+### :param ptr: The block.
+### :param size: The bytes.
+### :returns: The block, or zero.
+@external("c")
+@symbol("realloc")
+routine c_realloc(ptr: Addr, size: CSize) -> Addr
+
+### C's free.
+### :param ptr: The block.
+@external("c")
+@symbol("free")
+routine c_free(ptr: Addr) -> None
+
+### Takes one call from the budget.
+### :returns: Whether one was left.
+routine @Budget.take() -> Bool
+    left: U64 = me.left.peek()
+    if left == 0
+        return false
+    (left - 1).poke_into(me.left)
+    return true
+
+### Memory while the budget lasts.
+### :param size: The bytes.
+### :param align: Their alignment.
+### :returns: The block, or zero once the budget is spent.
+routine @Budget.borrow(size: U64, align: U64) -> Addr
+    if me.take()
+        return c_malloc(size.to[CSize]())
+    else
+        return Addr.zero()
+
+### A block resized while the budget lasts.
+### :param at: The block.
+### :param size: The bytes.
+### :param align: Their alignment.
+### :returns: The block, or zero once the budget is spent.
+routine @Budget.reborrow(at: Addr, size: U64, align: U64) -> Addr
+    if me.take()
+        return c_realloc(at, size.to[CSize]())
+    else
+        return Addr.zero()
+
+### Gives a block back.
+### :param at: The block.
+routine @Budget.give_back(at: Addr) -> None
+    c_free(at)
+    return
+
+### Makes a box.
+### :param value: The value to hold.
+### :returns: The box.
+common routine Box.construct(value: S64) -> Me
+    return Me(value)
+
+### Makes a box, failing on a negative value.
+### :param value: The value to hold.
+### :returns: The box.
+### :throws: `UnacceptedValueError` when value is negative.
+failable common routine Box.checked(value: S64) -> Me
+    if value < 0
+        throw UnacceptedValueError(description: "negative")
+    return Me(value)
+
+### Says that the box ends.
+routine @Box.destruct() -> None
+    Console.show("box {me.value.peek()} ends")
+    return
+
+### Borrows with try and check from a manager with one block to give, then from HEAP.
+routine start() -> None
+    limiter: &Budget <- (left: 1)
+    manager: &MemoryManager <- limiter.to[MemoryManager]()
+
+    first: &Box? <- try Box.construct(value: 7) from manager
+    when steal first
+        is &Box as box =>
+            box.value.poke(box.value.peek() + 1)
+            Console.show("got {box.value.peek()}")
+            drop box
+        is None => Console.show("no memory")
+
+    second: &Box? <- try Box.construct(value: 2) from manager
+    when steal second
+        is &Box as box =>
+            Console.show("got {box.value.peek()}")
+            drop box
+        is None => Console.show("no memory for the second")
+
+    third: &Box? <- try Box.checked(value: -1) from HEAP
+    when steal third
+        is &Box as box =>
+            Console.show("got {box.value.peek()}")
+            drop box
+        is None => Console.show("the third failed")
+
+    fourth: Check[&Box] <- check Box.checked(value: 3) from manager
+    when steal fourth
+        is &Box as box =>
+            Console.show("got {box.value.peek()}")
+            drop box
+        is UnacceptedValueError => Console.show("negative")
+        is OutOfMemoryError => Console.show("the fourth has no memory")
+    return

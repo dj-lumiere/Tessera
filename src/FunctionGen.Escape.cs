@@ -269,8 +269,51 @@ public sealed partial class FunctionGen
         // A store of a plain value is recorded too: what a routine changes matters to work on other threads.
         var place = AtomsOf(into);
         if (place.Count == 0) return;
+        bool holdsView = stored.Count > 0 && InferQuiet(value) is { } storedType && HoldsView(storedType);
         _escape.Stores.Add(new EscapeCheck.StoreFact(place, stored, plan.Pos, Spelled(new MethodCallExpr(
-            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("unbroken") || sig.Decl.Owner is { Name: "Unbroken" } || ThreadLocalRoot(into) || UnderExclusiveAccess(into) });
+            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("unbroken") || sig.Decl.Owner is { Name: "Unbroken" } || ThreadLocalRoot(into) || UnderExclusiveAccess(into),
+            HoldsView = holdsView, EntityField = holdsView ? EntityOfField(into) : null });
+    }
+
+    /// Whether a value of `t` holds a view: a `@T`, a `@[T]`, or a record, tuple, array, variant or entity with one in it.
+    /// An Addr is a number and a Callable a routine, neither a view. A BorrowedCell or a BorrowedSlice holds its memory's
+    /// address and its manager's, the place it was borrowed and where it goes back, which the group check follows, and a
+    /// `@MemoryManager` is the link to where memory goes back, which the manager check follows: neither counts as a view
+    /// here. Nor does a SourceLocation: its file is the name the builder writes into read-only data for a place in the
+    /// source, kept with crash reports and access orders.
+    private bool HoldsView(DType t) => HoldsView(t, []);
+
+    private bool HoldsView(DType t, HashSet<string> seen) => t switch
+    {
+        PtrType { Pointee: null } => false,
+        PtrType { Pointee: RecordType { Decl: { Name: "MemoryManager", Module: Compiler.MemoryModule } } } => false,
+        PtrType { Pointee: RecordType { Decl: { Name: "SourceLocation", Module: Compiler.SystemModule } } } => false,
+        PtrType => true,
+        RecordType { Decl: { Name: "PointedSlice" } } span when span.Decl.Module == Compiler.SystemModule => true,
+        RecordType { Decl: { Name: "BorrowedSlice" or "BorrowedCell" or "SourceLocation" } } held when held.Decl.Module == Compiler.SystemModule => false,
+        ArrayType a => HoldsView(a.Elem, seen),
+        VectorType v => HoldsView(v.Elem, seen),
+        RecordType r when seen.Add(r.Key) => _c.Fields(r).Any(f => HoldsView(f.Type, seen)),
+        VariantType v when seen.Add(v.Key) => v.Branches.Any(b => HoldsView(b, seen)),
+        _ => false,
+    };
+
+    /// The entity a place is a field of (`me.next` of a `@RoundRobinThread`, `t.state.next` of one through a record
+    /// field), or null. A BorrowedCell's or a BorrowedSlice's own fields are the builder's.
+    private string? EntityOfField(Expr place)
+    {
+        var at = AsValueCall(place);
+        while (at is FieldExpr f)
+        {
+            var baseType = InferQuiet(f.Base);
+            var held = baseType is PtrType { Pointee: { } pointee } ? pointee : baseType;
+            if (Entities.IsEntity(held))
+                return held is RecordType { Decl: { Name: "BorrowedSlice" or "BorrowedCell" } } builtin && builtin.Decl.Module == Compiler.SystemModule
+                    ? null
+                    : held!.Name;
+            at = AsValueCall(f.Base);
+        }
+        return null;
     }
 
     /// A store straight into a global (`G.poke(x)`): whether it puts back a value read out of that global, so the
@@ -380,16 +423,47 @@ public sealed partial class FunctionGen
             case ArrayLit array:
                 foreach (var element in array.Elements) roots.UnionWith(ViewRoots(element));
                 break;
-            // A pointer a routine gives back from memory or an entity it was handed (`first(m: m)`, `m.find(x)`) points
-            // into it. Memory or an entity it gives back is its own, and a pointer made from a view it was handed may be
-            // a copy (a buffer it allocates), which the build can't tell here.
-            case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && !Tracked(made) && CarriesAddress(made):
-                foreach (var part in CallParts(e))
+            // A view a call gives back (or a value holding one) comes from the views and places it was handed: its
+            // sources are theirs together (`first(m: m)`, `m.find(x)`, `Pair(a: x.getview(), b: 1)`). Memory or an entity
+            // it gives back is its own, and what is handed over with steal goes along with the value. An Addr is a
+            // number, with no source.
+            case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && !Tracked(made) && CarriesAddress(made) && !IsAddr(made):
+                var numbers = _numberArgs.GetValueOrDefault((e.Pos, CalledName(e) ?? ""));
+                foreach (var (part, index) in CallParts(e).Select((p, i) => (p, i)))
+                {
+                    // A view handed where the routine takes an Addr (or a plain number) is a number there.
+                    if (part is StealExpr || numbers?.Contains(index) == true) continue;
                     if (MemName(part) is { } handed) roots.Add(handed);
+                    if (InferQuiet(part) is { } handedType && !IsAddr(handedType) && CarriesAddress(handedType)) roots.UnionWith(ViewRoots(part));
+                }
                 break;
         }
         return roots;
     }
+
+    /// The receiver-first positions of each call's arguments that the routine takes as an Addr or a value with no
+    /// address in it, by the call's place and the routine's name.
+    private readonly Dictionary<(Pos Pos, string Name), HashSet<int>> _numberArgs = [];
+
+    /// Notes which arguments of a call the routine takes as numbers: a view handed there carries no source.
+    private void NoteNumberArgs(CallPlan plan, Instance sig)
+    {
+        var numbers = new HashSet<int>();
+        int count = (plan.Receiver is null ? 0 : 1) + plan.Args.Count;
+        for (int i = 0; i < count && i < sig.Params.Count; i++)
+            if (IsAddr(sig.Params[i]) || !CarriesAddress(sig.Params[i])) numbers.Add(i);
+        if (numbers.Count > 0) _numberArgs[(plan.Pos, plan.Decl.Name)] = numbers;
+    }
+
+    /// The name a call is recorded under: the routine's name as written.
+    private static string? CalledName(Expr e) => e switch
+    {
+        CallExpr c => c.Name,
+        NsCallExpr n => n.Name,
+        MethodCallExpr m => m.Name,
+        ImplicitCallExpr i => i.Name,
+        _ => null,
+    };
 
     /// The receiver and arguments of a call written in the source.
     private static IEnumerable<Expr> CallParts(Expr e) => e switch

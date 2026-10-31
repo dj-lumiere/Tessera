@@ -214,14 +214,18 @@ public static class MemoryRules
     private static bool HandedOver(Group g) => g.How is { } how
         && (how.StartsWith("steal ", StringComparison.Ordinal) || how.StartsWith("handed to ", StringComparison.Ordinal));
 
-    /// How a message says what became of the memory: given back, or handed over.
-    /// Memory a STACK place held that its body gave back says where the place was borrowed and where the body ends.
-    private static string Gone(Group g) => HandedOver(g)
-        ? $"was handed over ({g.How} on line {g.Ended!.Value.Line}), and whoever took it may give it back"
-        : g.How is { } how && how.StartsWith(AutoEndHow, StringComparison.Ordinal)
-        ? $"was given back at the end of the body that borrowed '{g.Origin}' on line {g.Born.Line} (the body ends on "
-          + $"line {g.Ended!.Value.Line})"
-        : $"was given back ({g.How} on line {g.Ended!.Value.Line})";
+    /// What ended a view's source, for "is used after ...": the drop or steal the program wrote, the call it was
+    /// handed to by value, or the builder's give back of a STACK place at the end of the body that borrowed it.
+    private static string EndedBy(Group g) => g.How is { } how && how.StartsWith(AutoEndHow, StringComparison.Ordinal)
+        ? $"the body that borrowed '{g.Origin}' on line {g.Born.Line} gave it back at its end (line {g.Ended!.Value.Line})"
+        : g.How!.StartsWith("handed to ", StringComparison.Ordinal) ? $"'{g.Origin}' was {g.How} on line {g.Ended!.Value.Line}, which ended it"
+        : $"{g.How} on line {g.Ended!.Value.Line} ended it";
+
+    /// Whether the builder gave the source back at the end of the body that borrowed it.
+    private static bool AutoEnded(Group g) => g.How is { } how && how.StartsWith(AutoEndHow, StringComparison.Ordinal);
+
+    /// What the message adds when the source was handed over rather than given back.
+    private static string WhoeverTook(Group g) => HandedOver(g) ? ", and whoever took it may give it back" : "";
 
     /// A group: where it came from, and whether and where it ended.
     private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null, bool Field = false,
@@ -629,8 +633,11 @@ public static class MemoryRules
                         else if (!state.Holding.Contains(uv.Name)
                             && state.ViewGroups.TryGetValue(uv.Name, out var sawGroup) && state.Groups.TryGetValue(sawGroup, out var saw)
                             && saw.Ended is { } sawEnd && GaveBack(saw))
-                            Report(uv.Pos, $"'{uv.Name}' is a view of '{saw.Origin}', whose memory {Gone(saw)}, so it reads memory that is gone: use '{uv.Name}' before line {sawEnd.Line}, or "
-                                + $"take the view again from memory that is still there");
+                            Report(uv.Pos, $"'{uv.Name}', a view of '{saw.Origin}', is used after {EndedBy(saw)}{WhoeverTook(saw)}, "
+                                + $"so it reads memory that is gone: "
+                                + (AutoEnded(saw)
+                                    ? $"borrow '{saw.Origin}' outside that body, or keep the value, not the view"
+                                    : $"use '{uv.Name}' before line {sawEnd.Line}, or take the view again from memory that is still there"));
                         foreach (var heldId in state.HeldViews.GetValueOrDefault(uv.Name) ?? [])
                             if (state.Groups.TryGetValue(heldId, out var heldMemory) && heldMemory.Ended is { } heldEnd && GaveBack(heldMemory))
                             {
@@ -642,10 +649,12 @@ public static class MemoryRules
                                         + $"after '{uv.Name}' is given back");
                                     break;
                                 }
-                                Report(uv.Pos, $"'{uv.Name}' holds a view of '{heldMemory.Origin}', whose memory {Gone(heldMemory)}, "
-                                    + $"so what '{uv.Name}' holds there points at memory "
-                                    + $"that is gone: finish with '{uv.Name}' before line {heldEnd.Line}, or give '{heldMemory.Origin}' "
-                                    + $"back after '{uv.Name}'s last use");
+                                Report(uv.Pos, $"'{uv.Name}' holds a view of '{heldMemory.Origin}', and it is used after {EndedBy(heldMemory)}"
+                                    + $"{WhoeverTook(heldMemory)}, so what '{uv.Name}' holds there points at memory that is gone: "
+                                    + (AutoEnded(heldMemory)
+                                        ? $"borrow '{heldMemory.Origin}' outside that body, or keep the value, not the view"
+                                        : $"finish with '{uv.Name}' before line {heldEnd.Line}, or end '{heldMemory.Origin}' after "
+                                          + $"'{uv.Name}'s last use"));
                                 break;
                             }
                         // A table used after the manager it was made from ended points at a slot that holds nothing.

@@ -121,8 +121,32 @@ public sealed partial class FunctionGen
         if (written is { Name: "PointedCell" or "PointedSlice", Path: null })
             throw Err(written.Pos, $"{written} only views memory, and '<-' borrows a place: {b.Name}: "
                 + (written.Args is [TypeArgType inner] ? (written.Name == "PointedCell" ? $"&{inner}" : $"&[{inner}]") : "&T") + " <- value");
+        // `x: &T? <- try value from m` and `x: Check[&T] <- check value from m`: the try or check covers the whole line,
+        // the making of the value and the manager's borrow, and the name holds what it gives in a frame slot.
+        if (fromManager is { Value: UnaryExpr { Op: "try" or "check" } recovered } && RecoveredPlace(written, recovered.Op) is { } held)
+        {
+            var owner = new TypeRef("BorrowedCell", [new TypeArgType(held)], fromManager.Pos) { Path = Compiler.SystemModule };
+            var made = new NsCallExpr(owner, "construct_or_fail", [], [recovered.Operand, fromManager.Manager], fromManager.Pos)
+                { ArgNames = ["value", "manager"] };
+            return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos),
+                new ClaimExpr(b.Pos) { Contents = recovered with { Operand = made } }, b.Pos) { Source = b.Source }, false);
+        }
         if (fromManager is not null)
-            throw Err(fromManager.Pos, $"a place borrowed from a manager is a &T or a &[T]: {b.Name}: &{written} <- ... from manager");
+        {
+            string shown = written.ToString();
+            if (fromManager.Value is UnaryExpr { Op: "try" or "check" } wrong)
+                throw Err(fromManager.Pos, wrong.Op == "try"
+                    ? $"try on a line that borrows from a manager gives a &T?, None when making the value fails or the manager "
+                      + $"has no memory: {b.Name}: &{BareShown(written)}? <- try ... from manager"
+                    : $"check on a line that borrows from a manager gives a Check[&T], the failure when making the value fails or "
+                      + $"the manager has no memory: {b.Name}: Check[&{BareShown(written)}] <- check ... from manager");
+            if (RecoveredPlace(written, "try") is { } maybe)
+                throw Err(fromManager.Pos, $"a line that borrows from a manager gives a &{maybe}, and a &{maybe}? comes from try "
+                    + $"in front of the value, None when making it fails or the manager has no memory: {b.Name}: &{maybe} <- ... "
+                    + $"from manager, or {b.Name}: &{maybe}? <- try ... from manager");
+            throw Err(fromManager.Pos, $"a place borrowed from a manager is a &T or a &[T]: {b.Name}: "
+                + (shown.StartsWith('&') ? shown : $"&{shown}") + " <- ... from manager");
+        }
         var type = Resolve(written);
         if (!IsBorrowedType(type))
             throw Err(b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
@@ -138,6 +162,21 @@ public sealed partial class FunctionGen
         // holds it, given back with drop.
         return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
             { Source = b.Source, Ticket = IsTicketLike(type) && !remade }, false);
+    }
+
+    /// The `T` of a `&T?` (for try) or a `Check[&T]` (for check) written on a line that borrows with try or check, or null.
+    private static TypeRef? RecoveredPlace(TypeRef written, string op) =>
+        op == "try" && written is { Name: "Optional", Args: [TypeArgType { Type: { Name: "BorrowedCell", Args: [TypeArgType tried] } }] }
+            ? tried.Type
+            : op == "check" && written is { Name: "Check", Args: [TypeArgType { Type: { Name: "BorrowedCell", Args: [TypeArgType checkedHeld] } }] }
+                ? checkedHeld.Type
+                : null;
+
+    /// A written type without the place mark or the Optional around it, for a message that writes them itself.
+    private static string BareShown(TypeRef t)
+    {
+        var inner = t is { Name: "Optional" or "Check", Args: [TypeArgType o] } ? o.Type : t;
+        return inner is { Name: "BorrowedCell", Args: [TypeArgType cell] } ? cell.Type.ToString() : inner.ToString().TrimStart('&');
     }
 
     /// The error for a `=` binding of something borrowed, which `<-` binds, or null.
