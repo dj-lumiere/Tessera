@@ -520,11 +520,17 @@ secret routine walk_start() -> Addr
         return fault
     return frame_address()
 
+### The 32-bit word at an address the table gives as a number.
+### :param at: The word's address.
+### :returns: The word.
+secret routine word_at(at: U64) -> U32
+    return inttoptr[U64, Addr](at).to[@U32]().peek()
+
 ### A 32-bit word of the table read as a signed offset from where it is: the address it names.
 ### :param at: The word's address.
 ### :returns: The address.
 secret routine table_target(at: U64) -> U64
-    word: U64 = inttoptr[U64, Addr](at).to[@U32]().peek().to[U64]()
+    word: U64 = word_at(at).to[U64]()
     return when
         word >= 0x80000000 => at +% word -% 0x100000000
         else => at +% word
@@ -535,11 +541,11 @@ secret routine table_target(at: U64) -> U64
 ###     address outside the program's code.
 routine trace_routine_at(pc: U64) -> S64
     table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
-    groups: U64 = inttoptr[U64, Addr](table).to[@U32]().peek().to[U64]()
+    groups: U64 = word_at(table).to[U64]()
 
     for g in 0 til groups
         group: U64 = table + 8 + g * 16
-        count: U64 = inttoptr[U64, Addr](group).to[@U32]().peek().to[U64]()
+        count: U64 = word_at(group).to[U64]()
         routines: U64 = table_target(group + 8)
         # the last routine that starts at or before pc
         found: U64 = last_at_or_below(base: routines, count: count, stride: 16, value: pc)
@@ -558,17 +564,17 @@ routine trace_routine_at(pc: U64) -> S64
 ### :returns: The chain's index in TRACE_CHAINS, or -1 when no traced routine makes that call.
 routine trace_site_at(ra: U64) -> S64
     table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
-    groups: U64 = inttoptr[U64, Addr](table).to[@U32]().peek().to[U64]()
+    groups: U64 = word_at(table).to[U64]()
 
     for g in 0 til groups
         group: U64 = table + 8 + g * 16
-        count: U64 = inttoptr[U64, Addr](group + 4).to[@U32]().peek().to[U64]()
+        count: U64 = word_at(group + 4).to[U64]()
         sites: U64 = table_target(group + 12)
         found: U64 = last_at_or_below(base: sites, count: count, stride: 8, value: ra)
         if found < count
             entry: U64 = sites + found * 8
             if table_target(entry) == ra
-                return inttoptr[U64, Addr](entry + 4).to[@U32]().peek().to[S64]()
+                return word_at(entry + 4).to[S64]()
     then
         return -1
 
@@ -618,8 +624,8 @@ routine trace_walk(start: Addr, fault_pc: Addr, copy: TraceCopy, early: Bool) ->
         chain: S64 = trace_site_at(ra)
         if chain >= 0
             row: U64 = ptrtoint[Addr, U64](TRACE_CHAINS.to[Addr]()) + chain.to[U64]() * 8
-            first: U64 = inttoptr[U64, Addr](row).to[@U32]().peek().to[U64]()
-            count: U64 = inttoptr[U64, Addr](row + 4).to[@U32]().peek().to[U64]()
+            first: U64 = word_at(row).to[U64]()
+            count: U64 = word_at(row + 4).to[U64]()
             for k in 0 til count
                 put_frame(index: total.load(), frame: first + k, copy)
                 (total.load() + 1).store_into(total)
