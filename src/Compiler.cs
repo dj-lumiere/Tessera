@@ -88,6 +88,11 @@ public sealed partial class Compiler
         lock (_keptViewChecks) _keptViewChecks.Add(check);
     }
 
+    /// The `destruct` the program wrote for an entity, or null when the builder walks its fields (or none is declared).
+    public RoutineDecl? WrittenDestruct(RecordDecl entity) =>
+        _allRoutines.FirstOrDefault(r => r.Name == "destruct" && r.Owner?.Name == entity.Name && r.Module == entity.Module
+            && r.Blocks is { Count: > 0 } && r.AnnotationNamed("derived") is null);
+
     /// The deferred memory checks, run after Escapes.Verify.
     private List<CompileError> CheckKeptViews() =>
         _keptViewChecks.SelectMany(check => check(new MemoryRules.Effects(Escapes.KeepsInto, Access.ReturnsAccess, Access.GivesBack))).GroupBy(e => e.Pos).Select(g => g.First())

@@ -307,6 +307,10 @@ public sealed partial class FunctionGen
         {
             var baseType = InferQuiet(f.Base);
             var held = baseType is PtrType { Pointee: { } pointee } ? pointee : baseType;
+            // A field of the value a `&T` holds (`q.held` on a `q: &Q` from a manager) is that value's field.
+            if (held is RecordType { Decl.Name: "BorrowedCell", Args: [RecordType inCell] } cell && cell.Decl.Module == Compiler.SystemModule
+                && _c.Fields(cell).All(field => field.Name != f.Name))
+                held = inCell;
             if (Entities.IsEntity(held))
                 return held is RecordType { Decl: { Name: "BorrowedSlice" or "BorrowedCell" } } builtin && builtin.Decl.Module == Compiler.SystemModule
                     ? null
@@ -420,6 +424,19 @@ public sealed partial class FunctionGen
             case RecordLit lit:
                 foreach (var f in lit.Fields) roots.UnionWith(ViewRoots(f.Value));
                 break;
+            // A value handed over with steal, put in memory from a manager, or made under try or check carries the
+            // sources of what it is made of.
+            case StealExpr { Value: var stolen }:
+                roots.UnionWith(ViewRoots(stolen));
+                // What is handed over goes along: the views it holds stay, the handed name itself is no source.
+                if (stolen is ValueRef handedOver) roots.Remove(ResolveRoot(handedOver.Name));
+                break;
+            case AtExpr { Value: var placed }:
+                roots.UnionWith(ViewRoots(placed));
+                break;
+            case UnaryExpr { Op: "try" or "check", Operand: var recovered }:
+                roots.UnionWith(ViewRoots(recovered));
+                break;
             case ArrayLit array:
                 foreach (var element in array.Elements) roots.UnionWith(ViewRoots(element));
                 break;
@@ -427,7 +444,10 @@ public sealed partial class FunctionGen
             // sources are theirs together (`first(m: m)`, `m.find(x)`, `Pair(a: x.getview(), b: 1)`). Memory or an entity
             // it gives back is its own, and what is handed over with steal goes along with the value. An Addr is a
             // number, with no source.
-            case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && !Tracked(made) && CarriesAddress(made) && !IsAddr(made):
+            // An entity a call makes holds no view of what it was handed unless its type holds a view (a matcher over
+            // the text it searches).
+            case CallExpr or NsCallExpr or MethodCallExpr when InferQuiet(e) is { } made && (!Tracked(made) || HoldsView(made))
+                                                               && CarriesAddress(made) && !IsAddr(made):
                 var numbers = _numberArgs.GetValueOrDefault((e.Pos, CalledName(e) ?? ""));
                 foreach (var (part, index) in CallParts(e).Select((p, i) => (p, i)))
                 {
@@ -491,13 +511,87 @@ public sealed partial class FunctionGen
     /// memory it was handed. A plain view (`m.getview()`) is a ViewOf already.
     private void NoteBoundViews(BindStmt b, DType t)
     {
-        if (!MemOn || b.Value is ClaimExpr || !CarriesAddress(t) || RootName(b.Value) is not null) return;
+        if (!MemOn) return;
+        // A place a `<-` line fills (`h: &Holder <- Holder.construct(data: m.getslice())`, from STACK or a manager)
+        // holds what the value put in it holds: the place carries the value's sources.
+        if (b.Value is ClaimExpr { Contents: { } filled })
+        {
+            if (HoldsView(PlacedValue(t))) NoteHeldViews(b.Name, ViewRoots(filled), b.Pos);
+            return;
+        }
+        if (b.Value is ClaimExpr || !CarriesAddress(t) || RootName(b.Value) is not null) return;
         var roots = ViewRoots(b.Value);
         // Memory handed into the same value with its view (`Me(path: path.getview(), storage: steal path)`) lives as
         // long as the value: the view goes along with it.
         foreach (var part in b.Value switch { RecordLit lit => lit.Fields.Select(f => f.Value), ArrayLit a => a.Elements, _ => CallParts(b.Value) })
             if (part is StealExpr { Value: ValueRef moved }) roots.Remove(ResolveRoot(moved.Name));
         NoteHeldViews(b.Name, roots, b.Pos);
+    }
+
+    /// A value of this routine that holds views of its places (`steal h` of an entity made with `m.getslice()`) put
+    /// into a field of an entity that is made already or into a global: the same as keeping the view there.
+    private void CheckKeptHolder(CallPlan plan, Instance sig, Expr value, Expr into)
+    {
+        // A named holder (`steal h`, `h`): its sources are the views it took in when it was filled. A view written
+        // here itself is the escape check's.
+        if ((value is StealExpr { Value: ValueRef moved } ? moved : value) is not ValueRef holder
+            || !_heldRoots.ContainsKey(ResolveRoot(holder.Name))
+            || InferQuiet(value) is not { } stored || !HoldsView(PlacedValue(stored))) return;
+        string? entity = EntityOfField(into);
+        string? global = entity is null && _escape is not null
+            ? AtomsOf(into).OfType<GlobalAtom>().Select(g => g.Name).FirstOrDefault()
+            : null;
+        if (entity is null && global is null) return;
+        var roots = new HashSet<string>(_heldRoots[ResolveRoot(holder.Name)]);
+        roots.Remove(ResolveRoot(holder.Name));
+        if (roots.Order(StringComparer.Ordinal).FirstOrDefault() is not { } source) return;
+        string where = entity is not null
+            ? $"a field of the entity {entity}, which any routine that reaches the entity may use later"
+            : $"the global '{global}', which every routine reaches";
+        throw Err(plan.Pos, $"{Spelled(new MethodCallExpr(plan.Receiver!, sig.Decl.Name, [], plan.Args, plan.Pos))} keeps a view "
+            + $"of '{source}' in {where}, and the build can't compare those later uses with where that view's place is given "
+            + "back: keep an Addr there (the view's .to[Addr](), turned back with .to[@T?]() and a when), make the field an &E? "
+            + "when one holder keeps the value, or hand the view as an argument to the routines that use it");
+    }
+
+    /// The value a place keeps: the `T` of a slot of a `&T` (a BorrowedCell from a manager, or the Optional of one).
+    private static DType PlacedValue(DType t)
+    {
+        var held = t is PtrType { Pointee: { } pointee } ? pointee : t;
+        if (held is VariantType { Decl.Name: "Optional", Args: [var some] }) held = some;
+        if (held is VariantType check && Crashing.IsCheck(check)) held = Crashing.ValueOf(check);
+        return held is RecordType { Decl.Name: "BorrowedCell", Args: [var inner] } box && box.Decl.Module == Compiler.SystemModule
+            ? inner
+            : held;
+    }
+
+    /// Whether a `drop` of a value of `t` reads the views it holds: an entity whose `destruct` the program wrote and
+    /// whose body reaches a field of `me` that holds a view. The destruct the builder writes walks the fields that hold
+    /// something to give back, and a view gives nothing back.
+    private bool DropReadsViews(DType t)
+    {
+        if (PlacedValue(t) is not RecordType { Decl: { IsEntity: true } decl } entity || _c.WrittenDestruct(decl) is not { } destruct)
+            return false;
+        var viewFields = _c.Fields(entity).Where(f => HoldsView(f.Type)).Select(f => $"me.{f.Name}").ToList();
+        if (viewFields.Count == 0) return false;
+        var printer = new Printer();
+        foreach (var stmt in Bodies.All(destruct.Blocks!.SelectMany(block => block.Stmts)))
+        {
+            Expr? read = stmt switch
+            {
+                ExprStmt e => e.Value,
+                BindStmt bind => bind.Value,
+                ReturnStmt { Value: { } returned } => returned,
+                IfStmt i => i.Cond,
+                _ => null,
+            };
+            if (read is null) continue;
+            string text;
+            try { text = printer.Expr(read, 0); }
+            catch (InvalidOperationException) { return true; }
+            if (viewFields.Any(field => text.Contains(field, StringComparison.Ordinal))) return true;
+        }
+        return false;
     }
 
     /// A store of a value that holds views of memory into a place of this routine: the place's value holds them now.
@@ -512,6 +606,7 @@ public sealed partial class FunctionGen
         };
         Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
+        CheckKeptHolder(plan, sig, value, into);
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
         // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
         if ((value is StealExpr { Value: ValueRef stolenTicket } ? stolenTicket : value) is ValueRef ticket && IsWorkTicket(InferQuiet(ticket)))

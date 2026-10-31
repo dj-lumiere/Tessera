@@ -2202,7 +2202,10 @@ public sealed partial class FunctionGen
                 string? endsTicket = MemOn && d.Value is ValueRef droppedTicket && _ticketNames.Contains(droppedTicket.Name)
                     ? droppedTicket.Name : null;
                 // The access a drop gives back isn't read by it: a second drop says so itself.
-                _givingBack = d.Value is ValueRef givenBack && _accessViews.Contains(givenBack.Name) ? d.Value : null;
+                // Nor does a drop read the views the value holds, unless the destruct the program wrote reads them.
+                _givingBack = d.Value is ValueRef givenBack && (_accessViews.Contains(givenBack.Name)
+                    || _heldRoots.ContainsKey(givenBack.Name) && InferQuiet(givenBack) is { } droppedType && !DropReadsViews(droppedType))
+                    ? d.Value : null;
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
                 // A value that isn't a place (a call's result, an arm's value) has no address for destruct(me: @Me):
                 // it goes into a slot of its own first, which the drop then ends. An entity value would otherwise

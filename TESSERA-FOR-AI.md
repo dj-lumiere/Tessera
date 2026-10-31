@@ -355,7 +355,11 @@ routine start() -> None
     `.to[@T?]()` and a `when`) for links inside a structure the program keeps right itself (scheduler queues, a
     node's `next`), make the field an `&E?` when one holder keeps the value, or hand the view as an argument to the
     routines that use it. An entity made with a view (`Me(source: text, ...)`, a matcher over text) is a value
-    holding it: it carries the source like a record. A BorrowedCell's and a BorrowedSlice's own address and manager
+    holding it: the place it fills (`h: &Holder <- Holder.construct(data: m.getslice())`, from STACK or a manager, and
+    `h <- v` writing over it) carries the source like a record, so reading `h` or a view through it after `drop m` is
+    `'h' holds a view of 'm', ...`. `drop h` after `drop m` builds (the destruct the builder writes reads no view),
+    unless the entity's own written `destruct` reads such a field. `steal h` takes the sources along, and handing `h`
+    into a global or an existing entity's field is the error above. A BorrowedCell's and a BorrowedSlice's own address and manager
     fields, a `@MemoryManager` (the link to where memory goes back, which the manager check below follows), and a
     `SourceLocation` (the builder's read-only text) don't count as views here.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
