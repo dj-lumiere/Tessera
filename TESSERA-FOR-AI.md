@@ -400,7 +400,7 @@ routine start() -> None
     `count` entities in a row. A slot whose generation reaches `U32.MAX` is retired. The table is 64 KiB chunks of
     4,096 entries that never move and a directory of their addresses that doubles (the old one kept to the end).
     `fetch()` reads the entry once with no lock. Threads come later: between `fetch()` on one thread and the entity's
-    end on another, the program orders the two itself. A byte copy inside `danger` the program writes itself carries
+    end on another, the program orders the two itself. `PoolManager.take` / `end` / `lookup` / `generation` / `is_set_up` are for a language runtime that keeps the slot itself (RazorForge's runtime, `Ingrid/runtime-tessera/stamps.te`, shares the table). A byte copy inside `danger` the program writes itself carries
     the slot along: the code that does it answers for it.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
