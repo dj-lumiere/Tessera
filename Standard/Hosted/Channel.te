@@ -4,18 +4,24 @@
 # number of them. `Channel[T]` has one receiver and `SharedChannel[T]` any number, each value going to one of them.
 # Both live in memory the threads and fibers that use them share (`@Channel[T]`):
 #
-#     claim jobs: @Channel[U64] <- .construct(capacity: 16)
+#     jobs: &Channel[U64] <- .construct(capacity: 16)
 #     jobs.transmit(42)   # waits while the room is full
 #     got: Check[U64] = check jobs.receive()   # waits while it is empty
+#
+# A channel takes over what it is given: an entity, or memory from a manager, goes in with `steal`
+# (`lines.transmit(value: steal line)`), and the receiver gets it in a place of its own (`got: &[Byte] <-
+# lines.receive()`). A view goes in only when what it views never ends (a text literal, a preset, a global): a view of a
+# place would outlive it on the receiver's side, so it is a build error that points to handing the place over with
+# `steal`.
 #
 # A transmitter that waits for room, or a receiver that waits for a value, sleeps if it is a thread and parks if it is
 # a fiber: the other fibers of its thread go on, and the other side wakes it. `transmit_if_room` doesn't wait. A
 # channel starts with one transmitter and one receiver: `add_transmitter` (and `add_receiver` on a SharedChannel)
 # counts another, and each says it is done with `close_transmitting` or `close_receiving`. Once every transmitter has
 # closed, receivers take what is left and then get `ChannelClosedError`. Once every receiver has closed, the values
-# left are dropped and transmitters get `ChannelClosedError`. Values that own memory are taken out and released by a
-# receiver before it closes. A wait also ends
-# with `CancelRequested` when the work that waits is asked to stop with `cancel()`.
+# left are ended with `drop` and transmitters get `ChannelClosedError`. A transmit that ends with a failure ends the
+# value it was given the same way, and `drop` of the channel ends the values still in it. A wait also ends with
+# `CancelRequested` when the work that waits is asked to stop with `cancel()`.
 
 module Hosted
 
@@ -123,20 +129,22 @@ common routine SharedChannel[T].construct(capacity: U64) -> Me
 
 # -- the two kinds, through the core ------------------------------------------------------------------------------
 
-### Transmits `value`, waiting while the room is full.
-### :param value: The value.
-###     waits is asked to stop first.
+### Transmits `value`, waiting while the room is full. The channel takes it over: when the transmit fails, the
+### channel ends it with `drop` first.
+### :param value: The value, handed over with `steal` when it is an entity.
+### :throws: `ChannelClosedError` when every receiver has closed, or `CancelRequested` when the work that waits is asked
+###     to stop first.
 @target(os: not "none")
 failable routine @Channel[T].transmit(value: T) -> None
-    when check me.core.transmit(value)
+    when check me.core.transmit(value: steal value)
         is None => return
 
 ### Transmits `value` if there is room, without waiting.
-### :param value: The value.
-### :returns: True when it went in, false when the room is full or every receiver has closed.
+### :param value: The value, handed over with `steal` when it is an entity.
+### :returns: None when it went in, and `value` itself when the room is full or every receiver has closed.
 @target(os: not "none")
-routine @Channel[T].transmit_if_room(value: T) -> Bool
-    return me.core.transmit_if_room(value)
+routine @Channel[T].transmit_if_room(value: T) -> T?
+    return me.core.transmit_if_room(value: steal value)
 
 ### Takes the oldest value, waiting while there is none.
 ### :returns: The value, `ChannelClosedError` when every transmitter has closed and no value is left, or
@@ -159,26 +167,28 @@ routine @Channel[T].close_transmitting() -> None
     me.core.close_transmitting()
     return
 
-### The receiver is done: the values left are dropped, and transmitters get `ChannelClosedError`.
+### The receiver is done: the values left are ended with `drop`, and transmitters get `ChannelClosedError`.
 @target(os: not "none")
 routine @Channel[T].close_receiving() -> None
     me.core.close_receiving()
     return
 
-### Transmits `value`, waiting while the room is full.
-### :param value: The value.
-###     waits is asked to stop first.
+### Transmits `value`, waiting while the room is full. The channel takes it over: when the transmit fails, the
+### channel ends it with `drop` first.
+### :param value: The value, handed over with `steal` when it is an entity.
+### :throws: `ChannelClosedError` when every receiver has closed, or `CancelRequested` when the work that waits is asked
+###     to stop first.
 @target(os: not "none")
 failable routine @SharedChannel[T].transmit(value: T) -> None
-    when check me.core.transmit(value)
+    when check me.core.transmit(value: steal value)
         is None => return
 
 ### Transmits `value` if there is room, without waiting.
-### :param value: The value.
-### :returns: True when it went in, false when the room is full or every receiver has closed.
+### :param value: The value, handed over with `steal` when it is an entity.
+### :returns: None when it went in, and `value` itself when the room is full or every receiver has closed.
 @target(os: not "none")
-routine @SharedChannel[T].transmit_if_room(value: T) -> Bool
-    return me.core.transmit_if_room(value)
+routine @SharedChannel[T].transmit_if_room(value: T) -> T?
+    return me.core.transmit_if_room(value: steal value)
 
 ### Takes the oldest value, waiting while there is none. Each value goes to one receiver.
 ### :returns: The value, `ChannelClosedError` when every transmitter has closed and no value is left, or
@@ -206,7 +216,8 @@ routine @SharedChannel[T].close_transmitting() -> None
     me.core.close_transmitting()
     return
 
-### One receiver is done. Once every receiver is, the values left are dropped, and transmitters get `ChannelClosedError`.
+### One receiver is done. Once every receiver is, the values left are ended with `drop`, and transmitters get
+### `ChannelClosedError`.
 @target(os: not "none")
 routine @SharedChannel[T].close_receiving() -> None
     me.core.close_receiving()
@@ -214,8 +225,8 @@ routine @SharedChannel[T].close_receiving() -> None
 
 # -- the core -----------------------------------------------------------------------------------------------------
 
-### Transmits `value`, waiting while the room is full.
-### :param value: The value.
+### Transmits `value`, waiting while the room is full. A failure ends `value` first.
+### :param value: The value, taken over.
 @target(os: not "none")
 failable routine @ChannelCore[T].transmit(value: T) -> None
     waiter: Waiter = current_waiter()
@@ -225,9 +236,10 @@ failable routine @ChannelCore[T].transmit(value: T) -> None
         held: Authorized[U8] <- me.guard.get_exclusive_access()
         if me.receivers.peek() == 0
             drop held
+            drop value
             throw ChannelClosedError()
         if me.count.peek() < me.items.count()
-            me.push(value)
+            me.push(value: steal value)
             drop held
             return
         node.next.poke(me.putters.peek())
@@ -237,6 +249,7 @@ failable routine @ChannelCore[T].transmit(value: T) -> None
             held2: Authorized[U8] <- me.guard.get_exclusive_access()
             unlink(list: me.putters, node)
             drop held2
+            drop value
             throw CancelRequested()
         waiter.park()
         held3: Authorized[U8] <- me.guard.get_exclusive_access()
@@ -244,17 +257,17 @@ failable routine @ChannelCore[T].transmit(value: T) -> None
         drop held3
 
 ### Transmits `value` if there is room, without waiting.
-### :param value: The value.
-### :returns: True when it went in.
+### :param value: The value, taken over.
+### :returns: None when it went in, and `value` when it didn't.
 @target(os: not "none")
-routine @ChannelCore[T].transmit_if_room(value: T) -> Bool
+routine @ChannelCore[T].transmit_if_room(value: T) -> T?
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     if not (me.receivers.peek() != 0 and me.count.peek() < me.items.count())
         drop held
-        return false
-    me.push(value)
+        return steal value
+    me.push(value: steal value)
     drop held
-    return true
+    return None()
 
 ### Takes the oldest value, waiting while there is none.
 ### :returns: The value, `ChannelClosedError`, or `CancelRequested`.
@@ -266,9 +279,9 @@ failable routine @ChannelCore[T].receive() -> T
     loop
         held: Authorized[U8] <- me.guard.get_exclusive_access()
         if me.count.peek() != 0
-            value: T = me.pop()
+            value: &T <- me.pop()
             drop held
-            return value
+            return steal value
         if me.transmitters.peek() == 0
             drop held
             throw ChannelClosedError()
@@ -324,10 +337,24 @@ routine @ChannelCore[T].close_receiving() -> None
         throw UnacceptedValueError(description: "Every receiver of this channel has closed already.")
     me.receivers.poke(me.receivers.peek() - 1)
     if me.receivers.peek() == 0
-        me.count.poke(0)
+        me.drop_values()
         wake_list(me.putters.peek().to[@ChannelWait?]())
     drop held
     return
+
+### Ends the values the channel still holds, the oldest first, and gives its room back.
+routine @ChannelCore[T].destruct() -> None
+    me.drop_values()
+    drop me.items
+    return
+
+### Ends the values the channel holds with `drop`, the oldest first.
+secret routine @ChannelCore[T].drop_values() -> None
+    until me.count.peek() == 0
+        value: &T <- me.take_oldest()
+        drop value
+    then
+        return
 
 ### Puts `value` behind the others and wakes the waiting receivers. The lock is held and there is room.
 ### :param value: The value.
@@ -344,13 +371,19 @@ secret routine @ChannelCore[T].push(value: T) -> None
 ### :returns: The value.
 @target(os: not "none")
 secret routine @ChannelCore[T].pop() -> T
+    value: &T <- me.take_oldest()
+    wake_list(me.putters.peek().to[@ChannelWait?]())
+    return steal value
+
+### Takes the oldest value out of the ring. There is a value.
+### :returns: The value.
+secret routine @ChannelCore[T].take_oldest() -> T
     head: U64 = me.head.peek()
     # A ring of places: the count kept beside it says which hold a value, so the place is reached as raw memory.
-    value: T = steal me.items.to[@T]().stride(head)
+    value: &T <- steal me.items.to[@T]().stride(head)
     me.head.poke((head + 1) % me.items.count())
     me.count.poke(me.count.peek() - 1)
-    wake_list(me.putters.peek().to[@ChannelWait?]())
-    return value
+    return steal value
 
 ### Wakes every waiter in the list. Each takes itself out when it runs again.
 ### :param first: The first waiting node, or None.

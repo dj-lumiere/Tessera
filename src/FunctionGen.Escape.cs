@@ -368,10 +368,15 @@ public sealed partial class FunctionGen
                 : new CallExpr(plan.Decl.Name, [], plan.Args, plan.Pos));
         _escapeCalls[(plan.Pos, plan.Decl.Name)] = _escape.Calls.Count;
         var exclusive = Enumerable.Range(0, handed.Count).Where(i => UnderExclusiveAccess(handed[i])).ToHashSet();
+        var channels = new Dictionary<int, (string, string)>();
+        for (int i = 0; i < handed.Count; i++)
+            if (ChannelTypeName(InferQuiet(handed[i])) is { } channelType)
+                channels[i] = (Spelled(handed[i]), channelType);
         _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text)
         {
             Exclusive = exclusive.Count > 0 ? exclusive : null,
             ReadOnly = readOnly.Count > 0 ? readOnly : null,
+            Channels = channels.Count > 0 ? channels : null,
         });
     }
 
@@ -748,6 +753,15 @@ public sealed partial class FunctionGen
                     }
             }
         }
+    }
+
+    /// The name of the standard library's channel type `t` is (or points at, or a place holds), or null: a channel hands
+    /// what it keeps to another thread or fiber.
+    private static string? ChannelTypeName(DType? t)
+    {
+        var inner = t is PtrType { Pointee: { } pointee } ? pointee : t;
+        if (inner is RecordType { Decl: { IsLibrary: true, Name: "BorrowedCell" }, Args: [var held] }) inner = held;
+        return inner is RecordType { Decl: { IsLibrary: true, Name: "Channel" or "SharedChannel" } channel } ? channel.Name : null;
     }
 
     /// Whether a routine is a List's of the standard library: on a list of tickets, `retrieve_all`, `wait_all_finished`,

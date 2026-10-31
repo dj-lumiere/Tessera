@@ -80,6 +80,11 @@ public sealed class EscapeCheck
         /// The arguments that view read-only memory (a text literal, a preset, a view of one), each with what it views:
         /// a callee that writes through that parameter writes there.
         public Dictionary<int, (string Origin, string Copy)>? ReadOnly { get; init; }
+
+        /// The arguments that are channels, each as written and with its type's name: a channel hands what it keeps
+        /// to another thread or fiber, so keeping a view of this routine's memory there is an error even when the
+        /// channel is this routine's own.
+        public Dictionary<int, (string Text, string Type)>? Channels { get; init; }
     }
 
     /// A store: the place written (an address) and the value written there.
@@ -641,6 +646,13 @@ public sealed class EscapeCheck
                     (local, _) => KeptThreadLocal(call, callee, from, local, why), errors);
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(Kept(call, callee, from, sees, why));
+                else if (errors is not null && depth == 0 && call.Channels?.GetValueOrDefault(into) is { Text: not null } channel
+                         && Reaches(value) is { } seen)
+                    errors.Add(new CompileError(call.Pos, $"'{channel.Text}' is a {channel.Type}, which hands its values to "
+                        + $"another thread or fiber, and {call.Text} hands it a view of {seen.What}, which ends in "
+                        + $"'{Routine}': the receiver could read it after that. Hand the memory itself over to a channel of "
+                        + $"places (a Channel[&[Byte]] for bytes) with steal, or transmit a view of memory that never ends "
+                        + "(a text literal, a preset, a global)" + Note));
             }
             // What the callee calls through a Callable this call hands it.
             foreach (var (param, level, invoked, why) in e.Invokes.Values)

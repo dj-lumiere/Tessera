@@ -148,6 +148,10 @@ public sealed partial class FunctionGen
                 + (shown.StartsWith('&') ? shown : $"&{shown}") + " <- ... from manager");
         }
         var type = Resolve(written);
+        // `back: &Job? <- f()`: `&Job?` is an Optional of a place from a manager, and the place that holds a `Job?` is `&(Job?)`.
+        if (!IsBorrowedType(type) && RecoveredPlace(written, "try") is { } optionalHeld)
+            throw Err(b.Pos, $"&{optionalHeld}? is an Optional of a place borrowed from a manager, which only try on a line with "
+                + $"from gives: a place that holds a {optionalHeld}? is written with parentheses, {b.Name}: &({optionalHeld}?) <- value");
         if (!IsBorrowedType(type))
             throw Err(b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
                 + $"{b.Name}: {written} = value binds a value");

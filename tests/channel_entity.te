@@ -1,0 +1,149 @@
+# Channels of entities and of memory from a manager: a value goes in with steal and comes out in a place of the
+# receiver's own. transmit_if_room hands a refused value back, a transmit that fails ends the value it was given,
+# and closing the receiving end or dropping the channel ends the values still in it, the oldest first. A view of
+# memory that never ends (a text literal, a global) goes in as it is.
+
+import Hosted
+
+### How many jobs have ended.
+global ENDED: &U64 <- 0
+
+### What the last job to end was numbered.
+global LAST: &U64 <- 0
+
+### Bytes that are there for the whole program.
+global GREETING: &[Byte] <- [b'h', b'i']
+
+### A job.
+entity Job
+    id: U64
+
+### Makes one.
+### :param id: Its number.
+### :returns: The job.
+common routine Job.construct(id: U64) -> Me
+    return Me(id: id)
+
+### Counts the job as ended.
+routine @Job.destruct() -> None
+    ENDED.fetch_add_unbroken(1)
+    LAST.poke_unbroken(me.id.peek())
+    return
+
+### Shows how many jobs have ended so far.
+### :param at: What the program did last.
+routine show_ended(at: @[Byte]) -> None
+    Console.show("{at}: ended {ENDED.peek()}, last {LAST.peek()}")
+    return
+
+### Receives jobs until the channel closes, and adds up their numbers.
+### :param ch: The channel.
+### :returns: The sum.
+routine sum_ids(ch: @SharedChannel[Job]) -> U64
+    loop with total: U64 = 0
+        when check ch.receive()
+            is Job as job =>
+                id: U64 = job.id.peek()
+                drop job
+                continue with total: total + id
+            is ChannelClosedError => return total
+            is CancelRequested => return 0
+
+### Hands two jobs through a channel, one back from a full one, and shows the ends.
+routine jobs_one_by_one() -> None
+    ch: &Channel[Job] <- .construct(capacity: 2)
+    a: &Job <- Job.construct(id: 1)
+    ch.transmit(value: steal a)
+    b: &Job <- Job.construct(id: 2)
+    went: &(Job?) <- ch.transmit_if_room(value: steal b)
+    c: &Job <- Job.construct(id: 3)
+    refused: &(Job?) <- ch.transmit_if_room(value: steal c)
+    when steal refused
+        is Job as back =>
+            Console.show("refused job {back.id.peek()}")
+            drop back
+        is None => Console.show("job 3 went in")
+    drop went
+    show_ended("after the refused one")
+    got: &Job <- ch.receive()
+    Console.show("received job {got.id.peek()}")
+    drop got
+    show_ended("after the received one")
+    drop ch
+    show_ended("after drop ch")
+    return
+
+### Closes the receiving end with jobs left, then transmits to it.
+routine closed_with_jobs_left() -> None
+    ch: &Channel[Job] <- .construct(capacity: 4)
+    a: &Job <- Job.construct(id: 4)
+    ch.transmit(value: steal a)
+    b: &Job <- Job.construct(id: 5)
+    ch.transmit(value: steal b)
+    ch.close_receiving()
+    show_ended("after close_receiving")
+    late: &Job <- Job.construct(id: 6)
+    when check ch.transmit(value: steal late)
+        is None => Console.show("job 6 went in")
+        is ChannelClosedError => show_ended("job 6 to a closed channel")
+        is CancelRequested => Console.show("cancelled")
+    late_too: &Job <- Job.construct(id: 7)
+    when ch.transmit_if_room(value: steal late_too)
+        is Job as back =>
+            Console.show("job {back.id.peek()} came back")
+            drop back
+        is None => Console.show("job 7 went in")
+    drop ch
+    return
+
+### Three threads share the receiving end of a channel of jobs.
+routine shared_jobs() -> None
+    ch: &SharedChannel[Job] <- .construct(capacity: 2)
+    ch.add_receiver()
+    r1: Thread[U64] <- get_thread[U64]()
+    work_r1: Work[U64] = sum_ids.to[Work](ch: ch)
+    r1.put_work(work_r1)
+    r2: Thread[U64] <- get_thread[U64]()
+    work_r2: Work[U64] = sum_ids.to[Work](ch: ch)
+    r2.put_work(work_r2)
+    until i > 100 with i: U64 = 1
+        job: &Job <- Job.construct(id: i)
+        ch.transmit(value: steal job)
+        continue with i: i + 1
+    ch.close_transmitting()
+    total: U64 = r1.retrieve() + r2.retrieve()
+    drop r1
+    drop r2
+    drop ch
+    Console.show("two receivers: {total}")
+    return
+
+### Bytes from the heap go through a channel with steal, and views of memory that never ends as they are.
+routine bytes_and_views() -> None
+    lines: &Channel[&[Byte]] <- .construct(capacity: 2)
+    line: &[Byte] <- [b'o', b'k'] from HEAP
+    lines.transmit(value: steal line)
+    got: &[Byte] <- lines.receive()
+    Console.show("bytes: {got.getslice()}")
+    drop got
+    spare: &[Byte] <- [b'x'] from HEAP
+    lines.transmit(value: steal spare)
+    drop lines
+
+    views: &Channel[@[Byte]] <- .construct(capacity: 2)
+    views.transmit("hello")
+    views.transmit(GREETING.getslice(start: 0, count: 2))
+    first: @[Byte] = views.receive()
+    second: @[Byte] = views.receive()
+    Console.show("views: {first} {second}")
+    drop views
+    return
+
+### Runs each part.
+routine start() -> None
+    jobs_one_by_one()
+    closed_with_jobs_left()
+    shared_jobs()
+    Console.show("at the end: ended {ENDED.peek()}")
+    bytes_and_views()
+    return
