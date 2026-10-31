@@ -119,7 +119,9 @@ public sealed partial class Compiler
         HeapCheck = heapCheck;
         RaceCheck = raceCheck;
         var targetForms = new Dictionary<string, RoutineDecl>();
-        foreach (var d in Derive.Routines(decls.ToList()))
+        var given = decls.ToList();
+        FindStampedNames(given);
+        foreach (var d in Derive.Routines(given))
         {
             // A type's construct and destruct count on every target, even where only another target keeps them.
             if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);

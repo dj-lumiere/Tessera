@@ -46,7 +46,9 @@ public sealed partial class Compiler
                 if (s.Decl.Fields[i].AnnotationNamed("aligned") is { } a)
                     throw new CompileError(a.Pos, "@aligned has no place in a @layout(dense) record: its fields have no padding");
             long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.AnnotationNamed("layout")!.Pos, "@layout(align: N)", env).Align;
-            return _shapes[s.Key] = new RecordShape(fields.Select(f => new Member(f.Type, 0)).ToList(),
+            var denseMembers = fields.Select(f => new Member(f.Type, 0)).ToList();
+            if (KeepsStamp(s)) denseMembers.Add(new Member(IntType.U(32), 0));
+            return _shapes[s.Key] = new RecordShape(denseMembers,
                 Enumerable.Range(0, fields.Count).ToArray(), Dense: true, WrapAlign: wrap);
         }
         if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.AnnotationNamed("layout")!.Pos, "@layout(align: N)", env));
@@ -61,6 +63,8 @@ public sealed partial class Compiler
             index[i] = members.Count;
             members.Add(new Member(fields[i].Type, 0));
         }
+        // An entity the program stamps keeps its slot in the PoolManager's table last (Stamps.cs).
+        if (KeepsStamp(s)) members.Add(new Member(IntType.U(32), 0));
         return _shapes[s.Key] = new RecordShape(members, index);
     }
 

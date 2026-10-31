@@ -443,9 +443,10 @@ public sealed class EscapeCheck
                 ? $"a field of the entity {entity}, which any routine that reaches the entity may use later"
                 : $"the global '{global!.Name}', which every routine reaches";
             return new CompileError(s.Pos, $"{s.Text} keeps {source} in {where}, and the build can't compare those later uses "
-                + "with where that view's place is given back: keep an Addr there (the view's .to[Addr](), turned back with "
-                + ".to[@T?]() and a when), make the field an &E? when one holder keeps the value, or hand the view as an "
-                + "argument to the routines that use it" + Note);
+                + "with where that view's place is given back: keep a Stamped of the entity there (its stamp(), read back with "
+                + "fetch(), which fails once the entity has ended), make the field an &E? when one holder keeps the value, or "
+                + "hand the view as an argument to the routines that use it. An Addr (the view's .to[Addr](), turned back with "
+                + ".to[@T?]() and a when) is for links the program keeps right itself, such as a runtime's queues" + Note);
         }
 
         /// What a value that holds a view views, said for a message, when the place it views may be given back: memory of

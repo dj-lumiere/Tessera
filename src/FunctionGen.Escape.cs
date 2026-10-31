@@ -653,8 +653,10 @@ public sealed partial class FunctionGen
             : $"the global '{global}', which every routine reaches";
         throw Err(plan.Pos, $"{Spelled(new MethodCallExpr(plan.Receiver!, sig.Decl.Name, [], plan.Args, plan.Pos))} keeps a view "
             + $"of '{source}' in {where}, and the build can't compare those later uses with where that view's place is given "
-            + "back: keep an Addr there (the view's .to[Addr](), turned back with .to[@T?]() and a when), make the field an &E? "
-            + "when one holder keeps the value, or hand the view as an argument to the routines that use it");
+            + "back: keep a Stamped of the entity there (its stamp(), read back with fetch(), which fails once the entity has "
+            + "ended), make the field an &E? when one holder keeps the value, or hand the view as an argument to the routines "
+            + "that use it. An Addr (the view's .to[Addr](), turned back with .to[@T?]() and a when) is for links the program "
+            + "keeps right itself, such as a runtime's queues");
     }
 
     /// The value a place keeps: the `T` of a slot of a `&T` (a BorrowedCell from a manager, or the Optional of one).
