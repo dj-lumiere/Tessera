@@ -2336,6 +2336,11 @@ public sealed partial class FunctionGen
             }
             case NothingStmt:
                 break;
+            case BecomesStmt { Value: var stop } bc when _valueWhens.Count > 0 && ArmNeverReturns(stop):
+                // An arm that calls a routine that never returns leaves like `return` does: it fits a value of any type.
+                EmitNoReturnCall(stop, bc.Pos);
+                Mem(new MemoryRules.Exit(null, false, [], bc.Pos));
+                break;
             case BecomesStmt bc:
             {
                 if (_valueWhens.Count == 0)
@@ -2792,6 +2797,9 @@ public sealed partial class FunctionGen
         if (e is RoutineRef overloaded && Infer(e) is null) return RoutineValue(overloaded, null);
         if (e is LambdaExpr lambda)
             throw Err(lambda.Pos, "a lambda takes its parameter types from the Callable it becomes, and nothing here says which: bind it with a Callable type first");
+        if (e is ArrayLit { IsTuple: false } && Infer(e) is null)
+            throw Err(e.Pos, "a bracket list has no type of its own, so there is nothing to walk or read from it: bind it with a type "
+                + "first (xs: Items[S64, 3] = [1, 2, 3]), then use xs, and walk its positions with for i in 0 til 3");
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -4223,6 +4231,9 @@ public sealed partial class FunctionGen
             if (value is PresetRef { Owner: null, Path: null } unknown && ResolvePreset(unknown) is null
                 && _c.FindFree(unknown.Name, _env.File, at, null) is null)
                 throw Err(at, ScriptBinding(unknown.Name) ?? $"unknown name '{unknown.Name}'");
+            // A call to no routine at all is reported as that, not as a missing method of the writer it would be handed to.
+            if (value is CallExpr unknownCall && Infer(value) is null && PlanCall(value, null) is null)
+                throw Err(at, UnknownCall(unknownCall));
             UntypedLiteral(value, at, $"{{{source.Trim()}}}");
             Flush();
             _templateHole = source.Trim();
@@ -4824,6 +4835,15 @@ public sealed partial class FunctionGen
     }
 
     // ── Calls ───────────────────────────────────────────────────────────────
+
+    /// Whether a value arm's expression is a call to a routine that never returns. An expression that cannot be planned
+    /// without the type the arm is given (a method of that type) is no such call.
+    private bool ArmNeverReturns(Expr e)
+    {
+        if (e is not (CallExpr or NsCallExpr)) return false;
+        try { return IsNoReturn(e); }
+        catch (CompileError) { return false; }
+    }
 
     private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
     {
@@ -6928,6 +6948,11 @@ public sealed partial class FunctionGen
                     throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose failable emit gives "
                         + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;
+                // An entity lives in a place and is not handed out by value: said at the loop, not inside the emitter's own body.
+                if (Entities.Holds(itemType) && !_decl.IsLibrary)
+                    throw Err(l.Source!.Pos, $"{emitter.Type.ToString().TrimStart('@')}.emit hands out each item by value, and a {itemType} is an entity or holds one, which lives in a place "
+                        + $"and is not copied out: walk it by hand with the emitter's next(), which gives the place (@{itemType}): "
+                        + $"iter: &{emitter.Type.ToString().TrimStart('@')} <- ...emitter(), then when try iter.next()");
                 if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
                     throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this emitter hands out {itemType}");
             }

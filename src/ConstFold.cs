@@ -23,6 +23,13 @@ public sealed partial class Compiler
         "add/sub/mul/truediv (and their _unchecked forms), float neg, conversions between B16/BF16/B32/B64 (to and " +
         "to_unchecked), max/min, sizeof/alignof, and T.from_bits(...)";
 
+    /// What the value being folded belongs to, for the messages: a preset, or a global's starting value.
+    private bool _foldingGlobal;
+
+    private string NotBuildtimeTail() => _foldingGlobal
+        ? $"a global starts as {PresetForms}. To compute it when the program runs, write lateinit global and fill it in start"
+        : $"a preset is made of {PresetForms}";
+
     private readonly Dictionary<string, ConstVal> _presetValues = [];
     private readonly HashSet<string> _foldingPresets = [];
 
@@ -287,9 +294,9 @@ public sealed partial class Compiler
                 return new ConstVal(null, c.Name == "sizeof" ? size : align);
             }
             case CallExpr c:
-                throw new CompileError(c.Pos, $"'{c.Name}' can't run at build time; a preset is made of {PresetForms}");
+                throw new CompileError(c.Pos, $"'{c.Name}' can't run at build time; {NotBuildtimeTail()}");
             default:
-                throw new CompileError(e.Pos, $"this isn't a buildtime constant; a preset is made of {PresetForms}");
+                throw new CompileError(e.Pos, $"this isn't a buildtime constant; {NotBuildtimeTail()}");
         }
     }
 
@@ -349,7 +356,7 @@ public sealed partial class Compiler
         }
         // `S64.add(1, 2)`: the receiver is the first argument, of the owner type
         if (n.Args.Count == 0)
-            throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; a preset is made of {PresetForms}");
+            throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; {NotBuildtimeTail()}");
         var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos, 1);
         // `B64.to[B16](1.5)`: the typewise form of a conversion.
         if (IsConversion(n.Name, n.TypeArgs) && n.Args.Count == 1)
@@ -413,7 +420,7 @@ public sealed partial class Compiler
             case { } b128 when HexFloat.IsB128(b128) && name == "neg" && args.Count == 0:
                 return new ConstVal(b128, r.Value ^ (BigInteger.One << 127));
             default:
-                throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
+                throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
         }
     }
 
@@ -466,12 +473,12 @@ public sealed partial class Compiler
                     if (b < 0 || b >= it.Bits) return new ConstVal(it, 0);
                     return new ConstVal(it, Wrap(Unsigned(a, it.Bits) >> (int)b, it));
                 default:
-                    throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
+                    throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
             }
             CheckOverflow(v, it, name, pos);
             return new ConstVal(it, v);
         }
-        throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     private static void CheckOverflow(BigInteger v, IntType it, string name, Pos pos)
@@ -484,7 +491,7 @@ public sealed partial class Compiler
     private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (name == "to_unchecked" || TryResolveType(target, env) is not IntType { IsNumber: true } to)
-            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; a preset is made of {PresetForms}");
+            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
         if (name == "to_wrap") return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
         if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to[{to.Name}] in a preset)");
@@ -549,7 +556,7 @@ public sealed partial class Compiler
             BigInteger b = Typed(Fold(args[0], BoolType.Instance, env), BoolType.Instance, args[0].Pos, firstArgument).Value;
             return new ConstVal(BoolType.Instance, (a == b) == (name == "eq") ? 1 : 0);
         }
-        throw new CompileError(pos, $"Bool.{name} can't run at build time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"Bool.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     /// B32 and B64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE). The checked
@@ -588,7 +595,7 @@ public sealed partial class Compiler
             }
             return new ConstVal(ft, resultBits);
         }
-        throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     /// A float conversion in a preset, between B16, BF16, B32 and B64, rounded to nearest (ties to even) as the stdlib
@@ -597,7 +604,7 @@ public sealed partial class Compiler
     private ConstVal ConvertFloat(BigInteger bits, FloatType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (name == "to_wrap" || TryResolveType(target, env) is not FloatType to)
-            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; a preset is made of {PresetForms}");
+            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
         double value = FloatValue(from, bits);
         BigInteger result = to == FloatType.BF16 ? ToBFloat16Once(value) : FloatBits(to, value);
         if (name == "to" && double.IsFinite(value) && !double.IsFinite(FloatValue(to, result)))

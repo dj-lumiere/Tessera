@@ -197,7 +197,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!char.IsAsciiLetterUpper(name.Text[0]))
             throw new CompileError(name.Pos, $"define names a module or a type, so the name is PascalCase: '{name.Text}'");
         Expect(TokenKind.Eq, "'='");
+        var first = Cur;
         var target = ParseType();
+        if (Is(TokenKind.Slash) && first.Kind == TokenKind.Ident)
+            throw Error($"'{first.Text}' starts no module path this build knows: a path starts with a standard library module "
+                + "(Collections, Hosted, System, ...), Ingrid, a module this file declares or imports, or a module another file of the program declares");
         ExpectLineEnd();
         return new AliasDecl(file, annotations, target, name.Text, pos);
     }
@@ -1784,6 +1788,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return new NothingStmt(pos);
         }
         if (IsIdent("local") && PeekTok(1).Kind == TokenKind.Ident) throw LocalGone();
+        if (IsKeyword(Cur) && Cur.Text is "when" or "loop" or "until" && PeekTok(1).Kind == TokenKind.Colon)
+            throw new CompileError(Cur.Pos, $"'{Cur.Text}' is a keyword; a value of that name is written `{Cur.Text}`");
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
             switch (Cur.Text)

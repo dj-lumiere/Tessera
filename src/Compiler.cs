@@ -889,12 +889,12 @@ public sealed partial class Compiler
         {
             if (c.Value is StrLit)
                 throw new CompileError(c.Value.Pos, $"a string literal is read-only, and a global is written: global {c.Name}: &Items[Byte, _] <- \"...\"");
-            PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
+            GlobalInitializer(c.Value!, SpanStorage(c, t, env), env);
             return;
         }
         if (c.IsStorage)
         {
-            if (c.Value is not null) PresetInitializer(c.Value, t, env);
+            if (c.Value is not null) GlobalInitializer(c.Value, t, env);
             return;
         }
         CheckPresetType(c, t);
@@ -1079,10 +1079,10 @@ public sealed partial class Compiler
     /// The standard library's folder. Its modules' paths start below it (`Standard/Collections/` holds `Collections`).
     public const string StandardRoot = "Standard";
 
-    /// The first name of every standard library module's path: the folders right under `Standard/`. A file's parser
+    /// The first name of every standard library module's path (the folders right under `Standard/`) and Ingrid's. A file's parser
     /// takes each of them as the start of a module path.
     public static readonly IReadOnlyList<string> StandardModuleRoots =
-        ["Collections", "Fiber", "Hosted", "Random", "System", "Text", "Unhosted"];
+        ["Collections", "Fiber", "Hosted", "Ingrid", "Random", "System", "Text", "Unhosted"];
 
     /// The language's base module: the built-in types, the protocols, the Crash service, and the conversions. It and every module
     /// under it are seen from every file without an import.
@@ -2391,7 +2391,7 @@ public sealed partial class Compiler
             throw new CompileError(c.Pos, $"global {c.Name} has no value, and {t} has no all-zero value: it holds a pointer, "
                 + $"memory or a routine that is never empty ({noZero}). Give it one: global {c.Name}: &{t} <- value, "
                 + "or make what may be missing optional (@T? or Callable?, None() when absent), or write lateinit global when the program fills it before it reads it");
-        string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
+        string init = c.Value is null ? "zeroinitializer" : GlobalInitializer(c.Value, t, env);
         string linkage = ExposeDefinitions ? "" : "internal ";
         if (ExposeDefinitions) NoteExposed(symbol);
         _globals.AppendLine($"{name} = {linkage}{threadLocal}global {t.Llvm} {init}");
@@ -2452,6 +2452,15 @@ public sealed partial class Compiler
         }
         elem = null!;
         return false;
+    }
+
+    /// A global's initializer, with the messages of a value that can't be folded speaking of the global.
+    private string GlobalInitializer(Expr e, DType t, TypeEnv env)
+    {
+        bool before = _foldingGlobal;
+        _foldingGlobal = true;
+        try { return PresetInitializer(e, t, env); }
+        finally { _foldingGlobal = before; }
     }
 
     /// The LLVM constant for a preset array element or a global's initializer: a folded constant (ConstFold.cs),

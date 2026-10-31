@@ -742,9 +742,33 @@ static class Cli
         if (args.Where((a, i) => !a.StartsWith('-') && !(i > 0 && takesValue.Contains(args[i - 1]))).Any()) return null;
         string path = Manifest.Find(Directory.GetCurrentDirectory())
                       ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above");
-        if (args.Length > 0)
-            throw new ToolError($"a build from {Manifest.FileName} takes no flags ({string.Join(" ", args)}); set them in {path}");
+        if (args.Length > 0) throw new ToolError(FlagInManifestMessage(args[0], args.Length > 1 ? args[1] : null, path));
         return Manifest.Load(path);
+    }
+
+    /// The error for a flag a build from config.toml was given: the flag is not an option there, and the message names
+    /// the key that says the same thing in the file.
+    private static string FlagInManifestMessage(string flag, string? value, string path)
+    {
+        string v = value is { Length: > 0 } && !value.StartsWith('-') ? value : "...";
+        string? key = flag switch
+        {
+            "--mode" => $"`mode = \"{v}\"` under [target]",
+            "--target" => $"`triple = \"{v}\"` under [target]",
+            "--board" => $"`board = \"{v}\"` under [target]",
+            "--cpu" => $"`cpu = \"{v}\"` under [target]",
+            "--feature" => $"`features = [\"{v}\"]` under [target]",
+            "--emit-llvm" => $"`emit-llvm = true` under [debug]",
+            "--heap-check" => $"`heap-check = true` under [debug]",
+            "--race-check" => $"`race-check = true` under [debug]",
+            "--no-race-check" => $"`race-check = false` under [debug]",
+            "--trace" => $"`trace = true` under [debug]",
+            "--no-trace" => $"`trace = false` under [debug]",
+            _ => null
+        };
+        return key is null
+            ? $"`{flag}` isn't an option of a build from {Manifest.FileName}: it takes no flags, so set the build in {path}"
+            : $"`{flag}` isn't an option: write {key} in {path}";
     }
 
     /// The manifest's library directories and C libraries as link flags (`-L dir`, `-l name`).
