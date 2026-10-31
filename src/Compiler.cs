@@ -124,6 +124,7 @@ public sealed partial class Compiler
             if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);
             if (d is RoutineDecl formed && formed.AnnotationNamed("target") is not null) CheckTargetForms(targetForms, formed);
             if (!Selected(d)) continue;
+            if (!d.IsLibrary) CheckAnnotationNames(d);
             _fileModule.TryAdd(d.File, d.Module);
             RegisterConcepts(d);
             switch (d)
@@ -664,6 +665,7 @@ public sealed partial class Compiler
     {
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
         foreach (var d in GenericDecls(d => !d.IsLibrary)) CheckTypeParams(d);
+        if (TypesContainingThemselves(null) is [var cycle, ..]) throw cycle;
         // A generic routine of the program is checked against its constraints before anything instantiates it, so
         // its error points into the routine, not at a call (GenericPrecheck.cs).
         if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
@@ -687,6 +689,24 @@ public sealed partial class Compiler
         if (Escapes.Verify() is [var escape, ..]) throw escape;
         if (CheckKeptViews() is [var kept, ..]) throw kept;
         return Output();
+    }
+
+    /// The records and variants of the program that hold themselves by value, so they can't be laid out, whether or not
+    /// anything uses them. Any other error is left to the first use, as it was.
+    private List<CompileError> TypesContainingThemselves(Func<string, bool>? scope)
+    {
+        var errors = new List<CompileError>();
+        var types = _records.Values.SelectMany(g => g).Where(d => d.TypeParams.Count == 0).Cast<Decl>()
+            .Concat(_variants.Values.SelectMany(g => g).Where(d => d.TypeParams.Count == 0))
+            .Where(d => !d.IsLibrary && (scope is null || scope(d.File)));
+        foreach (var d in types)
+        {
+            string name = d is RecordDecl r ? r.Name : ((VariantDecl)d).Name;
+            try { SizeAlign(ResolveType(new TypeRef(name, [], d.Pos), new TypeEnv(d.File)), d.Pos); }
+            catch (CompileError e) when (e.Message.EndsWith("contains itself", StringComparison.Ordinal)) { errors.Add(e); }
+            catch (CompileError) { }
+        }
+        return errors;
     }
 
     /// The records, variants and routines with parameters that `include` accepts.
@@ -788,6 +808,7 @@ public sealed partial class Compiler
             try { CheckTypeParams(d); }
             catch (CompileError e) { errors.Add(e); }
         }
+        errors.AddRange(TypesContainingThemselves(scope));
         // Generic bodies and conformances against their constraints, before any instantiation (GenericPrecheck.cs).
         // An instance that fails where its template already did says the same thing again, so it is left out.
         var prechecked = PrecheckGenerics(d => scope is null || scope(d.File));

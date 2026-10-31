@@ -123,6 +123,19 @@ public sealed partial class Compiler
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
          "no_builtins", "untraced", "trace", "heap_check", "race_check", "unavailable", "refused", "reshaping", "positional", "throws", ExpensiveCallLint.Annotation, BlockRule.Generated];
 
+    /// Annotations a type, a field or a preset takes, besides those a routine takes.
+    private static readonly HashSet<string> TypeAnnotations = ["aggregate", "aligned", "layout", "union", "threadlocal", "derive"];
+
+    /// A declaration or a field of the program that is written with an annotation the builder doesn't know is a build
+    /// error, wherever the declaration stands and whether or not anything uses it.
+    private static void CheckAnnotationNames(Decl d)
+    {
+        foreach (var a in d.Annotations.Concat(d is RecordDecl r ? r.Fields.SelectMany(f => f.Annotations) : []))
+            if (!KnownAnnotations.Contains(a.Name) && !TypeAnnotations.Contains(a.Name))
+                throw new CompileError(a.Pos,
+                    $"'@{a.Name}' is not an annotation the builder knows. Remove it, or check its spelling against the annotations in the language reference.");
+    }
+
     /// Annotations that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
 
@@ -138,9 +151,7 @@ public sealed partial class Compiler
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
     {
-        foreach (var a in r.Annotations)
-            if (!KnownAnnotations.Contains(a.Name))
-                throw new CompileError(a.Pos, $"annotation '@{a.Name}' is not supported by this builder yet");
+        CheckAnnotationNames(r);
         if (r.AnnotationNamed("callconv") is { } callconv) CheckCallConv(callconv);
         bool asm = IsAsm(r);
         foreach (var a in r.Annotations)

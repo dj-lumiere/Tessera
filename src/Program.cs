@@ -737,7 +737,9 @@ static class Cli
     /// The solution's manifest, for `build` / `run` given no files. A manifest build takes no flags.
     private static Manifest? ManifestFor(string[] args)
     {
-        if (args.Any(a => !a.StartsWith('-'))) return null;
+        // A word after an option that takes one (`--mode release`) is that option's, not a file.
+        string[] takesValue = ["-o", "--mode", "--target", "--board", "--cpu", "--feature"];
+        if (args.Where((a, i) => !a.StartsWith('-') && !(i > 0 && takesValue.Contains(args[i - 1]))).Any()) return null;
         string path = Manifest.Find(Directory.GetCurrentDirectory())
                       ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above");
         if (args.Length > 0)
@@ -813,6 +815,22 @@ static class Cli
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
                 throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use tessera build");
             return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
+        }
+        // One file with a config.toml in its own folder runs with that file's settings (target, mode, [debug]).
+        if (args is [var single] && !single.StartsWith('-') && Manifest.Find(Path.GetDirectoryName(Path.GetFullPath(single))!) is { } beside
+            && Path.GetDirectoryName(beside) == Path.GetDirectoryName(Path.GetFullPath(single)))
+        {
+            var found = Manifest.Load(beside);
+            if (found.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
+                throw new ToolError($"{found.Path} builds for {found.Target.LlvmTriple}, which this machine can't run; use tessera build");
+            string file = Path.GetFullPath(single);
+            var own = found with
+            {
+                Executable = Path.GetFileNameWithoutExtension(file),
+                Sources = Manifest.ImportClosure(file, found.Roots, found.OutputDirectory, found.RootFiles),
+                RootFiles = [.. found.RootFiles.Where(f => f != found.Entry), file],
+            };
+            return Exec(BuildManifest(own), captureOutput: false, programArgs: programArgs).Code;
         }
         var o = ParseOptions(args);
         string exe = TempExe();
