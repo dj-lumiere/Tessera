@@ -1,61 +1,24 @@
 # Tessera stdlib: Stamped and the PoolManager, links to an entity that see when it has ended
 #
 # `node.stamp()` on an entity gives a `Stamped[Node]`, 8 bytes: a slot in the PoolManager's table and the slot's
-# generation. The entity stays where it is and keeps its slot in a hidden U32 the builder adds to its type (only to the
-# entity types the program stamps). The slot holds the entity's address while it lives. When the entity ends (`drop`,
-# the builder's give back of a STACK place, the old value of `y <- v`, the walk of the entity that held it) or moves to
-# another address (`steal` out of a place of its own, `return` of a STACK place, a collection that reallocates), the
-# slot's generation goes up and its address is cleared, so every stamp of it fails. `fetch()` gives the entity's `@T`,
-# or throws `StaleStampError` when the generations differ. A stamp doesn't keep the entity alive and copies for free.
-# `steal node as other` of a place from a manager keeps the memory, so it keeps the slot.
+# generation. The entity keeps its slot in a hidden U32 the builder adds to its type (only to the entity types the
+# program stamps). The slot holds the entity's address while it lives. When the entity ends (`drop`, the builder's give
+# back of a STACK place, the old value of `y <- v`, the walk of the entity that held it), the slot's generation goes up
+# and its address is cleared, so every stamp of it fails. When the entity moves to another address (`steal` out of its
+# place, `return` of a STACK place, a collection that moves its elements), the slot keeps its generation and gets the
+# new address: the builder clears the address where the entity leaves its place and writes the new one where it lands
+# (every write of a whole value to memory), so a stamp fails only while the entity is between places. `fetch()` gives
+# the entity's `@T`, or throws `StaleStampError` when the generations differ or the entity is between places. A stamp
+# doesn't keep the entity alive and copies for free.
 #
 # The table is chunks of 4,096 entries of 16 bytes (64 KiB) that never move, and a directory of the chunks'
-# addresses that doubles when it is full. The directory it replaces stays until the program ends, so a fetch reading
-# it on another thread is never left with memory given back. A fetch reads the directory, the chunk and the entry with
-# no lock. Taking and ending slots take a short lock. Slot 0 is never used, so an all-zero stamp is always stale. A
-# slot whose generation reaches U32.MAX is retired, never used again.
+# addresses that doubles when it is full. The directory it replaces stays until the program ends. A fetch reads the
+# directory, the chunk and the entry with no lock, and reads the entry once: a program on one thread can't end the
+# entity between the reads. Taking and ending slots take a short lock. Slot 0 is never used, so an all-zero stamp is
+# always stale. A slot whose generation reaches U32.MAX is retired, never used again. The PoolManager is a service:
+# `PoolManager.set_up(memory: m)` in `start`, before the first `stamp()`.
 
 module System/Memory
-
-### A link to an entity that doesn't keep it alive: the entity's slot in the PoolManager's table and the slot's
-### generation when the stamp was taken. Made with `stamp()` on the entity, read with `fetch()`. Copied for free.
-### :typeparam T: The entity's type.
-record Stamped[T]
-obeys Equatable[Stamped[T]]
-    ### The entity's slot in the table.
-    slot: U32
-    ### The slot's generation when the stamp was taken.
-    generation: U32
-
-### A stamp whose entity has ended or moved: its slot has a newer generation now.
-crashable StaleStampError
-    nothing
-
-### Writes `The entity this stamp was taken of has ended, or moved to another place.`
-### :typeparam TWriter: The Writer's type.
-### :param out: Where it goes.
-routine StaleStampError.message_into[TWriter](out: @TWriter) -> None
-needs TWriter obeys Writer
-    out.write("The entity this stamp was taken of has ended, or moved to another place.")
-    return
-
-### The table of the program's stamps, one per program. Its routines are called on the type, and its state is its own
-### globals. With an operating system its chunks come from HEAP unless `set_up` names another manager. Without one,
-### `set_up` comes first.
-record PoolManager
-    nothing
-
-### One entry of the table: 16 bytes.
-secret record PoolEntry
-    ### The entity's address while it lives, zero after it ends.
-    at: Addr
-    ### Goes up each time the entity in the slot ends.
-    generation: U32
-    ### The next free slot after this one, while this one is free.
-    next_free: U32
-
-### How many entries a chunk holds.
-secret preset POOL_CHUNK_SLOTS: U64 = 4096
 
 ### The address of the directory: one Addr per chunk.
 secret global POOL_DIRECTORY: &Addr
@@ -69,35 +32,70 @@ secret global POOL_NEXT: &U32
 secret global POOL_FREE: &U32
 ### 1 while a flow takes or ends a slot.
 secret global POOL_LOCK: &U32
-### Where the chunks come from, None for the default.
+### Where the chunks come from, None before set_up.
 secret global POOL_MEMORY: &(@MemoryManager?)
 
-### Names the manager the table's chunks come from. Without an operating system a program calls it before its first
-### `stamp()`. Chunks already taken stay where they are.
-### :param memory: The memory manager.
+### How many entries a chunk holds.
+secret preset POOL_CHUNK_SLOTS: U64 = 4096
+
+### A link to an entity that doesn't keep it alive: the entity's slot in the PoolManager's table and the slot's
+### generation when the stamp was taken. Made with `stamp()` on the entity, read with `fetch()`. Copied for free.
+### :typeparam T: The entity's type.
+record Stamped[T]
+obeys Equatable[Stamped[T]]
+    ### The entity's slot in the table.
+    slot: U32
+    ### The slot's generation when the stamp was taken.
+    generation: U32
+
+### A stamp whose entity has ended (its slot has a newer generation now), or is between two places.
+crashable StaleStampError
+    nothing
+
+### The table of the program's stamps, one per program. Its routines are called on the type, and its state is its own
+### globals. A program that stamps sets it up first, in `start`: `PoolManager.set_up(memory: HEAP)`.
+record PoolManager
+    nothing
+
+### One entry of the table: 16 bytes.
+secret record PoolEntry
+    ### The entity's address while it lives, zero after it ends.
+    at: Addr
+    ### Goes up each time the entity in the slot ends.
+    generation: U32
+    ### The next free slot after this one, while this one is free.
+    next_free: U32
+
+### Writes `The entity this stamp was taken of has ended, or is between two places.`
+### :typeparam TWriter: The Writer's type.
+### :param out: Where it goes.
+routine StaleStampError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("The entity this stamp was taken of has ended, or is between two places.")
+    return
+
+### Sets the table up: its chunks come from `memory`. A program calls it once, in `start`, before its first `stamp()`.
+### :param memory: The memory manager the chunks come from.
+### :throws: Crashes with `UnacceptedValueError` when the table is set up already.
 common routine PoolManager.set_up(memory: @MemoryManager) -> None
     lock_pool()
+    when POOL_MEMORY.peek()
+        is @MemoryManager =>
+            unlock_pool()
+            throw UnacceptedValueError(description: "The PoolManager is set up already: call PoolManager.set_up(memory: m) once, in start.")
+        is None => nothing
     POOL_MEMORY.poke(memory)
     unlock_pool()
     return
 
-### The manager the chunks come from: the one `set_up` named, else HEAP.
-### :returns: The manager.
-@target(os: not "none")
-secret routine pool_memory() -> @MemoryManager
-    when POOL_MEMORY.peek()
-        is @MemoryManager as memory => return memory
-        is None => return HEAP
-
 ### The manager the chunks come from: the one `set_up` named.
 ### :returns: The manager.
 ### :throws: Crashes with `UnacceptedValueError` when `set_up` wasn't called.
-@target(os: "none")
 secret routine pool_memory() -> @MemoryManager
     when POOL_MEMORY.peek()
         is @MemoryManager as memory => return memory
         is None =>
-            throw UnacceptedValueError(description: "a stamp needs the PoolManager's memory, and nothing set it up: call PoolManager.set_up(memory: m) before the first stamp()")
+            throw UnacceptedValueError(description: "A stamp needs the PoolManager, and nothing set it up: call PoolManager.set_up(memory: HEAP) in start, before the first stamp().")
 
 ### Takes the table's lock.
 secret routine lock_pool() -> None
@@ -197,25 +195,27 @@ secret common routine PoolManager.end(slot: U32) -> None
     unlock_pool()
     return
 
-### The address of the entity a stamp was taken of, or zero when it has ended or moved.
+### The address of the entity a stamp was taken of, or zero when it has ended or is between places. One read of the
+### entry: on one thread nothing ends the entity between the reads.
 ### :param slot: The stamp's slot.
 ### :param generation: The stamp's generation.
 ### :returns: The address, or zero.
 @inline
 secret common routine PoolManager.lookup(slot: U32, generation: U32) -> Addr
-    if slot == 0
+    # A slot past the last one taken (a stamp made by hand) has no entry, and slot 0's entry is all zero. Below
+    # POOL_NEXT the directory and the slot's chunk exist.
+    if slot >= POOL_NEXT.peek()
         return Addr.zero()
-    entry: @PoolEntry = pool_entry(slot)
-    if entry.generation.peek_unbroken[ACQUIRE]() != generation
+    directory: @Addr = bitcast[Addr, @Addr](POOL_DIRECTORY.peek())
+    chunk: Addr = directory.stride((slot >> 12).to[U64]()).peek()
+    entry: @PoolEntry = bitcast[Addr, @PoolEntry](chunk).stride((slot & 4095).to[U64]())
+    if entry.generation.peek() != generation
         return Addr.zero()
-    at: Addr = entry.at.peek_unbroken[ACQUIRE]()
-    # Read again: the entity may have ended, and a new one taken the slot, between the two reads above.
-    if entry.generation.peek_unbroken[ACQUIRE]() != generation
-        return Addr.zero()
-    return at
+    return entry.at.peek()
 
 ### A stamp of the entity `me` points at: its slot in the table, taken on the first stamp and kept by the entity, and
-### the slot's generation. A `&T` lends its view, so `node.stamp()` works on the place itself.
+### the slot's generation. The slot gets the entity's address again, the one `me` names. A `&T` lends its view, so
+### `node.stamp()` works on the place itself.
 ### :typeparam T: The entity's type.
 ### :returns: The stamp.
 ### :throws: Crashes with `OutOfMemoryError` when the table has no memory for a new slot.
@@ -224,7 +224,9 @@ routine PointedCell[T].stamp() -> Stamped[T]
     slot: @U32 = stamp_slot[T](me)
     taken: U32 = slot.peek()
     if taken != 0
-        return Stamped[T](slot: taken, generation: PoolManager.generation(taken))
+        entry: @PoolEntry = pool_entry(taken)
+        entry.at.poke_unbroken(me)
+        return Stamped[T](slot: taken, generation: entry.generation.peek())
     fresh: U32 = PoolManager.take(at: me)
     slot.poke(fresh)
     return Stamped[T](slot: fresh, generation: PoolManager.generation(fresh))
@@ -236,10 +238,10 @@ routine PointedCell[T].stamp() -> Stamped[T]
 routine @BorrowedCell[T].stamp() -> Stamped[T]
     return me.getview().stamp()
 
-### The entity the stamp was taken of, while it lives where it was stamped.
+### The entity the stamp was taken of, wherever it lives now.
 ### :typeparam T: The entity's type.
 ### :returns: The entity's view.
-### :throws: `StaleStampError` when the entity has ended or moved.
+### :throws: `StaleStampError` when the entity has ended, or is between places (taken out of one and not yet in another).
 failable routine Stamped[T].fetch() -> @T
     at: Addr = PoolManager.lookup(slot: me.slot, generation: me.generation)
     if at.is_hollow()
@@ -254,7 +256,7 @@ routine Stamped[T].eq(other: Me) -> Bool
     return me.slot == other.slot and me.generation == other.generation
 
 ### Ends the slot of the entity `at` points at, if it has one, and clears the entity's hidden slot: the builder calls it
-### where the entity ends (its destruct) or leaves its address (moved out of its place).
+### first thing in the entity's destruct.
 ### :typeparam T: The entity's type.
 ### :param at: The entity.
 secret routine release_stamp[T](at: @T) -> None
@@ -268,8 +270,17 @@ secret routine release_stamp[T](at: @T) -> None
             return
         is None => return
 
-### Gives the slot of the entity `at` points at its new address, if it has one: the builder calls it where the entity
-### moved into a new place of the same routine and keeps its stamps (`steal a as b`).
+### Clears the address of a slot whose entity left its place: the builder calls it where a value that holds one is
+### taken out (steal, the return of a STACK place). Its stamps fail until the entity lands in another place.
+### :param slot: The slot the entity keeps, 0 for none.
+secret routine detach_stamp_slot(slot: U32) -> None
+    if slot == 0
+        return
+    pool_entry(slot).at.poke_unbroken(Addr.zero())
+    return
+
+### Gives the slot of the entity `at` points at its new address, if it has one: the builder calls it where a value that
+### holds the entity is written to memory.
 ### :typeparam T: The entity's type.
 ### :param at: The entity, at its new address.
 secret routine move_stamp[T](at: @T) -> None
@@ -278,17 +289,27 @@ secret routine move_stamp[T](at: @T) -> None
             taken: U32 = slot.peek()
             if taken == 0
                 return
-            lock_pool()
             pool_entry(taken).at.poke_unbroken(at)
-            unlock_pool()
             return
         is None => return
 
-### Ends the stamps of `count` entities in a row that moved to another address together: what a collection calls once
-### its memory has moved (a List that grows), so their stamps fail instead of reaching the old memory. Nothing for a type
-### the program doesn't stamp.
+### Gives the stamped entities of `count` values in a row their new address: what a collection calls once it moved
+### them by bytes (a reallocation, a copy of raw memory), so their stamps keep working. Nothing, built to nothing, for a
+### type that holds no stamped entity.
+### :typeparam T: The values' type.
+### :param at: The first value, at its new address.
+### :param count: How many there are.
+routine move_stamps[T](at: @T, count: U64) -> None
+    if not holds_stamps[T]()
+        return
+    for i in 0 til count
+        follow_stamps[T](at.stride(i))
+    return
+
+### Ends the stamps of `count` entities in a row, for a collection that ends them without their destruct. Nothing for
+### a type the program doesn't stamp.
 ### :typeparam T: The entities' type.
-### :param at: The first entity, at its new address.
+### :param at: The first entity.
 ### :param count: How many there are.
 routine release_stamps[T](at: @T, count: U64) -> None
     when stamp_slot_kept[T](at)

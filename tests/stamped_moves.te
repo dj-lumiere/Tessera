@@ -1,0 +1,128 @@
+# Stamped: an entity that moves to another address keeps its stamps. The builder clears the slot's address where the
+# entity leaves its place and writes the new one where it lands, and a collection that moves its elements gives their
+# slots the new addresses: a reallocation (List, PriorityQueue), a copy of raw memory (RotatableList), elements moved
+# one by one (swap, a Dict that rehashes). An entity held inside another keeps its stamps when the one that holds it
+# moves.
+
+import Collections
+import Hosted
+
+### A node that keeps a value.
+entity Node
+    value: S64
+
+### An entity that holds a node in a field of its own.
+entity Holder
+    inner: Node
+
+### Makes a node.
+### :param value: Its value.
+### :returns: The node.
+common routine Node.construct(value: S64) -> Me
+    return Me(value)
+
+### Makes a holder.
+### :param value: Its node's value.
+### :returns: The holder.
+common routine Holder.construct(value: S64) -> Me
+    return Me(inner: Node.construct(value))
+
+### What a stamp holds now: its node's value, or -1 when it is stale.
+### :param s: The stamp.
+### :returns: The value or -1.
+routine value_of(s: Stamped[Node]) -> S64
+    when try s.fetch()
+        is @Node as n => return n.value.peek()
+        is None => return -1
+
+### Takes a node by value and hands it on: it moves through this routine's parameter.
+### :param n: The node.
+### :returns: The same node.
+routine pass_on(n: Node) -> Node
+    return steal n
+
+### A node made in a STACK place, stamped there, and handed out in an Optional.
+### :param out: Where the stamp goes.
+### :returns: The node.
+routine maybe_node(out: @Stamped[Node]) -> Node?
+    n: &Node <- Node.construct(value: 40)
+    out.poke(n.stamp())
+    return n
+
+### Shows that stamps live through every move.
+routine start() -> None
+    PoolManager.set_up(memory: HEAP)
+
+    # Through a value parameter into another STACK place, then to HEAP.
+    a: &Node <- Node.construct(value: 1)
+    s: Stamped[Node] = a.stamp()
+    c: &Node <- pass_on(steal a)
+    Console.show("through a parameter: {value_of(s)}, the same slot: {c.stamp() == s}")
+    b: &Node <- steal c from HEAP
+    Console.show("to HEAP: {value_of(s)}")
+    drop b
+    Console.show("dropped: {value_of(s)}")
+
+    # Handed out of a STACK place in an Optional.
+    t: &Stamped[Node] <- Stamped[Node](slot: 0, generation: 0)
+    when maybe_node(out: t)
+        is Node as m =>
+            Console.show("out in an Optional: {value_of(t.load())}, value: {m.value.peek()}")
+            drop m
+        is None => nothing
+
+    # A List that grows.
+    xs: &List[Node] <- .construct(HEAP)
+    xs.add_last(Node.construct(value: 11))
+    first: Stamped[Node] = xs.getslot(0).stamp()
+    for i in 0 til 100
+        xs.add_last(Node.construct(value: i))
+    Console.show("a List grew: {value_of(first)}")
+    xs.swap(first: 0, second: 50)
+    Console.show("swapped: {value_of(first)}, at 50: {xs.getslot(50).value.peek()}")
+    drop xs
+    Console.show("the List dropped: {value_of(first)}")
+
+    # A PriorityQueue that grows and sifts.
+    queue: &PriorityQueue[S64, Node] <- .construct(HEAP)
+    queue.add(priority: 5, element: Node.construct(value: 5))
+    queued: Stamped[Node] = queue.first_slot().stamp()
+    for i in 0 til 40
+        queue.add(priority: 10 + i, element: Node.construct(value: i))
+    queue.add(priority: 1, element: Node.construct(value: 1))
+    Console.show("a PriorityQueue grew: {value_of(queued)}")
+    drop queue
+
+    # A RotatableList that moves its elements to a new buffer.
+    ring: &RotatableList[Node] <- .construct(HEAP)
+    ring.add_last(Node.construct(value: 21))
+    ringed: Stamped[Node] = ring.getslot(0).stamp()
+    for i in 0 til 40
+        ring.add_first(Node.construct(value: i))
+    Console.show("a RotatableList moved: {value_of(ringed)}")
+    drop ring
+
+    # A Dict that rehashes.
+    d: &Dict[S64, Node] <- .construct(HEAP)
+    d.setitem(key: 0, value: Node.construct(value: 31))
+    keyed: Stamped[Node] = d.getslot(key: 0).stamp()
+    for i in 1 til 60
+        d.setitem(key: i, value: Node.construct(value: i))
+    Console.show("a Dict rehashed: {value_of(keyed)}")
+    drop d
+
+    # Slots: elements moved one place right, and copied into another Slots.
+    row: &Slots[Node, 3] <- [Node.construct(value: 41), Node.construct(value: 42),
+        Node.construct(value: 43)]
+    second: Stamped[Node] = row.getslot(1).stamp()
+    row.swap(first: 1, second: 2)
+    Console.show("Slots swap: {value_of(second)}, at 2: {row.getslot(2).value.peek()}")
+
+    # An entity held in another moves with it.
+    h: &Holder <- Holder.construct(value: 51)
+    inner: Stamped[Node] = h.inner.stamp()
+    moved: &Holder <- steal h from HEAP
+    Console.show("held inside, moved: {value_of(inner)}")
+    drop moved
+    Console.show("held inside, dropped: {value_of(inner)}")
+    return

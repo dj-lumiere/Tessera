@@ -33,6 +33,22 @@ public sealed partial class Compiler
     public bool KeepsStamp(DType t) =>
         t is RecordType { Decl.IsEntity: true } s && _stampedNames is { } names && names.Contains(s.Decl.Name);
 
+    private readonly Dictionary<string, bool> _holdsStamps = [];
+
+    /// Whether a value of `t` holds a hidden slot: an entity the program stamps, or a record or entity that holds one
+    /// by value (a field, a tuple element), at any depth. A value that moves to another address moves those slots'
+    /// entities with it. False for every type when the program stamps nothing, so nothing is emitted then.
+    public bool HoldsStamps(DType? t)
+    {
+        if (_stampedNames is not { Count: > 0 } || t is not RecordType s) return false;
+        if (KeepsStamp(s)) return true;
+        if (_holdsStamps.TryGetValue(s.Key, out bool known)) return known;
+        // A type that holds itself only through a handle (an Optional, a pointer) isn't a field of itself here.
+        _holdsStamps[s.Key] = false;
+        bool holds = Fields(s).Any(f => HoldsStamps(f.Type));
+        return _holdsStamps[s.Key] = holds;
+    }
+
     /// The hidden slot's index path after a GEP's leading `i32 0`.
     public string StampGepPath(RecordType s)
     {

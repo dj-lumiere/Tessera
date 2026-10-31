@@ -375,28 +375,33 @@ routine start() -> None
     fields, a `@MemoryManager` (the link to where memory goes back, which the manager check below follows), and a
     `SourceLocation` (the builder's read-only text) don't count as views here.
   - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.te`). `x.stamp()` on an entity
-    (a `&E` place or an `@E` view) gives a `Stamped[E]`, 8 bytes (a slot of the program's stamp table, the
-    `PoolManager`, and the slot's generation), a record copied for free that goes anywhere: a field
-    (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E` while it lives where
-    it was stamped, and throws `StaleStampError` once it ended: a bare `fetch()` crashes, `try s.fetch()` gives None.
-    A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow. Two
-    stamps compare with `==` (same slot and generation). The builder gives an entity type a hidden U32 slot (the last
-    member of its layout) only when the program's source writes `Stamped[E]` with that type's name somewhere: a
-    `stamp()` of an entity that has none is a build error that says to write the type, and of a record (copied where
-    it goes) one that says to keep a copy. The first `stamp()` takes a slot (a freed one, else a new one, slot 0 never)
-    and writes the entity's address in it, and later stamps of the entity give the same slot. The slot ends (address
-    cleared, generation up, the slot free for the next entity, so an old stamp of it still fails) where the entity
-    ends, first thing in its `destruct` (written or the builder's walk): `drop`, the give back of a STACK place, the
-    old value of `y <- v`, the walk of what holds it. It also ends where the entity leaves its address: `steal` of an
-    entity out of its own place (as an argument, `<- steal d from HEAP`, `y <- steal d`, out of an element),
-    `return` of a STACK place, and a `List` that grows (`release_stamps[T](at, count)` is what a collection calls
-    after its memory moved). `steal a as b` keeps the stamps (the slot gets `b`'s address). A slot whose generation
-    reaches `U32.MAX` is retired. The table is 64 KiB chunks of 4,096 entries that never move and a directory of their
-    addresses that doubles (the old one kept to the end), from `HEAP` with an OS, and from what
-    `PoolManager.set_up(memory: m)` names (required before the first `stamp()` without one). `fetch()` reads it with no
-    lock. Between `fetch()` on one thread and the entity's end on another, the program orders the two itself. A
-    raw copy of an entity's bytes (`copy`, `stride` moves inside a collection other than `List`) carries
-    the slot along without ending it: the code that does it answers for it.
+    (a `&E` place or an `@E` view: a stamp takes the place of a stored view) gives a `Stamped[E]`, 8 bytes (a slot of
+    the program's stamp table, the `PoolManager`, and the slot's generation), a record copied for free that goes
+    anywhere: a field (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E`
+    wherever it lives now, and throws `StaleStampError` once it ended: a bare `fetch()` crashes, `try s.fetch()` gives
+    None. A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
+    Two stamps compare with `==` (same slot and generation). The `PoolManager` is a service: `start` calls
+    `PoolManager.set_up(memory: HEAP)` (any manager) before the first `stamp()`, with or without an OS. A `stamp()`
+    before it, or a second `set_up`, crashes with `UnacceptedValueError`. The builder gives an entity type a hidden
+    U32 slot (the last member of its layout) only when the program's source writes `Stamped[E]` with that type's name
+    somewhere: a `stamp()` of an entity that has none is a build error that says to write the type, and of a record
+    (copied where it goes) one that says to keep a copy. The first `stamp()` takes a slot (a freed one, else a new
+    one, slot 0 never) and writes the entity's address in it, and later stamps of the entity give the same slot (and
+    write its address again). The slot ends (address cleared, generation up, the slot free for the next entity, so an
+    old stamp of it still fails) only where the entity ends, first thing in its `destruct` (written or the builder's
+    walk): `drop`, the give back of a STACK place, the old value of `y <- v`, the walk of what holds it. A move keeps
+    the stamps: where a value that holds a stamped entity (the entity, or an entity holding one by value, at any
+    depth) leaves its place (`steal` out of a place or an element, a value parameter handed on, `return` of a STACK
+    place) the builder clears the slot's address, and every write of a whole value to memory (`poke`, `<-`, binding
+    a place, the caller's place of a returned `E?`) gives it the new one, so a stamp fails only while its entity is
+    between two places. Collections that move elements by bytes keep them too: `copy`/`copy_into` and a `List` or
+    `PriorityQueue` that reallocates call `move_stamps[T](at, count)` (the new address of `count` values in a row),
+    which builds to nothing for a type that holds no stamped entity. `release_stamps[T](at, count)` ends the stamps of
+    `count` entities in a row. A slot whose generation reaches `U32.MAX` is retired. The table is 64 KiB chunks of
+    4,096 entries that never move and a directory of their addresses that doubles (the old one kept to the end).
+    `fetch()` reads the entry once with no lock. Threads come later: between `fetch()` on one thread and the entity's
+    end on another, the program orders the two itself. A byte copy inside `danger` the program writes itself carries
+    the slot along: the code that does it answers for it.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
     outlive it. Give `m` back first.
