@@ -10,11 +10,12 @@ static class Cli
     private const string Usage = """
         usage:
           tessera new   [<folder>]      start a solution: config.toml, main.te, .gitignore, VS Code files
-          tessera check [<target>] [<trace>] [--show-destructs] [<file.te>...]   type-check every non-generic routine, the stdlib included
+          tessera check [<target>] [<trace>] [<file.te>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
-          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [--show-destructs] [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check]
+          tessera build <file.te>...    build the files: one file with a config.toml in its own folder takes that
+                                        config.toml's settings, others build for this machine in debug
           tessera run                   build it and run it
-          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check] [-- <argument>...]
+          tessera run   <file.te>... [-- <argument>...]   build the files the same way and run the program
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
           tessera fmt   [--check] <file-or-dir>...   format .te files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
@@ -24,36 +25,31 @@ static class Cli
           tessera help                  print this text
           tessera version               print the builder's version
 
-        --no-stdlib-exports: leave out the standard library's @export routines (the default crash report, the B16 and
-                BF16 conversion helpers), for a library that is linked into a program which has them already.
-        --frame-pointers: every routine keeps a frame record, for a library a crash trace read from the stack walks
-                through (with --emit-llvm, such as Ingrid's runtime library). A traced build on Linux x86_64 keeps
-                them on its own: it reads its crash trace from the stack.
-        --show-destructs: print the destruct routines the builder writes for the program's own types (a type that
-                holds something to release and writes no destruct), as Tessera source, each after a comment naming
-                its type. The test runner compares them with <name>.destructs when that file exists.
-        <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
-                manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
+        build and run take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
+                mode, [debug] emit-llvm, trace, race-check, heap-check, ...), and a flag that it can say is an error
+                naming the key. Its output goes to build/ next to it. A config.toml with no executable under [target]
+                builds a library linked into another program: its sources files as LLVM IR, build/<package name>.ll,
+                every routine keeping a frame record.
+        <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), config.toml's
+                [target] mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
                 debugger shows Tessera lines, routine parameters, bindings and block parameters.
-        <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it.
-                 Without either, debug and release builds keep it and release-time and release-space leave it out;
-                 check keeps it. A routine marked @untraced is left out of it in any build.
+        <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it
+                 ([debug] trace in config.toml). Without either, debug and release builds keep it and release-time and
+                 release-space leave it out; check keeps it. A routine marked @untraced is left out of it in any build.
         race check: a debug build on Linux and macOS on x86_64 and aarch64 stops with a report of both places when
                  two threads touch the same memory, one of them writing, with neither an unbroken access nor a lock
-                 between them. --no-race-check (or [debug] race-check = false in config.toml) turns it off, and
-                 --race-check (or race-check = true) turns it on in the release modes. It makes the program slower.
-                 test runs every test without a config.toml with it on those targets. check checks its declarations too.
-        heap check: --heap-check (or [debug] heap-check = true in config.toml) makes the default heap check every
-                 free and crash with DoubleFreeError at the line that frees a block a second time, in every mode. It
-                 is off otherwise, except that test always turns it on. check checks both sides.
-        <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
-                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
-                  --board <name or file.toml> is a board without an operating system: its triple, CPU, and features,
-                  and its memory map, which build links with (a link script the builder writes). A name is a board
-                  that comes with Tessera (boards/<name>.toml), a path a board file of your own.
+                 between them. [debug] race-check = false in config.toml turns it off, and race-check = true turns it
+                 on in the release modes. It makes the program slower. test runs every test without a config.toml
+                 with it on those targets. check checks its declarations too.
+        heap check: [debug] heap-check = true in config.toml makes the default heap check every free and crash with
+                 DoubleFreeError at the line that frees a block a second time, in every mode. It is off otherwise,
+                 except that test always turns it on. check checks both sides.
+        <target> (check and test): --target <arch-os-abi> (default: this machine), --cpu <name> (default: the
+                  triple's baseline, such as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one).
+                  @feature reads the result. --board <name or file.toml> is a board without an operating system. A
+                  name is a board that comes with Tessera (boards/<name>.toml), a path a board file of your own.
 
-        All input files form one compilation unit. Without files, build and run read config.toml, which sets
-        everything the flags would; its output goes to build/ next to it.
+        All input files form one compilation unit.
         test: every <name>.te in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
@@ -378,10 +374,6 @@ static class Cli
         }
     }
 
-    private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck, bool HeapCheck = false, Board? Board = null,
-        bool ShowDestructs = false, bool FramePointers = false);
-
     internal static bool RaceCheckable(BuildTarget target) => BuildModes.RaceCheckable(target);
 
     /// The race check on a target without it is an error, not a build that checks nothing.
@@ -410,40 +402,17 @@ static class Cli
         return BuildModes.Parse(name) ?? throw new ToolError($"--mode is {BuildModes.Names}, not \"{name}\"");
     }
 
-    private static Options ParseOptions(string[] args)
+    /// The files of `tessera build` or `tessera run`. The commands take files and nothing else: a flag that config.toml
+    /// can say is an error that names the key, and one that is gone is an error that says what does its work now.
+    private static List<string> FilesOnly(string[] args)
     {
-        var inputs = new List<string>();
-        string? output = null;
-        bool emit = false, stdlibExports = true, heapCheck = false, showDestructs = false;
-        bool framePointers = false;
-        bool? trace = null, race = null;
-        var mode = BuildMode.Debug;
-        var targetArgs = new TargetArgs();
-        for (int i = 0; i < args.Length; i++)
-        {
-            if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
-            switch (args[i])
-            {
-                case "-o" when i + 1 < args.Length: output = args[++i]; break;
-                case "--emit-llvm": emit = true; break;
-                case "--no-stdlib-exports": stdlibExports = false; break;
-                case "--heap-check": heapCheck = true; break;
-                case "--show-destructs": showDestructs = true; break;
-                case "--frame-pointers": framePointers = true; break;
-                case "--mode": mode = ParseMode(args, ref i); break;
-                case "--race-check": race = true; break;
-                case "--no-race-check": race = false; break;
-                default:
-                    if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
-                    inputs.Add(args[i]);
-                    break;
-            }
-        }
-        if (inputs.Count == 0) throw new ToolError("no input files");
-        var target = targetArgs.Build();
-        if (race == true) RequireRaceCheckable(target);
-        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race ?? mode.RaceCheckedByDefault(target),
-            heapCheck, targetArgs.Board, showDestructs, framePointers);
+        // A word after a flag that took one (`--mode release`) was that flag's, not a file.
+        string[] takesValue = ["-o", "--mode", "--target", "--board", "--cpu", "--feature"];
+        string? file = args.Where((a, i) => !a.StartsWith('-') && !(i > 0 && takesValue.Contains(args[i - 1]))).FirstOrDefault();
+        foreach (var (arg, i) in args.Select((a, i) => (a, i)))
+            if (arg.StartsWith('-'))
+                throw new ToolError(FlagMessage(arg, i + 1 < args.Length ? args[i + 1] : null, file));
+        return [.. args];
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -454,15 +423,12 @@ static class Cli
         var targetArgs = new TargetArgs();
         var files = new List<string>();
         bool? trace = null;
-        bool showDestructs = false;
         for (int i = 0; i < args.Length; i++)
         {
             if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
             if (args[i] == "--show-destructs")
-            {
-                showDestructs = true;
-                continue;
-            }
+                throw new ToolError("`--show-destructs` isn't an option: a test's <name>.destructs file holds the destruct "
+                    + "routines the builder writes, and `tessera test` compares them");
             if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
             files.Add(args[i]);
         }
@@ -489,8 +455,6 @@ static class Cli
         if (errors.Count == 0) Lint(ownDecls!, files, [.. checkedSides.Select(s => s.Compiler)]);
         Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off, race check on), {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
-        // Both sides write the same destructs: the program's types are the same with the heap check on and off.
-        if (showDestructs) Console.Write(checkedSides[0].Compiler.ShownDestructs());
 
         // The IR must also be valid for LLVM: compile it to an object file and throw that away.
         foreach (var (name, compiler) in checkedSides)
@@ -535,7 +499,7 @@ static class Cli
     /// (`[debug] deadlock-check`), or null for the mode's default. <paramref name="accessOrder"/>: whether accesses
     /// taken in opposite orders do (`[debug] access-order`).
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
-        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
+        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
         bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
         TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false)
@@ -552,7 +516,6 @@ static class Cli
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
             Optimized = mode.IsOptimized(),
-            EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
             IngridDir = IngridDir(),
             LinkArguments = linkArguments ?? [],
@@ -734,23 +697,37 @@ static class Cli
         throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
     }
 
-    /// The solution's manifest, for `build` / `run` given no files. A manifest build takes no flags.
-    private static Manifest? ManifestFor(string[] args)
+    /// The solution's manifest, for `build` / `run` given no files.
+    private static Manifest SolutionManifest() =>
+        Manifest.Load(Manifest.Find(Directory.GetCurrentDirectory())
+                      ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above"));
+
+    /// The manifest of one file with a config.toml in its own folder: that config.toml's settings (target, mode,
+    /// [debug]) with the file as the entry, or null when there is no such config.toml.
+    private static Manifest? ManifestBeside(List<string> files)
     {
-        // A word after an option that takes one (`--mode release`) is that option's, not a file.
-        string[] takesValue = ["-o", "--mode", "--target", "--board", "--cpu", "--feature"];
-        if (args.Where((a, i) => !a.StartsWith('-') && !(i > 0 && takesValue.Contains(args[i - 1]))).Any()) return null;
-        string path = Manifest.Find(Directory.GetCurrentDirectory())
-                      ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above");
-        if (args.Length > 0) throw new ToolError(FlagInManifestMessage(args[0], args.Length > 1 ? args[1] : null, path));
-        return Manifest.Load(path);
+        if (files is not [var single]) return null;
+        string file = Path.GetFullPath(single);
+        string folder = Path.GetDirectoryName(file)!;
+        if (Manifest.Find(folder) is not { } beside || Path.GetDirectoryName(beside) != folder) return null;
+        var found = Manifest.Load(beside);
+        return found with
+        {
+            Executable = Path.GetFileNameWithoutExtension(file),
+            Entry = file,
+            Sources = Manifest.ImportClosure(file, found.Roots, found.OutputDirectory, found.RootFiles),
+            RootFiles = [.. found.RootFiles.Where(f => f != found.Entry), file],
+            IsLibrary = false,
+        };
     }
 
-    /// The error for a flag a build from config.toml was given: the flag is not an option there, and the message names
-    /// the key that says the same thing in the file.
-    private static string FlagInManifestMessage(string flag, string? value, string path)
+    /// The error for a flag given to `build` or `run`: the command takes no flags, and the message names the
+    /// config.toml key that says the same thing, or what does the work of a flag that is gone.
+    private static string FlagMessage(string flag, string? value, string? file)
     {
         string v = value is { Length: > 0 } && !value.StartsWith('-') ? value : "...";
+        string where = (file is not null ? Manifest.Find(Path.GetDirectoryName(Path.GetFullPath(file))!) : Manifest.Find(Directory.GetCurrentDirectory()))
+                       ?? (file is not null ? $"a {Manifest.FileName} next to {file}" : Manifest.FileName);
         string? key = flag switch
         {
             "--mode" => $"`mode = \"{v}\"` under [target]",
@@ -758,17 +735,25 @@ static class Cli
             "--board" => $"`board = \"{v}\"` under [target]",
             "--cpu" => $"`cpu = \"{v}\"` under [target]",
             "--feature" => $"`features = [\"{v}\"]` under [target]",
-            "--emit-llvm" => $"`emit-llvm = true` under [debug]",
-            "--heap-check" => $"`heap-check = true` under [debug]",
-            "--race-check" => $"`race-check = true` under [debug]",
-            "--no-race-check" => $"`race-check = false` under [debug]",
-            "--trace" => $"`trace = true` under [debug]",
-            "--no-trace" => $"`trace = false` under [debug]",
-            _ => null
+            "--emit-llvm" => "`emit-llvm = true` under [debug]",
+            "--heap-check" => "`heap-check = true` under [debug]",
+            "--race-check" => "`race-check = true` under [debug]",
+            "--no-race-check" => "`race-check = false` under [debug]",
+            "--trace" => "`trace = true` under [debug]",
+            "--no-trace" => "`trace = false` under [debug]",
+            "-o" => "the entry file, whose name the output takes (build/<name>), as `executable = \"main.te\"` under [target]",
+            _ => null,
         };
-        return key is null
-            ? $"`{flag}` isn't an option of a build from {Manifest.FileName}: it takes no flags, so set the build in {path}"
-            : $"`{flag}` isn't an option: write {key} in {path}";
+        string? gone = flag switch
+        {
+            "--no-stdlib-exports" or "--frame-pointers" => $"a {Manifest.FileName} with no `executable` under [target] builds a library, "
+                + "the `sources` files as LLVM IR, and its routines keep a frame record",
+            "--show-destructs" => "a test's <name>.destructs file holds the destruct routines the builder writes, and `tessera test` compares them",
+            _ => null,
+        };
+        return key is not null ? $"`{flag}` isn't an option: write {key} in {where}"
+            : gone is not null ? $"`{flag}` isn't an option: {gone}"
+            : $"`{flag}` isn't an option: the build takes its settings from {where}";
     }
 
     /// The manifest's library directories and C libraries as link flags (`-L dir`, `-l name`).
@@ -778,6 +763,18 @@ static class Cli
     private static string BuildManifest(Manifest m)
     {
         if (m.RaceCheckSetting == true) RequireRaceCheckable(m.Target);
+        if (m.IsLibrary)
+        {
+            // A library linked into another program (Ingrid's runtime): the IR alone, its routines keeping a frame record
+            // so a crash trace read from the stack walks through them when it calls the program back.
+            string library = Compile(m.Sources, m.Target, executable: false, roots: m.Roots, mode: m.Mode, trace: m.Traced,
+                heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
+                deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder, crashMessageSize: m.CrashMessageSize,
+                framePointers: true);
+            Directory.CreateDirectory(m.OutputDirectory);
+            File.WriteAllText(m.LibraryPath, library);
+            return m.LibraryPath;
+        }
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
             deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
@@ -791,40 +788,18 @@ static class Cli
 
     private static int Build(string[] args)
     {
-        if (ManifestFor(args) is { } manifest)
+        var files = FilesOnly(args);
+        if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } manifest)
         {
             Console.WriteLine(ShownPath(BuildManifest(manifest)));
             return 0;
         }
-        var o = ParseOptions(args);
-        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
-            trace: o.Trace, raceCheck: o.RaceCheck, heapCheck: o.HeapCheck,
-            destructs: o.ShowDestructs ? Console.Out : null, framePointers: o.FramePointers);
-        string stem = Path.ChangeExtension(o.Inputs[0], null);
-
-        if (o.EmitLlvm)
-        {
-            string llPath = o.Output ?? stem + ".ll";
-            File.WriteAllText(llPath, ir);
-            return 0;
-        }
-
-        string exe = o.Output ?? stem + (o.Target.HasOs && OperatingSystem.IsWindows() ? ".exe" : "");
-        if (o.Target.HasOs)
-        {
-            Link(ir, exe, o.Target, o.Mode, RaceLink(o.RaceCheck));
-            return 0;
-        }
-        // Without an operating system the link places the program in the board's memory: the link script is the
-        // board's, written next to a temporary copy of the IR and removed after.
-        if (o.Board is null)
-            throw new ToolError($"{o.Target.Arch}-{o.Target.Os}-{o.Target.Abi} has no operating system, so the link needs the " +
-                "board the program runs on: --board raspi4b (one of Tessera's boards) or --board my-board.toml, or " +
-                "--emit-llvm for the IR alone");
-        string script = Path.ChangeExtension(TempExe(), ".ld");
-        File.WriteAllText(script, o.Board.LinkScript());
-        try { Link(ir, exe, o.Target, o.Mode, Manifest.BoardLinkArguments(script)); }
-        finally { TryDelete(script); }
+        // Files with no config.toml beside them: this machine, debug, the settings' defaults.
+        var target = BuildTarget.Host();
+        var mode = BuildMode.Debug;
+        bool race = mode.RaceCheckedByDefault(target);
+        string exe = Path.ChangeExtension(files[0], null) + (OperatingSystem.IsWindows() ? ".exe" : "");
+        Link(Compile(files, target, mode: mode, raceCheck: race), exe, target, mode, RaceLink(race));
         return 0;
     }
 
@@ -834,35 +809,23 @@ static class Cli
         int split = Array.IndexOf(args, "--");
         string[] programArgs = split < 0 ? [] : args[(split + 1)..];
         if (split >= 0) args = args[..split];
-        if (ManifestFor(args) is { } manifest)
+        var files = FilesOnly(args);
+        // One file with a config.toml in its own folder runs with that file's settings (target, mode, [debug]).
+        if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } manifest)
         {
+            if (manifest.IsLibrary)
+                throw new ToolError($"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use tessera build");
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
                 throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use tessera build");
             return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
         }
-        // One file with a config.toml in its own folder runs with that file's settings (target, mode, [debug]).
-        if (args is [var single] && !single.StartsWith('-') && Manifest.Find(Path.GetDirectoryName(Path.GetFullPath(single))!) is { } beside
-            && Path.GetDirectoryName(beside) == Path.GetDirectoryName(Path.GetFullPath(single)))
-        {
-            var found = Manifest.Load(beside);
-            if (found.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
-                throw new ToolError($"{found.Path} builds for {found.Target.LlvmTriple}, which this machine can't run; use tessera build");
-            string file = Path.GetFullPath(single);
-            var own = found with
-            {
-                Executable = Path.GetFileNameWithoutExtension(file),
-                Sources = Manifest.ImportClosure(file, found.Roots, found.OutputDirectory, found.RootFiles),
-                RootFiles = [.. found.RootFiles.Where(f => f != found.Entry), file],
-            };
-            return Exec(BuildManifest(own), captureOutput: false, programArgs: programArgs).Code;
-        }
-        var o = ParseOptions(args);
+        var target = BuildTarget.Host();
+        var mode = BuildMode.Debug;
+        bool race = mode.RaceCheckedByDefault(target);
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, heapCheck: o.HeapCheck), exe,
-                o.Target, o.Mode,
-                RaceLink(o.RaceCheck));
+            Link(Compile(files, target, mode: mode, raceCheck: race), exe, target, mode, RaceLink(race));
             var (code, _, _) = Exec(exe, captureOutput: false, programArgs: programArgs);
             return code;
         }

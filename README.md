@@ -127,9 +127,8 @@ starting points.
 tessera new   [<folder>]                      Start a solution: config.toml, main.te, .gitignore, .vscode/
 tessera build                                 Build the solution its config.toml describes (here or above)
 tessera run                                   Build it and run it
-tessera build <file.te>... [-o <out>]         Build an executable from these files
-              [--emit-llvm] [<target>] [--mode <mode>]  (--emit-llvm writes LLVM IR instead)
-tessera run   <file.te>... [<target>] [--mode <mode>]  Build and run these files
+tessera build <file.te>...                    Build an executable from these files
+tessera run   <file.te>... [-- <argument>...]  Build and run these files
 tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 tessera check [<target>] [<file.te>...]       Type-check every non-generic routine, the stdlib included
 tessera fmt   [--check] <file-or-dir>...      Format .te files in place
@@ -142,10 +141,11 @@ tessera help | version
 `<mode>` is `debug` (-O0, the default), `release` (-O2), `release-time` (-O3), or `release-space` (-Os), as a
 `config.toml`'s `mode`. Every mode carries debug information, DWARF or CodeView and a `.pdb` on Windows MSVC: a
 debugger stops on Tessera lines and shows routine parameters, bindings, and loop-carried values by name.
-From a checkout, run it as `dotnet run -- <command>`. `<target>` is `--target <arch-os-abi>` (default: this
-machine), `--cpu <name>`, and `--feature <name>[,...]`. With files, all of them form one solution. Without files,
-`build` and `run` read the nearest `config.toml`, which names the package and sets the target, mode, sources,
-module folders, and link options (see
+From a checkout, run it as `dotnet run -- <command>`. `<target>` (for `test` and `check`) is `--target
+<arch-os-abi>` (default: this machine), `--cpu <name>`, and `--feature <name>[,...]`. `build` and `run` take no flags.
+With files, all of them form one solution, and one file with a `config.toml` in its own folder takes that file's
+settings. Without files, `build` and `run` read the nearest `config.toml`, which names the package and sets the
+target, mode, sources, module folders, and link options (see
 [Modules → The solution manifest](https://tessera.lumi-dev.xyz/Modules/#the-solution-manifest)):
 
 ```toml

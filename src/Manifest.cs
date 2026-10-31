@@ -13,7 +13,9 @@ namespace Tessera;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "src/main.te"          # the entry file (it has start), the output build/main
+/// executable = "src/main.te"          # the entry file (it has start), the output build/main. Without it the build
+///                                     # is a library linked into another program: the `sources` files as LLVM IR,
+///                                     # build/<package name>.ll, every routine keeping a frame record
 /// module-paths = ["../shared"]        # folders whose modules join this solution
 /// sources = ["../lib/hash.te"]        # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
@@ -26,7 +28,7 @@ namespace Tessera;
 ///                                     # (Board.cs): a board of Tessera's by name, or "boards/my-board.toml"
 ///
 /// [debug]
-/// emit-llvm = true                    # keep the IR next to the output
+/// emit-llvm = true                    # keep the IR next to the output (a library build writes only the IR)
 /// trace = false                       # leave out the crash trace (default: kept in debug and release,
 ///                                     # left out in release-time and release-space)
 /// trace-frames = 64                    # the frames a crash trace and a failure's trace keep (a power of two, 32)
@@ -115,6 +117,13 @@ public sealed record Manifest(
     /// ellipsis), or null for 512.
     public int? CrashMessageSize { get; init; }
 
+    /// No `[target] executable`: the build is a library linked into another program (Ingrid's runtime), the `sources`
+    /// files as LLVM IR. Its routines keep a frame record, so a crash trace read from the stack walks through them.
+    public bool IsLibrary { get; init; }
+
+    /// Where a library build writes its IR: `build/<package name>.ll`.
+    public string LibraryPath => System.IO.Path.Combine(OutputDirectory, Executable + ".ll");
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -189,7 +198,7 @@ public sealed record Manifest(
             throw new ManifestError(path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
                 "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Tessera's) " +
                 "or board = \"boards/my-board.toml\" (a board file of the project)");
-        // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as --cpu and --feature.
+        // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as check's --cpu and --feature.
         if (Str(target, "cpu", path) is { } cpu) triple = triple with { Cpu = cpu };
         if (Strs(target, "features", path) is { } features)
             triple = triple with { Features = [.. triple.Features, .. features.Select(f => f.Length > 0 && f[0] is '+' or '-' ? f : "+" + f)] };
@@ -200,11 +209,10 @@ public sealed record Manifest(
 
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
-        string entryName = Str(target, "executable", path)
-                           ?? throw new ManifestError(path, "[target] needs the entry file: executable = \"main.te\"");
-        string entry = Resolve(entryName);
-        if (!File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
-        if (!entry.EndsWith(".te", StringComparison.OrdinalIgnoreCase))
+        string? entryName = Str(target, "executable", path);
+        string? entry = entryName is null ? null : Resolve(entryName);
+        if (entry is not null && !File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
+        if (entry is not null && !entry.EndsWith(".te", StringComparison.OrdinalIgnoreCase))
             throw new ManifestError(path,
                 $"[target] executable: {entryName} is not a Tessera source (Tessera sources end in .te)");
 
@@ -220,7 +228,7 @@ public sealed record Manifest(
             roots.Add(full);
         }
         // The entry and the files `sources` lists belong to the root module unless they have a `module` line.
-        var rootFiles = new List<string> { System.IO.Path.GetFullPath(entry) };
+        var rootFiles = entry is null ? new List<string>() : [System.IO.Path.GetFullPath(entry)];
         foreach (var extra in Strs(target, "sources", path) ?? [])
         {
             string full = Resolve(extra);
@@ -231,12 +239,18 @@ public sealed record Manifest(
                     : throw new ManifestError(path, $"[target] sources: no such .te file or directory: {extra}");
             rootFiles.AddRange(files.Select(System.IO.Path.GetFullPath));
         }
-        var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"), rootFiles);
+        if (entry is null && rootFiles.Count == 0)
+            throw new ManifestError(path, "[target] needs the entry file of a program, executable = \"main.te\", or the files of " +
+                "a library linked into another program, sources = [\"src\"]");
+        var sources = new List<string>();
+        foreach (var start in entry is null ? rootFiles : [entry])
+            foreach (var file in ImportClosure(start, roots, System.IO.Path.Combine(dir, "build"), rootFiles))
+                if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
         foreach (var file in rootFiles)
             if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
 
-        return new Manifest(path, dir, name, Str(package, "version", path), entry,
-            System.IO.Path.GetFileNameWithoutExtension(entry), triple, mode, sources,
+        return new Manifest(path, dir, name, Str(package, "version", path), entry ?? rootFiles[0],
+            entry is null ? name : System.IO.Path.GetFileNameWithoutExtension(entry), triple, mode, sources,
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             board,
@@ -244,6 +258,7 @@ public sealed record Manifest(
         {
             Roots = roots,
             RootFiles = rootFiles,
+            IsLibrary = entry is null,
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheckSetting = Bool(debug, "race-check", path),

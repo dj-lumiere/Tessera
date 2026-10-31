@@ -9,16 +9,22 @@ answer.
 
 ```sh
 dotnet run -- run   file.te        # build and run (the whole stdlib is always available)
-dotnet run -- run --mode release file.te   # the same at -O2 (also release-time -O3, release-space -Os)
-dotnet run -- run --no-trace file.te   # without the crash trace (--trace keeps it; build, run, test, check)
-dotnet run -- run --no-race-check file.te # without the data race check (on in debug on Linux/macOS x86_64 and aarch64)
+dotnet run -- build file.te        # build it: a config.toml in the file's folder gives the settings, else host + debug
 dotnet run -- check file.te        # type-check only
-dotnet run -- test tests examples             # golden tests
+dotnet run -- test tests examples             # golden tests (test takes --mode, --target, --trace / --no-trace)
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
 dotnet run -- build                      # build config.toml's entry (executable = "main.te") and its imports into build/
-dotnet run -- build --board raspi4b f.te -o f.elf   # a program without an OS, linked with the board's memory map
 dotnet run -- version                    # the builder's version; help prints every command
 ```
+
+`build` and `run` take files and nothing else: every setting is in config.toml (`[target] mode = "release"`,
+`triple`, `board`, `cpu`, `features`, `[debug] trace = false`, `race-check`, `heap-check`, `emit-llvm`). A flag
+config.toml can say is an error that names the key ("`--mode` isn't an option: write `mode = \"release\"` under
+[target] in config.toml"). The output is named after the entry file (`build/main` for `executable = "main.te"`). A
+config.toml with no `executable` builds a library linked into another program: its `sources` files as LLVM IR,
+`build/<package name>.ll`, every routine keeping a frame record (Ingrid's runtime is built this way). `check` and
+`test` keep `--target`, `--cpu`, `--feature`, `--board` and `--trace` / `--no-trace` (`test` also `--mode`), since
+they check one tree for many targets.
 
 A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Hosted)
 before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
@@ -261,7 +267,7 @@ routine start() -> None
 - **Giving back twice.** The build catches a second `drop`, a use after it, a missing one, a view used after its
   memory is given back, and a routine that gives back memory its caller holds (the group check below). Raw code the
   build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made from
-  a number) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
+  a number) can still give a block back twice: with `[debug] heap-check = true` in config.toml
   (any build mode, off by default, always on under `tessera test`) `HEAP` is the `HeapManagerByCheckedHeap`, which keeps a
   header in front of each block and crashes with `DoubleFreeError` at the line that gives the same block back a second time (a
   quarantine of the last 256 blocks given back keeps that sure, raw layer included). With it off it is plain malloc / free,
@@ -1301,11 +1307,11 @@ routine start() -> None
   `  ... (40 frames total)` past the 32 it shows. A routine LLVM inlined is a frame of its own all the same. A reporting
   routine of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
   `TraceFrame`: `name` / `file` as `CStrView`, `line` / `column`, 0 is the innermost). It's on in debug and release,
-  off in release-time and release-space, and `--no-trace` / `--trace` or `[debug] trace = false|true` in config.toml
-  override that. On Linux x86-64 an executable reads it from the stack when it's asked for: every routine keeps a frame
+  off in release-time and release-space, and `[debug] trace = false|true` in config.toml (`--no-trace` / `--trace` on
+  `test` and `check`) override that. On Linux x86-64 an executable reads it from the stack when it's asked for: every routine keeps a frame
   record, and the builder writes a table of the return address of each call a traced routine makes (TraceTable.cs,
   Trace.te), so while the program runs it only keeps the frame records. Elsewhere (other
-  targets, without an OS, `--emit-llvm` output) the program keeps a shadow stack of frames as it runs, thread-local
+  targets, without an OS, a library build's IR) the program keeps a shadow stack of frames as it runs, thread-local
   with an OS and a plain global without.
 - `[debug] trace-frames = N` (a power of two, 1 to 4096, default 32) sets the frames the crash trace and each
   failure's trace keep (`TRACE_CAPACITY`, `FAILURE_FRAMES`), `[debug] failure-traces = N` (1 to 4096, default 32) the
@@ -1420,10 +1426,9 @@ routine start() -> None
   `BorrowedCell`, a `BorrowedSlice` or an entity gives back. A type of plain data (numbers, `Bool`, choices,
   addresses, records and variants of those) needs neither: `Point(x: 1, y: 2)` makes it, and its walk is empty, so
   nothing is called. A plain type used where generic code asks for `Destructible[T]` (`destruct_all`) declares a
-  `destruct` that does nothing. `tessera check --show-destructs <file.te>` (or `tessera build --show-destructs`)
-  prints the walks the builder writes for the program's own types as Tessera source, each marked
-  `@derived(implicit)` after a comment naming its type and where it is. A golden test's `<name>.destructs` holds that
-  text, and `tessera test` compares it.
+  `destruct` that does nothing. A golden test's `<name>.destructs` holds the walks the builder writes for the
+  program's own types as Tessera source, each marked `@derived(implicit)` after a comment naming its type and where it
+  is, and `tessera test` compares them.
 
 **Tuples**
 
@@ -2045,19 +2050,30 @@ own), with `park()` / `park_until(deadline)` / `wake()`. All in Hosted.
 
 **Channels** (Standard/Hosted/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `ch: &Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
-the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> Bool` (never waits), the failable
-`receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
-`is ChannelClosedError => ...`, `is CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or
-`CancelRequested`. A channel starts
-with one transmitter and one receiver: `add_transmitter()` / `add_receiver()` (SharedChannel only) count more, each calls
+the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> T?` (never waits: None when the value
+went in, the value itself when the room is full or every receiver has closed), the failable `receive() -> T` (waits
+while empty, receive it with `when check ch.receive()`, `is T as v => ...`, `is ChannelClosedError => ...`, `is
+CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or `CancelRequested`. The channel takes over what
+it is given: an entity or memory from a manager goes in with `steal` (`jobs.transmit(value: steal job)`, `lines:
+&Channel[&[Byte]]` with `lines.transmit(value: steal line)`), and comes out in a place of the receiver's own (`got:
+&Job <- jobs.receive()`, or `is Job as got` in a `when check`, which the receiver ends). A refused value comes back in
+a place: `back: &(Job?) <- jobs.transmit_if_room(value: steal job)` (`&Job?` would be an Optional of a place from a
+manager, a build error that shows the parentheses), or `when jobs.transmit_if_room(value: steal job)` with `is Job as
+back`. A `transmit` that fails ends the value with `drop` before it throws (to keep the value, use
+`transmit_if_room`). A view goes in only when what it views never ends (a text literal, a preset, a global): a view
+of a place of the routine, from STACK or a manager, is a build error ("'ch' is a Channel, which hands its values to
+another thread or fiber, and ch.transmit(line.getslice()) hands it a view of the memory 'line' holds ...: hand the
+memory itself over to a channel of places (a Channel[&[Byte]] for bytes) with steal"). A channel starts with one
+transmitter and one receiver: `add_transmitter()` / `add_receiver()` (SharedChannel only) count more, each calls
 `close_transmitting()` / `close_receiving()` once. All transmitters closed: receivers drain what is left, then get
-`ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and transmitters get `ChannelClosedError`,
-so a receiver takes out values holding memory before it closes. A channel moves one message at a time, so its verbs are
+`ChannelClosedError`. All receivers closed: the values left are ended with `drop`, the oldest first, and transmitters
+get `ChannelClosedError`. `drop ch` ends the values still in it the same way. A channel moves one message at a time,
+so its verbs are
 `transmit` / `receive` (`load` / `store` belong to places: `BorrowedSlice`, `BorrowedCell`, `Unbroken`).
 
 **The data race check.** On by default in a debug build on Linux and macOS on x86_64 and aarch64, off in the release
-modes and on other targets. `[debug] race-check = false` in config.toml (or `--no-race-check`) turns it off, and
-`race-check = true` (or `--race-check`) turns it on in a release mode (on a target without it, that is an error). Every
+modes and on other targets. `[debug] race-check = false` in config.toml turns it off, and
+`race-check = true` turns it on in a release mode (on a target without it, that is an error). Every
 routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads
 touching the same memory, one writing, neither an unbroken access nor an exclusive access between them) with exit status 82 and a
 report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
@@ -2176,7 +2192,7 @@ build error ("Hosted needs an operating system ..."); there's no `Out`, files, t
 `HEAP` or `PAGES` (naming `HEAP` is a build error saying the target has none). The program passes the table of a manager of its own if it
 allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
 
-The build names the board: `[target] board = "raspi4b"` in config.toml (or `--board raspi4b` on the command line) is
+The build names the board: `[target] board = "raspi4b"` in config.toml (`--board raspi4b` for `check` and `test`) is
 `boards/raspi4b.toml`, which comes with Tessera, and `board = "boards/my-board.toml"` (a path: a `/` or `.toml`) is a
 file of the project, relative to config.toml. A board file:
 
@@ -2184,8 +2200,8 @@ file of the project, relative to config.toml. A board file:
 [board]
 name = "Raspberry Pi 4 Model B"     # for messages
 triple = "aarch64-none-elf"         # the target, its OS none
-cpu = "cortex-a72"                  # optional, as --cpu
-features = ["strict-align"]         # optional, as --feature
+cpu = "cortex-a72"                  # optional, as [target] cpu
+features = ["strict-align"]         # optional, as [target] features
 
 [memory]
 image = 0x80000                     # a board without flash: where the loader puts the image, inside ram
@@ -2248,7 +2264,7 @@ or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `@no_builtins`. Each export wraps an ordinary routine
 (`soft_f32_add(a, b)` on the bits, `x.soft_to[B16]()` for a conversion) that any target can call, which is how
-`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them with `--board` for each
+`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them with a `board` config.toml for each
 target without an OS, so lld fails on anything left undefined, and the golden run skips them).
 
 **Interrupts, the timer, and threads without an OS (AArch64).** `qemu-virt-aarch64` boots a program at EL1 (QEMU

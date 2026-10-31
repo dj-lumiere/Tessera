@@ -169,7 +169,7 @@ public sealed partial class Compiler
         if (armM && !cpu.IsMProfile)
             throw new CompileError(start.Pos,
                 $"on 32-bit ARM without an operating system the entry is a Cortex-M reset vector, and the build's CPU ({cpu.Cpu}) " +
-                "isn't an M-profile one: pass --cpu cortex-m3 (or the board's Cortex-M), or bring your own entry instead of start");
+                "isn't an M-profile one: name a Cortex-M CPU, cpu = \"cortex-m3\" under [target] in config.toml (or the board's Cortex-M), or bring your own entry instead of start");
         if (Target.Arch is not ("x86_64" or "aarch64" or "arm" or "riscv32"))
             throw new CompileError(start.Pos,
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");

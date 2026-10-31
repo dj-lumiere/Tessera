@@ -138,8 +138,14 @@ jobs:
         if: matrix.target == 'x86_64-linux-gnu'
         run: |
           trace='5TRACEB|trace_(push|at|pop)'
-          dotnet bin/Release/net10.0/tessera.dll build --emit-llvm examples/fizzbuzz.te -o traced.ll
-          dotnet bin/Release/net10.0/tessera.dll build --emit-llvm --no-trace examples/fizzbuzz.te -o untraced.ll
+          # A config.toml with no executable builds its sources as LLVM IR (build/<package name>.ll).
+          for kind in traced untraced; do
+            mkdir -p "ci-$kind"
+            printf '[package]\nname = "%s"\n[target]\nsources = ["%s"]\n[debug]\ntrace = %s\n' \
+              "$kind" "$PWD/examples/fizzbuzz.te" "$([ $kind = traced ] && echo true || echo false)" > "ci-$kind/config.toml"
+            (cd "ci-$kind" && dotnet ../bin/Release/net10.0/tessera.dll build)
+            cp "ci-$kind/build/$kind.ll" "$kind.ll"
+          done
           grep -Eq "$trace" traced.ll || { echo 'the traced build has no trace: the names searched for are stale'; exit 1; }
           if grep -En "$trace" untraced.ll; then
             echo 'the untraced build has trace storage or calls (above)'
@@ -153,7 +159,11 @@ jobs:
         if: matrix.target == 'x86_64-linux-gnu'
         run: |
           for target in x86_64-linux-gnu aarch64-macos-none; do
-            dotnet bin/Release/net10.0/tessera.dll build --target $target --emit-llvm examples/fizzbuzz.te -o "shared-$target.ll"
+            mkdir -p "ci-shared-$target"
+            printf '[package]\nname = "shared-%s"\n[target]\nsources = ["%s"]\ntriple = "%s"\n' \
+              "$target" "$PWD/examples/fizzbuzz.te" "$target" > "ci-shared-$target/config.toml"
+            (cd "ci-shared-$target" && dotnet ../bin/Release/net10.0/tessera.dll build)
+            cp "ci-shared-$target/build/shared-$target.ll" "shared-$target.ll"
             grep -q '^define linkonce_odr hidden ' "shared-$target.ll" || { echo "$target: no shared routine copy, the search is stale"; exit 1; }
             if grep -nP '^define linkonce_odr (?!hidden )' "shared-$target.ll"; then
               echo "$target: shared routine copies that other images can bind to (above)"
@@ -233,7 +243,11 @@ jobs:
       - name: Build the fiber tests to objects
         run: |
           for test in fiber_scheduler fiber_workers fiber_wait fiber_io; do
-            dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --emit-llvm tests/$test.te -o "$test.ll"
+            mkdir -p "ci-$test"
+            printf '[package]\nname = "%s"\n[target]\nsources = ["%s"]\ntriple = "%s"\n' \
+              "$test" "$PWD/tests/$test.te" "${{ matrix.target }}" > "ci-$test/config.toml"
+            (cd "ci-$test" && dotnet ../bin/Release/net10.0/tessera.dll build)
+            cp "ci-$test/build/$test.ll" "$test.ll"
             clang --target=${{ matrix.target }} -c -Wno-override-module "$test.ll" -o "$test.o"
           done
 
@@ -326,8 +340,12 @@ jobs:
           for program in freestanding freestanding_float ${{ matrix.fibers }}; do
             for mode in debug release; do
               elf="$program-$mode.elf"
-              dotnet bin/Release/net10.0/tessera.dll build --board ${{ matrix.board }} --mode $mode \
-                tests/$program/main.te -o "$elf"
+              dir="ci-$program-$mode"
+              mkdir -p "$dir"
+              printf '[package]\nname = "%s"\n[target]\nexecutable = "%s"\nboard = "%s"\nmode = "%s"\n' \
+                "$program" "$PWD/tests/$program/main.te" "${{ matrix.board }}" "$mode" > "$dir/config.toml"
+              (cd "$dir" && dotnet ../bin/Release/net10.0/tessera.dll build)
+              cp "$dir/build/main" "$elf"
               llvm-nm "$elf" | grep -q ' T when_power_on$' || { echo "tests/$program ($mode) has no when_power_on"; exit 1; }
               echo "tests/$program ($mode): nothing undefined, linked"
             done
@@ -405,8 +423,12 @@ jobs:
               obj="$program-$mode.o"
               level=-O0
               if [ "$mode" = release ]; then level=-O2; fi
-              dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
-                tests/$program.te -o "$ll"
+              dir="ci-$program-$mode"
+              mkdir -p "$dir"
+              printf '[package]\nname = "%s"\n[target]\nsources = ["%s"]\ntriple = "%s"\nmode = "%s"\n' \
+                "$program-$mode" "$PWD/tests/$program.te" "${{ matrix.target }}" "$mode" > "$dir/config.toml"
+              (cd "$dir" && dotnet ../bin/Release/net10.0/tessera.dll build)
+              cp "$dir/build/$program-$mode.ll" "$ll"
               clang --target=${{ matrix.clang-target }} $level -c -Wno-override-module "$ll" -o "$obj"
               undefined=$(llvm-nm -u "$obj" | grep -E '__(u?(div|mod)ti3|fix(uns)?[sdh]fti|float(un)?ti[sdh]f)' || true)
               if [ -n "$undefined" ]; then

@@ -10,11 +10,6 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
-    /// Whether the standard library's exported routines (the default crash report, the half and bfloat conversions LLVM calls)
-    /// are emitted even when nothing here calls them. A program needs them; a library linked into another language's
-    /// program doesn't, since that program brings its own runtime.
-    public bool EmitLibraryExports { get; init; } = true;
-
     /// The libraries and library directories the build adds to the link (the manifest's `-L` and `-l` flags): with the
     /// target's own C libraries, the libraries whose names an `@export` must not take.
     public IReadOnlyList<string> LinkArguments { get; init; } = [];
@@ -106,8 +101,8 @@ public sealed partial class Compiler
     /// <paramref name="heapCheck"/>: whether the standard library's `@heap_check("on")` declarations are kept (the
     /// default heap catches a block freed twice) instead of its `@heap_check("off")` ones. It is the manifest's
     /// `[debug] heap-check`, the same in every build mode.
-    /// <paramref name="raceCheck"/>: whether the program runs with the data race check (`[debug] race-check`,
-    /// `--race-check`): every routine is instrumented, and the standard library's `@race_check("on")` declarations are
+    /// <paramref name="raceCheck"/>: whether the program runs with the data race check (`[debug] race-check`):
+    /// every routine is instrumented, and the standard library's `@race_check("on")` declarations are
     /// kept instead of its `@race_check("off")` ones.
     public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool heapCheck = false,
         bool raceCheck = false, bool traceFromStack = false)
@@ -676,9 +671,8 @@ public sealed partial class Compiler
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
-        if (EmitLibraryExports)
-            foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
-                CheckRoot(r);
+        foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
+            CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         // The entry comes after the program's own routines, so an error in one of them is reported first.
         PlanEntry();

@@ -6,7 +6,7 @@ using Tomlyn.Model;
 namespace Tessera;
 
 /// A board a program without an operating system runs on: its target (triple, CPU, features) and its memory map, read
-/// from a board file. `[target] board = "raspi4b"` in config.toml (or `--board raspi4b`) names a board file that comes
+/// from a board file. `[target] board = "raspi4b"` in config.toml names a board file that comes
 /// with Tessera (`boards/raspi4b.toml`, next to `Standard/`), and `board = "boards/my-board.toml"` (any name with a `/`
 /// or ending in `.toml`) a file of the project, relative to config.toml (to the working directory for `--board`).
 ///
@@ -14,8 +14,8 @@ namespace Tessera;
 /// [board]
 /// name = "Raspberry Pi 4 Model B"         # what the board is, for messages
 /// triple = "aarch64-none-elf"             # a target without an operating system
-/// cpu = "cortex-a72"                      # optional, as --cpu
-/// features = ["strict-align"]             # optional, as --feature
+/// cpu = "cortex-a72"                      # optional, as [target] cpu
+/// features = ["strict-align"]             # optional, as [target] features
 ///
 /// [memory]
 /// image = 0x80000                         # a board without flash: where the loader puts the image, inside ram
