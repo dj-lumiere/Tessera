@@ -440,6 +440,16 @@ public sealed partial class FunctionGen
             case RecordLit lit:
                 foreach (var f in lit.Fields) roots.UnionWith(ViewRoots(f.Value));
                 break;
+            // What `steal place as b` takes out of a field or an element is the entity itself, moved out of the memory
+            // the place is in (`steal taken.getview().right as middle`): it is no view of that memory, whose end it
+            // outlives. It carries only the views that memory was given to hold (an entity holding a view of a text).
+            case StealExpr { Place: true, Value: var place }:
+                if (RootName(place) is { } placeRoot)
+                {
+                    roots.UnionWith(_heldRoots.GetValueOrDefault(placeRoot) ?? []);
+                    roots.UnionWith(_heldRoots.GetValueOrDefault(ResolveRoot(placeRoot)) ?? []);
+                }
+                break;
             // A value handed over with steal, put in memory from a manager, or made under try or check carries the
             // sources of what it is made of.
             case StealExpr { Value: var stolen }:
@@ -505,6 +515,15 @@ public sealed partial class FunctionGen
                 break;
             case ArrayLit array:
                 foreach (var element in array.Elements) refs.UnionWith(ContentRefs(element));
+                break;
+            // An entity steal takes out of a field or an element sees no contents of the memory it left, only what
+            // that memory was given to hold.
+            case StealExpr { Place: true, Value: var place }:
+                if (RootName(place) is { } placeRoot)
+                {
+                    refs.UnionWith(_heldContents.GetValueOrDefault(placeRoot) ?? []);
+                    refs.UnionWith(_heldContents.GetValueOrDefault(ResolveRoot(placeRoot)) ?? []);
+                }
                 break;
             case StealExpr { Value: var stolen }:
                 refs.UnionWith(ContentRefs(stolen));

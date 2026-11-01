@@ -1,0 +1,95 @@
+# An entity that steal takes out of a field reached through a view (steal taken.getview().right as middle) is a place
+# of its own, not a view of the entity it came out of: once that entity is handed on, a view that holds the stolen
+# entity is still used freely. The local view comes from an Addr in one routine and from a stamp's fetch in the other.
+
+import Hosted
+
+### A node with two children.
+entity Node
+    value: S64
+    left: Node?
+    right: Node?
+
+### A node with no children.
+### :param value: Its value.
+### :returns: The node.
+common routine Node.construct(value: S64) -> Me
+    return Me(value, left: None(), right: None())
+
+### Moves the left child's right child to the node's left, then hands the old left child on.
+### :param p: The node.
+### :param keeper: Where the old left child goes.
+routine move(p: @Node, keeper: @Node) -> None
+    steal p.left as taken
+    steal taken.getview().right as middle inject lateinit
+    p.left <- steal middle
+    keeper.right <- steal taken
+    Console.show("value after the move: {p.value.peek()}")
+    return
+
+### The same move, with the node viewed from its address.
+### :param at: The node's address.
+### :param keeper: Where the old left child goes.
+routine move_at(at: Addr, keeper: @Node) -> None
+    p: @Node = when at.to[@Node?]()
+        is @Node as n => n
+        is None =>
+            Crash.stop()
+    steal p.left as taken
+    steal taken.getview().right as middle inject lateinit
+    p.left <- steal middle
+    keeper.right <- steal taken
+    Console.show("value after the move at an address: {p.value.peek()}")
+    return
+
+### The same move, with the node fetched from a stamp.
+### :param s: The node's stamp.
+### :param keeper: Where the old left child goes.
+routine move_stamped(s: Stamped[Node], keeper: @Node) -> None
+    p: @Node = s.fetch()
+    steal p.left as taken
+    steal taken.getview().right as middle inject lateinit
+    p.left <- steal middle
+    keeper.right <- steal taken
+    Console.show("value after the move by stamp: {p.value.peek()}")
+    return
+
+### Gives a node a left child that has a right child.
+### :param root: The node.
+### :param value: The value of the grandchild.
+routine grow(root: @Node, value: S64) -> None
+    root.left <- Node.construct(value: 2) from HEAP
+    when root.left
+        is Node as c => c.right <- Node.construct(value) from HEAP
+        is None => nothing
+    return
+
+### What the node's left child holds now.
+### :param root: The node.
+### :returns: The left child's value, or -1 for none.
+routine left_value(root: @Node) -> S64
+    when root.left
+        is Node as c => return c.value.peek()
+        is None => return -1
+
+### Runs the three moves.
+routine start() -> None
+    PoolManager.set_up(memory: HEAP)
+    root: &Node <- Node.construct(value: 1) from HEAP
+    keeper: &Node <- Node.construct(value: 9) from HEAP
+    grow(root, value: 3)
+    move(p: root.getview(), keeper)
+    Console.show("left: {left_value(root)}")
+    drop root.left
+    drop keeper.right
+    grow(root, value: 4)
+    move_at(at: root.getview().to[Addr](), keeper)
+    Console.show("left: {left_value(root)}")
+    drop root.left
+    drop keeper.right
+    grow(root, value: 5)
+    move_stamped(s: root.stamp(), keeper)
+    Console.show("left: {left_value(root)}")
+    drop root
+    drop keeper
+    return

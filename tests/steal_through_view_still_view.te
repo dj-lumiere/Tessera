@@ -1,0 +1,45 @@
+# A view taken of an entity is still a view of it after a steal through it: once the entity is handed on, that view
+# reads memory the entity's new holder may give back, which is a build error.
+
+import Hosted
+
+### A node with two children.
+entity Node
+    value: S64
+    left: Node?
+    right: Node?
+
+### A node with no children.
+### :param value: Its value.
+### :returns: The node.
+common routine Node.construct(value: S64) -> Me
+    return Me(value, left: None(), right: None())
+
+### Moves the left child's right child to the node's left, hands the old left child on, then reads it through a view.
+### :param at: The node's address.
+### :param keeper: Where the old left child goes.
+routine move(at: Addr, keeper: @Node) -> None
+    p: @Node = when at.to[@Node?]()
+        is @Node as n => n
+        is None =>
+            Crash.stop()
+    steal p.left as taken
+    seen: @Node = taken.getview()
+    steal seen.right as middle inject lateinit
+    p.left <- steal middle
+    keeper.right <- steal taken
+    Console.show("{p.value.peek()} {seen.value.peek()}")
+    return
+
+### Runs the move.
+routine start() -> None
+    root: &Node <- Node.construct(value: 1) from HEAP
+    keeper: &Node <- Node.construct(value: 9) from HEAP
+    root.left <- Node.construct(value: 2) from HEAP
+    when root.left
+        is Node as c => c.right <- Node.construct(value: 3) from HEAP
+        is None => nothing
+    move(at: root.getview().to[Addr](), keeper)
+    drop root
+    drop keeper
+    return
