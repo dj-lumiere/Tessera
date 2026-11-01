@@ -25,7 +25,8 @@ module System
 
 ### The routine Hosted's AccessManager puts here before it hands out its first access, or hollow: memory given back
 ### or moved by a BorrowedSlice or a BorrowedCell is handed to it first (its address and size in bytes), and it waits while another flow
-### holds an access inside that range. A `Callable[(Addr, U64), None]`.
+### holds an access inside that range. A `Callable[(Addr, U64), @[Byte]]` that gives an empty view, or the sentence of
+### the `DeadlockError` to throw (a call through an address can't carry a failure).
 @target(os: not "none")
 global ACCESS_RANGE_CHECK: &Addr
 
@@ -33,14 +34,18 @@ global ACCESS_RANGE_CHECK: &Addr
 ### access was ever handed out.
 ### :param at: The block.
 ### :param size: Its size in bytes.
+### :throws: Throws `DeadlockError` when the flow holds an access inside the block, or waits in a cycle for one.
 @target(os: not "none")
 @inline
+@track_caller
 secret routine check_access_range(at: Addr, size: U64) -> None
     hook: Addr = ACCESS_RANGE_CHECK.peek_unbroken()
     if hook.is_hollow()
         return
-    check: Callable[(Addr, U64), None] = bitcast(hook)
-    check.call(at, size)
+    check: Callable[(Addr, U64), @[Byte]] = bitcast(hook)
+    sentence: @[Byte] = check.call(at, size)
+    if sentence.count != 0
+        throw DeadlockError(description: sentence)
     return
 
 ### Without an operating system there is no AccessManager: nothing to check.
@@ -234,17 +239,11 @@ routine @BorrowedSlice[T].duplicate() -> Me
     copy.data.peek().copy(src: view.data, count: view.count)
     return copy
 
-### Stops the program for a resize of hollow memory: a `@noreturn` routine is a wall, so its throw stops the program
-### there instead of giving the failure to resize's caller.
-@noreturn
-@track_caller
-secret routine crash_hollow_resize() -> None
-    throw UnacceptedValueError(description: "This memory is hollow (it has no manager), so it can't be resized.")
-
 ### Holds `count` values from here on, keeping the first ones (as many as both counts allow). The memory may move:
 ### views and addresses taken before see it no longer. A count of 0 gives the memory back and keeps the manager.
 ### :param count: The new number of values.
-### :throws: Crashes with `UnacceptedValueError` on a hollow memory (no manager). Throws `OutOfMemoryError` when the
+### :throws: Throws `UnacceptedValueError` on a hollow memory (no manager), and `DeadlockError` when this flow holds an
+###     access inside the memory (it would wait for itself) or waits for one in a cycle. Throws `OutOfMemoryError` when the
 ###     manager has no memory to give or the size doesn't fit in U64, and the memory is unchanged then.
 @track_caller
 @expensive("reallocates memory")
@@ -254,7 +253,7 @@ routine @BorrowedSlice[T].resize(count: U64) -> None
     data: @T = me.data.peek()
 
     if manager.to[Addr]().is_hollow()
-        crash_hollow_resize()
+        throw UnacceptedValueError(description: "This memory is hollow (it has no manager), so it can't be resized.")
     if count == 0
         drop me
         me.manager.poke(manager)

@@ -1,0 +1,52 @@
+# Two threads take two accesses in opposite orders and end up waiting on each other. With the deadlock check on, the
+# thread that closes the cycle throws DeadlockError, a check receives it, and the access that thread held is given back
+# on the way out, so the other thread goes on. Both finish, the manager holds nothing at the end, and the same two
+# accesses can be taken again.
+
+import Hosted
+
+### How many of the two threads received a DeadlockError.
+global RECEIVED: &U64
+
+### Takes the elements in the order given, with a wait between them.
+### :param m: The memory.
+### :param first: The index taken first.
+### :param second: The index taken second.
+routine cross(m: @BorrowedSlice[U64], first: U64, second: U64) -> None
+    a: Authorized[U64] <- m.getslot(first).get_exclusive_access()
+    waitfor(50ms)
+    b: Authorized[U64] <- m.getslot(second).get_exclusive_access()
+    drop b
+    drop a
+    return
+
+### Runs `cross` and counts a deadlock it receives.
+### :param m: The memory.
+### :param first: The index taken first.
+### :param second: The index taken second.
+routine counted(m: @BorrowedSlice[U64], first: U64, second: U64) -> None
+    when check cross(m, first, second)
+        is None => return
+        is DeadlockError => RECEIVED.fetch_add_unbroken(1)
+        is Crashables as e => Console.show("unexpected: {e.name()}")
+    return
+
+routine start() -> None
+    m: &[U64] <- [0] * 2 from HEAP
+
+    a: Thread[None] <- get_thread[None]()
+    b: Thread[None] <- get_thread[None]()
+    work_a: Work[None] = counted.to[Work](m: m, first: 0, second: 1)
+    a.put_work(work_a)
+    work_b: Work[None] = counted.to[Work](m: m, first: 1, second: 0)
+    b.put_work(work_b)
+    a.retrieve()
+    b.retrieve()
+    drop a
+    drop b
+    Console.show("at least one received the deadlock: {RECEIVED.peek_unbroken() >= 1}, held: {AccessManager.held_count()}")
+    cross(m, first: 0, second: 1)
+    cross(m, first: 1, second: 0)
+    Console.show("taken again, held: {AccessManager.held_count()}")
+    drop m
+    return

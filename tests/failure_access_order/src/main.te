@@ -1,0 +1,44 @@
+# With the access-order check on, taking two accesses in the opposite order of an earlier pair throws AccessOrderError.
+# A check receives it, the access that was refused is not held, and the program goes on: the same two accesses can be
+# taken again in the first order, and the manager holds nothing at the end.
+
+import Hosted
+
+record Pair
+    first: U64
+    second: U64
+
+### Takes the first access, then the second.
+### :param pair: The pair.
+### :returns: The sum of both.
+routine forward(pair: @Pair) -> U64
+    a: Authorized[U64] <- pair.first.get_exclusive_access()
+    b: Authorized[U64] <- pair.second.get_exclusive_access()
+    sum: U64 = a.getview().peek() + b.getview().peek()
+    drop b
+    drop a
+    return sum
+
+### Takes the second access, then the first: the opposite order.
+### :param pair: The pair.
+### :returns: The sum of both.
+routine backward(pair: @Pair) -> U64
+    b: Authorized[U64] <- pair.second.get_exclusive_access()
+    a: Authorized[U64] <- pair.first.get_exclusive_access()
+    sum: U64 = a.getview().peek() + b.getview().peek()
+    drop a
+    drop b
+    return sum
+
+routine start() -> None
+    pair: &Pair <- Pair(first: 1, second: 2)
+
+    Console.show("forward: {forward(pair)}, held: {AccessManager.held_count()}")
+    for round: U64 in 0 til 3
+        when check backward(pair)
+            is U64 as sum => Console.show("backward {round}: {sum}")
+            is AccessOrderError => Console.show("backward {round}: the opposite order of an earlier pair")
+            is Crashables as e => Console.show("backward {round}: {e.name()}")
+        Console.show("  held: {AccessManager.held_count()}")
+    Console.show("forward again: {forward(pair)}, held: {AccessManager.held_count()}")
+    return

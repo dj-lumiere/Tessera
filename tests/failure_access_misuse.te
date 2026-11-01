@@ -1,0 +1,113 @@
+# Misuse of the access manager is a failure a try or check receives, and the program goes on: taking an access the flow
+# already holds (ReenterDuringAccessError), resizing hollow memory (UnacceptedValueError), and moving memory while the
+# flow holds an access inside it (DeadlockError, the flow would wait for itself). After each, the access the flow held
+# is still its own and is given back normally, the same access can be taken again, the manager holds nothing the
+# program did not take, and the counting memory manager has no block out.
+
+import Hosted
+
+@external("c")
+@symbol("malloc")
+routine c_malloc(size: CSize) -> Addr
+
+@external("c")
+@symbol("realloc")
+routine c_realloc(ptr: Addr, size: CSize) -> Addr
+
+@external("c")
+@symbol("free")
+routine c_free(ptr: Addr) -> None
+
+### A memory manager that counts the blocks it has out.
+record Counting
+    ### The blocks borrowed and not given back.
+    out: U64
+
+obeys MemoryManageable[Counting]
+
+### A block from C, counted.
+### :param size: The bytes.
+### :param align: The alignment.
+### :returns: The block.
+routine @Counting.borrow(size: U64, align: U64) -> Addr
+    (me.out.peek() + 1).poke_into(me.out)
+    return c_malloc(size.to[CSize]())
+
+### The block grown or shrunk.
+### :param at: The block.
+### :param size: The new bytes.
+### :param align: The alignment.
+### :returns: The block.
+routine @Counting.reborrow(at: Addr, size: U64, align: U64) -> Addr
+    return c_realloc(at, size.to[CSize]())
+
+### The block back to C.
+### :param at: The block.
+routine @Counting.give_back(at: Addr) -> None
+    (me.out.peek() - 1).poke_into(me.out)
+    c_free(at)
+    return
+
+### Takes the access a second time through another name for the same value.
+### :param counter: The value.
+### :returns: Whether it was taken.
+routine take_twice(counter: @U64) -> Bool
+    held: Authorized[U64] <- counter.get_exclusive_access()
+    same: @U64 = counter.stride(0)
+    again: Authorized[U64] <- same.get_exclusive_access()
+    drop again
+    drop held
+    return true
+
+### Resizes memory while the flow holds an access to one of its values.
+### :param memory: The memory.
+### :returns: Whether it was resized.
+@reshaping(memory)
+routine resize_held(memory: @BorrowedSlice[U64]) -> Bool
+    held: Authorized[U64] <- memory.getslot(1).get_exclusive_access()
+    memory.resize(count: 64)
+    drop held
+    return true
+
+### Reads the first value through an access of its own.
+### :param counter: The value.
+### :returns: The value.
+routine read_through_access(counter: @U64) -> U64
+    held: Authorized[U64] <- counter.get_exclusive_access()
+    value: U64 = held.getview().peek()
+    drop held
+    return value
+
+### Runs every case.
+routine start() -> None
+    counter: &U64 <- 5
+    for round: U64 in 0 til 3
+        when check take_twice(counter)
+            is Bool => Console.show("take twice {round}: taken")
+            is ReenterDuringAccessError => Console.show("take twice {round}: the flow holds it already")
+            is Crashables as e => Console.show("take twice {round}: {e.name()}")
+        Console.show("  read {read_through_access(counter)}, held: {AccessManager.held_count()}")
+
+    tally: &Counting <- (out: 0)
+    manager: &MemoryManager <- tally.to[MemoryManager]()
+    memory: &[U64] <- [7] * 4 from manager
+    for round: U64 in 0 til 3
+        when check resize_held(memory)
+            is Bool => Console.show("resize held {round}: resized")
+            is DeadlockError => Console.show("resize held {round}: the flow would wait for itself")
+            is Crashables as e => Console.show("resize held {round}: {e.name()}")
+        Console.show("  held: {AccessManager.held_count()}, blocks out: {tally.out.peek()}")
+    memory.resize(count: 8)
+    Console.show("resized without an access: {memory.count.peek()}, blocks out: {tally.out.peek()}")
+    drop memory
+
+    lateinit hollow: &[U64]
+    when check hollow.resize(count: 4)
+        is None => Console.show("hollow resize: done")
+        is UnacceptedValueError => Console.show("hollow resize: no manager")
+        is Crashables as e => Console.show("hollow resize: {e.name()}")
+    Console.show("hollow still empty: {hollow.count.peek()}")
+    drop hollow
+    drop manager
+    Console.show("blocks out at the end: {tally.out.peek()}, held: {AccessManager.held_count()}")
+    return

@@ -16,14 +16,17 @@
 #   one unbroken step when free), and its nodes are kept in a pool and used again.
 # - A flow about to wait first publishes what it waits for, then (with the deadlock check on) searches the flows that
 #   hold accesses its request overlaps, what those flows wait for, and so on (a request may overlap several holders).
-#   A search that comes back to the flow is a deadlock, and the program stops with a crash that names every flow in the
-#   cycle and where each took the access it holds.
-# - Taking an access that overlaps one the flow already holds stops the program with ReenterDuringAccessError.
+#   A search that comes back to the flow is a deadlock: the request throws a DeadlockError that names every flow in the
+#   cycle and where each took the access it holds, and the flow stops waiting. A `try` or `check` above receives it, and
+#   without one the program stops with it.
+# - Taking an access that overlaps one the flow already holds throws ReenterDuringAccessError, and the flow holds what
+#   it held before.
 # - Memory given back or moved by a BorrowedSlice or a BorrowedCell (System) is handed to the AccessManager first: while
 #   another flow holds an access inside it, the flow giving it back waits, and when the flow itself holds one, that is
-#   a deadlock.
+#   a deadlock (a DeadlockError thrown by the BorrowedSlice).
 # - With the access-order check on, every access taken while others are held records the order of the pair, and a
-#   pair taken in the opposite order stops the program before the two can wait on each other.
+#   pair taken in the opposite order throws AccessOrderError before the two can wait on each other: the access is not
+#   taken.
 # - It parks a waiting flow the way the flow waits (a thread sleeps, a fiber parks), or the way another language's
 #   runtime asks (set_park).
 
@@ -65,10 +68,6 @@ global ORDER_COUNT: &U64
 ### 1 while a flow reads or changes ORDERS. A plain flag: the check's own bookkeeping takes no access.
 global ORDER_FLAG: &U32
 
-### 1 once a flow reports a deadlock or an access-order error: the other flows of the cycle, which may see it at the
-### same moment, wait for that report to end the program instead of writing their own over it.
-global REPORTING: &U32
-
 ### The root of the table of accesses held, hollow while none is.
 global TABLE_ROOT: &(@AccessNode?)
 ### The word that guards the table: 0 free, 1 taken, 2 taken with a flow that may be waiting for it.
@@ -89,6 +88,8 @@ preset ACCESS_ORDER: Bool = false
 ### How many accesses one flow's list keeps. A flow may hold more: those past the list aren't known to the
 ### access-order check and to `held()`.
 preset HELD_SLOTS: U64 = 16
+### How many bytes of a failure's sentence a flow keeps (a longer one is cut).
+preset REPORT_BYTES: U64 = 2048
 
 ### How many pairs the access-order check keeps. Once it is full, new pairs aren't recorded.
 preset ORDER_SLOTS: U64 = 1024
@@ -158,6 +159,9 @@ record AccessFlow
     pending_count: U64
     ### The accesses a block named, to open together.
     pending: Items[HeldAccess, HELD_SLOTS]
+    ### Where the flow writes the sentence of the failure it throws (a deadlock, two accesses taken in opposite orders):
+    ### the failure's description views it, and the next such failure of the flow writes over it.
+    report: Items[Byte, REPORT_BYTES]
 
 ### One access held, a node of the table: an interval tree ordered by `start` (then by the node's address).
 record AccessNode
@@ -321,8 +325,8 @@ common routine ReadAuthorizedSlice[T].construct(at: @[T]) -> Me
 ### `[me, me + size of T)`.
 ### :typeparam T: The value's type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine PointedCell[T].get_exclusive_access() -> Authorized[T]
@@ -334,8 +338,8 @@ routine PointedCell[T].get_exclusive_access() -> Authorized[T]
 ### Waits while another flow holds exclusive access that overlaps it, or waits for one.
 ### :typeparam T: The value's type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine PointedCell[T].get_shared_read_access() -> ReadAuthorized[T]
@@ -346,8 +350,8 @@ routine PointedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 ### Takes exclusive access to the value in the box: `getview().get_exclusive_access()`.
 ### :typeparam T: The value's type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @BorrowedCell[T].get_exclusive_access() -> Authorized[T]
@@ -359,8 +363,8 @@ routine @BorrowedCell[T].get_exclusive_access() -> Authorized[T]
 ### Takes shared read access to the value in the box: `getview().get_shared_read_access()`.
 ### :typeparam T: The value's type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @BorrowedCell[T].get_shared_read_access() -> ReadAuthorized[T]
@@ -374,8 +378,8 @@ routine @BorrowedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 ### bytes, `[data, data + count * size of T)`. A run of no bytes covers nothing, and nothing is taken.
 ### :typeparam T: The values' type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @[T].get_exclusive_access() -> AuthorizedSlice[T]
@@ -390,8 +394,8 @@ routine @[T].get_exclusive_access() -> AuthorizedSlice[T]
 ### covers `[data, data + count * size of T)`. A run of no bytes covers nothing, and nothing is taken.
 ### :typeparam T: The values' type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @[T].get_shared_read_access() -> ReadAuthorizedSlice[T]
@@ -404,8 +408,8 @@ routine @[T].get_shared_read_access() -> ReadAuthorizedSlice[T]
 ### Takes exclusive access to every value of the run: `getslice().get_exclusive_access()`.
 ### :typeparam T: The values' type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @BorrowedSlice[T].get_exclusive_access() -> AuthorizedSlice[T]
@@ -419,8 +423,8 @@ routine @BorrowedSlice[T].get_exclusive_access() -> AuthorizedSlice[T]
 ### Takes shared read access to every value of the run: `getslice().get_shared_read_access()`.
 ### :typeparam T: The values' type.
 ### :returns: The access, given back with `drop`.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
 routine @BorrowedSlice[T].get_shared_read_access() -> ReadAuthorizedSlice[T]
@@ -513,8 +517,8 @@ routine @ReadAuthorizedSlice[T].destruct() -> None
 ### :param deadline: When to give up, in `Clock.monotonic()` time, `Duration.MAX` for never.
 ### :param place: Where it is taken.
 ### :returns: True when it took the access, false when the deadline passed first.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @target(os: not "none")
 common routine AccessManager.take(request: AccessRequest, deadline: Duration,
     place: @SourceLocation) -> Bool
@@ -524,7 +528,7 @@ common routine AccessManager.take(request: AccessRequest, deadline: Duration,
 ### :param request: The bytes and the mode.
 ### :param place: Where it is taken.
 ### :returns: True when it took the access.
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it.
 @target(os: not "none")
 common routine AccessManager.try_take(request: AccessRequest, place: @SourceLocation) -> Bool
     return take_range(ask: AccessAsk(request, place, deadline: Duration.zero(), hooked: false))
@@ -533,8 +537,8 @@ common routine AccessManager.try_take(request: AccessRequest, place: @SourceLoca
 ### back and takes it again around a wait of its own. The build doesn't follow it.
 ### :param at: The first byte.
 ### :param size: How many bytes (0 counts as 1).
-### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
-###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+### :throws: Throws `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @target(os: not "none")
 common routine AccessManager.take_exclusive(at: Addr, size: U64) -> None
     place: &SourceLocation <- Me.place_here()
@@ -950,8 +954,9 @@ secret routine span_of(request: AccessRequest) -> AccessSpan
 ### Takes an access to the request's bytes in its mode, waiting while another flow holds one in the way.
 ### :param ask: The request, where it was asked, until when to wait, and how.
 ### :returns: True when it took the access.
-### :throws: Crashes with `ReenterDuringAccessError` when the flow already holds an access that overlaps it, and with
-###     `DeadlockError` (with the deadlock check on) on a cycle.
+### :throws: Throws `ReenterDuringAccessError` when the flow already holds an access that overlaps it, `DeadlockError`
+###     (with the deadlock check on) on a cycle, and `AccessOrderError` (with the order check on) when the flow takes
+###     it after another in the opposite order to an earlier time. The flow holds nothing it did not hold before.
 @target(os: not "none")
 secret routine take_range(ask: AccessAsk) -> Bool
     flow: @AccessFlow = current_flow()
@@ -963,7 +968,7 @@ secret routine take_range(ask: AccessAsk) -> Bool
         lock_table()
         if find_own(subtree: TABLE_ROOT.peek(), start: span.start, end: span.end, flow).is_present()
             unlock_table()
-            crash_reenter(ask.place)
+            throw reenter_error()
         blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.peek(), span, flow)
         if blocker.is_absent()
             node: @AccessNode = new_node()
@@ -981,9 +986,13 @@ secret routine take_range(ask: AccessAsk) -> Bool
             TABLE_ROOT.poke(insert_node(root_or_none: TABLE_ROOT.peek(), node))
             HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() + 1)
             unlock_table()
-            note_taken(flow,
+            when check note_taken(flow,
                 taken: HeldAccess(access: ask.request.at, kind: ACCESS_EXCLUSIVE, mode: span.mode, place: ask.place.peek()))
-            return true
+                is None => return true
+                is Crashables as error =>
+                    # The order check refused it: the access is not the flow's, so it leaves the table again.
+                    release_node(at: ask.request.at)
+                    throw error
         if ask.deadline == Duration.zero()
             unlock_table()
             return false
@@ -1029,6 +1038,16 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, ask: Acces
 ### :throws: Throws `AccessNotHeldError` when this flow holds no access that starts there.
 @target(os: not "none")
 secret routine give_back_range(at: Addr) -> None
+    release_node(at)
+    note_released(flow: current_flow(), access: at)
+    return
+
+### Takes the node of the access the running flow holds that starts at `at` out of the table and wakes the flows that
+### wait for it. The flow's own list of what it holds is not touched.
+### :param at: The access's first byte.
+### :throws: Throws `AccessNotHeldError` when this flow holds no access that starts there.
+@target(os: not "none")
+secret routine release_node(at: Addr) -> None
     flow: @AccessFlow = current_flow()
     start: U64 = ptrtoint[Addr, U64](at)
 
@@ -1050,21 +1069,34 @@ secret routine give_back_range(at: Addr) -> None
     unlock_table()
     if waiters != 0
         wake_all(node.word)
-    note_released(flow, access: at)
     return
 
-### Memory is given back or moved (by a BorrowedSlice or a BorrowedCell): waits while another flow holds an access inside it. The
-### routine System calls through ACCESS_RANGE_CHECK.
+### Memory is given back or moved (by a BorrowedSlice or a BorrowedCell): waits while another flow holds an access inside it.
+### The routine System calls through ACCESS_RANGE_CHECK. A hook is called through an address, which carries no failure
+### list, so what would be thrown comes back as the sentence of a `DeadlockError` and System throws it.
 ### :param at: The memory's first byte.
 ### :param size: Its size in bytes.
-### :throws: Crashes with `DeadlockError` when this flow holds an access inside it: it would wait for itself.
+### :returns: An empty view when the memory may go, else the sentence of the deadlock: this flow holds an access inside it (it
+###     would wait for itself), or the flows waiting for each other close a cycle (with the deadlock check on).
 @target(os: not "none")
-secret routine check_range(at: Addr, size: U64) -> None
+infallible routine check_range(at: Addr, size: U64) -> @[Byte]
+    when check wait_out_range(at, size)
+        is @[Byte] as sentence => return sentence
+        is DeadlockError as error => return error.description
+        is Crashables as error => throw error
+
+### Waits until no other flow holds an access inside the memory, or finds that this flow does itself.
+### :param at: The memory's first byte.
+### :param size: Its size in bytes.
+### :returns: An empty view when the memory may go, else the sentence that tells this flow holds an access inside it.
+### :throws: Throws `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+@target(os: not "none")
+secret routine wait_out_range(at: Addr, size: U64) -> @[Byte]
     flow: @AccessFlow = current_flow()
     lateinit place: &SourceLocation
 
     if HELD_TOTAL.peek_unbroken() == 0
-        return
+        return @[Byte].empty()
     ask: AccessAsk = AccessAsk(request: AccessRequest(at, size, mode: ACCESS_WRITE), place,
         deadline: Duration.MAX, hooked: false)
     span: AccessSpan = span_of(ask.request)
@@ -1074,29 +1106,37 @@ secret routine check_range(at: Addr, size: U64) -> None
             is @AccessNode as own =>
                 taken: SourceLocation = own.place.peek()
                 unlock_table()
-                crash_give_back_held(taken)
+                return give_back_held_sentence(flow, taken)
             is None => nothing
         blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.peek(), span, flow)
         if blocker.is_absent()
             unlock_table()
-            return
+            return @[Byte].empty()
         wait_for_node(flow, blocker: blocker.unwrap(), ask)
         continue
     then
         unreachable
 
-### Stops the program: memory is given back while this flow holds an access inside it.
+### The sentence a writer over the flow's report room has written so far.
+### :param flow: The flow.
+### :param out: The writer.
+### :returns: A view of the flow's report room, as long as the sentence.
+secret routine report_view(flow: @AccessFlow, out: @SliceWriter) -> @[Byte]
+    return @[Byte].construct(data: flow.report.getview().to[@Byte](), count: out.count.peek())
+
+### Writes the sentence for memory given back or moved while the flow holds an access inside it, in the flow's report
+### room.
+### :param flow: The flow.
 ### :param taken: Where the flow took that access.
-@noreturn
-secret routine crash_give_back_held(taken: SourceLocation) -> None
-    buffer: &Items[Byte, 512]
-    out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 512)
+### :returns: The sentence.
+secret routine give_back_held_sentence(flow: @AccessFlow, taken: SourceLocation) -> @[Byte]
+    out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](), capacity: REPORT_BYTES)
 
     out.write("This gives back or moves memory while this thread or fiber holds an access inside it")
     if write_place_after(out, before: " (taken at ", place: taken)
         out.write(")")
     out.write(". It would wait for itself to give the access back: give the access back first.")
-    crash_at(error: DeadlockError(description: out.getview()), place: NO_PLACE)
+    return report_view(flow, out)
 
 ### Writes `before` and a place, when the place names a file.
 ### :param out: Where to write.
@@ -1128,7 +1168,7 @@ secret routine kind_mode(kind: U8, mode: U8) -> U8
 ### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
 ### :param mode: ACCESS_READ or ACCESS_WRITE.
 ### :param place: Where it is taken.
-### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it, and with `DeadlockError`
+### :throws: Throws `ReenterDuringAccessError` when the calling flow already holds it, and with `DeadlockError`
 ### (with the deadlock check on) when the flows waiting for each other close a cycle.
 @target(os: not "none")
 common routine AccessManager.take_kind(access: Addr, kind: U8, mode: U8,
@@ -1147,7 +1187,7 @@ common routine AccessManager.take_kind(access: Addr, kind: U8, mode: U8,
 ### :param mode: ACCESS_READ or ACCESS_WRITE.
 ### :param place: Where it is taken.
 ### :returns: True when it took the access.
-### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+### :throws: Throws `ReenterDuringAccessError` when the calling flow already holds it.
 @target(os: not "none")
 common routine AccessManager.try_take_kind(access: Addr, kind: U8, mode: U8,
     place: @SourceLocation) -> Bool
@@ -1220,8 +1260,9 @@ secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
 
 ### Opens the accesses named with {AccessManager.enlist}, the lowest address first, waiting for each.
 ### :param place: Where the block opens them.
-### :throws: Crashes with `AliasedTokensError` when two names are the same value, with `ReenterDuringAccessError` when
-### the flow holds one already, and with `DeadlockError` (with the deadlock check on) on a cycle.
+### :throws: Crashes with `AliasedTokensError` when two names are the same value. Throws `ReenterDuringAccessError`
+### when the flow holds one already, and `DeadlockError` (with the deadlock check on) on a cycle, and then none of the
+### accesses stays open.
 @target(os: not "none")
 common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
     flow: @AccessFlow = current_flow()
@@ -1230,7 +1271,15 @@ common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
     flow.pending_count.poke(0)
     for i in 0 til count
         entry: HeldAccess = flow.pending.getslot(i).peek()
-        Me.take_kind(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+        when check Me.take_kind(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+            is None => nothing
+            is Crashables as error =>
+                # The block does not open: the ones before this entry are given up again, the last opened first.
+                for back in 0 til i
+                    opened: HeldAccess = flow.pending.getslot(i - 1 - back).peek()
+                    Me.give_back_kind(access: opened.access, kind: opened.kind)
+                throw error
+        continue
     then
         return
 
@@ -1238,8 +1287,8 @@ common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
 ### first, without waiting. When one is taken, the ones it opened are given up again and none stays open.
 ### :param place: Where the block opens them.
 ### :returns: True when it opened them all.
-### :throws: Crashes with `AliasedTokensError` when two names are the same value, and with `ReenterDuringAccessError`
-### when the flow holds one already.
+### :throws: Crashes with `AliasedTokensError` when two names are the same value. Throws `ReenterDuringAccessError`
+### when the flow holds one already, and then none of the accesses stays open.
 @target(os: not "none")
 common routine AccessManager.try_open_enlisted(place: @SourceLocation) -> Bool
     flow: @AccessFlow = current_flow()
@@ -1354,15 +1403,36 @@ secret routine known_place(place: @SourceLocation) -> @SourceLocation
         return NO_PLACE
     return place
 
-### Stops the program: the flow takes an access it already holds.
-### :param place: Where it takes it again.
+### Stops the program with a failure of the access manager that nothing received, for a wall (an exported routine another
+### language's runtime calls) that would otherwise report it at the line of the throw inside this library. The report
+### names the place the code took the access at.
+### :typeparam E: The crashable.
+### :param error: The failure.
+### :param place: Where the code took the access.
 @noreturn
-secret routine crash_reenter(place: @SourceLocation) -> None
+common routine AccessManager.stop_with[E](error: E, place: @SourceLocation) -> None
+needs E obeys Crashable
+    crash_at(error, place: known_place(place))
+
+### Stops the program with a deadlock that nothing received (see {AccessManager.stop_with}). Suflae's report names no
+### place: its work waits inside statements the builder brackets, so no place of the program's would help.
+### :param error: The deadlock.
+### :param place: Where the code took the access.
+@noreturn
+common routine AccessManager.stop_deadlock(error: DeadlockError, place: @SourceLocation) -> None
+    shown: @SourceLocation = when
+        WORDS.peek() == WORDS_SUFLAE => NO_PLACE
+        else => known_place(place)
+    crash_at(error, place: shown)
+
+### The failure for a flow taking an access it already holds.
+### :returns: The failure.
+secret routine reenter_error() -> ReenterDuringAccessError
     words: U8 = WORDS.peek()
     message: @[Byte] = when
         words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
         else => "This work opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
-    crash_at(error: ReenterDuringAccessError(description: message), place: known_place(place))
+    return ReenterDuringAccessError(description: message)
 
 # -- parking ------------------------------------------------------------------------------------------------------
 
@@ -1510,9 +1580,11 @@ secret routine finds_cycle(flow: @AccessFlow, path: @DeadlockPath) -> Bool
     unlock_table()
     return found
 
-### Stops the program when the flows `flow` waits for lead back to it twice, a short wait apart: a deadlock.
+### Throws a deadlock when the flows `flow` waits for lead back to it twice, a short wait apart. The flow no longer
+### waits for what it asked for by then, so the access manager is as it was before the request.
 ### :param flow: The flow about to wait, its wait published.
 ### :param wait: What it waits for.
+### :throws: Throws `DeadlockError`.
 @target(os: not "none")
 secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
     recheck_at: Duration = Clock.monotonic() +^ DEADLOCK_RECHECK
@@ -1532,15 +1604,7 @@ secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
         if not finds_cycle(flow, path)
             return
         report_deadlock(flow, path)
-
-### Waits for the report another flow is writing to end the program: a second report would be written over it.
-@noreturn
-@target(os: not "none")
-secret routine wait_for_report() -> None
-    loop
-        wait_on(at: REPORTING, expected: 1)
-    then
-        unreachable
+        return
 
 ### Writes how the crash reports call `flow`.
 ### :param out: Where to write.
@@ -1571,19 +1635,15 @@ secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
     out.write("{file}:{place.line}:{place.column}")
     return true
 
-### Stops the program on a deadlock: each flow of the cycle on a line of its own, what it waits for, and where its
-### holder took it.
+### Throws a deadlock: each flow of the cycle on a line of its own, what it waits for, and where its holder took it.
+### The flow stops waiting first.
 ### :param flow: The flow that closed the cycle.
 ### :param path: The cycle.
-@noreturn
+### :throws: Throws `DeadlockError`.
 secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
-    buffer: &Items[Byte, 2048]
-    out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 2048)
+    out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](), capacity: REPORT_BYTES)
     words: U8 = WORDS.peek()
     length: U64 = path.count.peek()
-
-    if REPORTING.swap_unbroken(1) != 0
-        wait_for_report()
 
     when
         words == WORDS_TESSERA => out.write("These threads and fibers wait on each other, so none of them can go on:")
@@ -1610,11 +1670,8 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
             words == WORDS_TESSERA => out.write("\nTake the accesses in the same order everywhere.")
             words == WORDS_SUFLAE => out.write("\nUse the shared entities in the same order in every piece of work.")
             else => out.write("\nOpen them together in one block, which takes them in address order, or open them in the same order everywhere.")
-        # Suflae's work waits inside the statements the builder brackets, so no place of the program's would help.
-        place: @SourceLocation = when
-            words == WORDS_SUFLAE => NO_PLACE
-            else => known_place(flow.waiting_place)
-        crash_at(error: DeadlockError(description: out.getview()), place)
+        end_wait(flow)
+        throw DeadlockError(description: report_view(flow, out))
 
 # -- access order --------------------------------------------------------------------------------------------------
 
@@ -1666,7 +1723,7 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
         opposite: U64 = find_order(first: access, second: earlier)
         if opposite < ORDER_SLOTS
             unlock_orders()
-            report_order(place, before: ORDERS.getslot(opposite).place.peek())
+            report_order(flow, before: ORDERS.getslot(opposite).place.peek())
         count: U64 = ORDER_COUNT.peek()
         if count < ORDER_SLOTS and find_order(first: earlier, second: access) == ORDER_SLOTS
             ORDERS.getslot(count).poke(AccessOrder(first: earlier, second: access,
@@ -1677,17 +1734,13 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
         unlock_orders()
         return
 
-### Stops the program on two accesses taken in opposite orders.
-### :param place: Where the second order is taken.
+### Throws an access-order error for two accesses taken in opposite orders.
+### :param flow: The flow taking the access.
 ### :param before: Where the first order took its second access.
-@noreturn
-secret routine report_order(place: @SourceLocation, before: SourceLocation) -> None
-    buffer: &Items[Byte, 1024]
-    out: &SliceWriter <- SliceWriter.construct(data: buffer.getview().to[@Byte](), capacity: 1024)
+### :throws: Throws `AccessOrderError`.
+secret routine report_order(flow: @AccessFlow, before: SourceLocation) -> None
+    out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](), capacity: REPORT_BYTES)
     words: U8 = WORDS.peek()
-
-    if REPORTING.swap_unbroken(1) != 0
-        wait_for_report()
 
     when
         words == WORDS_TESSERA => out.write("This takes an access while holding another, and the two were taken in the opposite order before")
@@ -1699,18 +1752,13 @@ secret routine report_order(place: @SourceLocation, before: SourceLocation) -> N
     when
         words == WORDS_TESSERA => out.write(". Two threads or fibers doing both could wait on each other. Take the accesses in the same order everywhere.")
         else => out.write(". Two pieces of work doing both could wait on each other. Open them together in one block, or open them in the same order everywhere.")
-    crash_at(error: AccessOrderError(description: out.getview()), place: known_place(place))
+    throw AccessOrderError(description: report_view(flow, out))
 
 # -- the crashables ------------------------------------------------------------------------------------------------
 
 ### An access given back by a flow that doesn't hold it.
 crashable AccessNotHeldError
     ### What happened, in a sentence.
-    description: @[Byte]
-
-### Flows that wait on each other for good.
-crashable DeadlockError
-    ### Which flows wait for which accesses, and how to keep them from it.
     description: @[Byte]
 
 ### Two names a block opens that are the same entity.
@@ -1732,14 +1780,6 @@ crashable AccessOrderError
 ### :typeparam TWriter: The type of the Writer.
 ### :param out: The Writer the message goes to.
 routine AccessNotHeldError.message_into[TWriter](out: @TWriter) -> None
-needs TWriter obeys Writer
-    out.write("{me.description}")
-    return
-
-### Writes the description.
-### :typeparam TWriter: The type of the Writer.
-### :param out: The Writer the message goes to.
-routine DeadlockError.message_into[TWriter](out: @TWriter) -> None
 needs TWriter obeys Writer
     out.write("{me.description}")
     return

@@ -1270,7 +1270,11 @@ routine start() -> None
   does. A failure inside a standard library routine, however deep, reaches a `try` or `check` above the call like one
   in the program's own routines: the library's only walls are the `Crash` and `Trace` services (the failure report
   itself), the handlers a CPU event runs, `AccessManager.enlist` (the access check the builder puts in), the stack
-  overflow report, and its `@noreturn` and `destruct` routines. A routine a failure passes through gives back what it
+  overflow report, and its `@noreturn` and `destruct` routines. The `@noreturn` routines are the ones that end the
+  process or the core, the failure report, and the checked heap's and a memory manager's own failures (`heap_crash`, a
+  manager with no page routines): those are never received. A misuse report (a resize of hollow memory, an access taken
+  again, a deadlock, two accesses in opposite orders) is an ordinary `throw` in a plain routine, so a `try` or `check`
+  above receives it. A routine a failure passes through gives back what it
   still holds on the way out: its STACK places, the line's temporary slots, and what it borrowed with `<-` or was
   handed by value (a parameter, a block's parameter) while that name still holds it. When it isn't received: the `Crash` service reports the failure's name and message, the place, the crash trace, and where the failure
   was made, and stops (status 82 with an OS).
@@ -2065,16 +2069,21 @@ is `ReenterDuringAccessError` (the build reports it where it sees an access take
 already"). A record (a List's count, capacity and data pointer)
 and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
 needs the record's access, and giving back or moving a BorrowedSlice or a BorrowedCell waits while another flow holds an access inside
-it (the flow giving it back holding one there is a `DeadlockError`). Shared reads overlap each other, an exclusive
+it (the flow giving it back holding one there is a `DeadlockError`, thrown from `resize` and received by a `try` or
+`check` above it, and a crash from a `drop`, which is a `destruct`). Shared reads overlap each other, an exclusive
 access overlaps nothing, and once a flow asking to write waits, later readers wait too. A flow that asks while another
-holds an access in the way waits. Taking an access that overlaps one the same flow holds crashes with
+holds an access in the way waits. Taking an access that overlaps one the same flow holds throws
 `ReenterDuringAccessError` (the build reports it where it sees the same place taken twice), and giving back one the flow
-doesn't hold with `AccessNotHeldError`. The held accesses are one table of the AccessManager (an interval tree ordered
+doesn't hold throws `AccessNotHeldError`. These misuse failures are ordinary failures: a `try` or `check` above receives
+them, the access that was refused is not held, the accesses the routine took before are given back on the way out, and
+the access manager is usable afterwards. The held accesses are one table of the AccessManager (an interval tree ordered
 by start address, its nodes kept and used again), and it records what each flow waits for: with `[debug]
 deadlock-check` (on in a `debug` build, off in the release modes, `= false` / `= true` overrides) a flow about to wait
-searches the holders its request overlaps, what they wait for, and so on, and crashes with `DeadlockError`, naming the
-threads and fibers and where each took its access, instead of waiting forever. `[debug] access-order = true` (off by
-default, time on every access) crashes with `AccessOrderError` on two accesses taken in opposite orders. The builder
+searches the holders its request overlaps, what they wait for, and so on, and throws `DeadlockError`, naming the
+threads and fibers and where each took its access, instead of waiting forever (the flow stops waiting, and a `try` or
+`check` above receives it). `[debug] access-order = true` (off by default, time on every access) throws
+`AccessOrderError` on two accesses taken in opposite orders, before the second is taken. The sentence of a deadlock or an
+order error is written in the flow's own room, and the flow's next one writes over it. The builder
 sets them as the presets `DEADLOCK_CHECK` / `ACCESS_ORDER`. `AccessManager.held()` / `held_count()` / `alert_held()`
 list what the running flow holds. `AccessManager.take(request: AccessRequest(at, size, mode), deadline, place) -> Bool` (a timeout:
 `false` when the deadline passed first), `try_take(request, place)`, and `give_back(at)` take and give back a range by
