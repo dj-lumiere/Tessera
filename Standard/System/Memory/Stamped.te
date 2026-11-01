@@ -107,15 +107,106 @@ secret routine pool_memory() -> @MemoryManager
         is None =>
             throw UnacceptedValueError(description: "A stamp needs the PoolManager, and nothing set it up: call PoolManager.set_up(memory: HEAP) in start, before the first stamp().")
 
+# A target with an operating system, or AArch64 without one (a ThreadManagerByRoundRobin), runs threads: the table's
+# words are read and written unbroken and taking or ending a slot takes a short lock. Any other target without an
+# operating system runs one flow and may have no unbroken access at all (a Cortex-M0 has none), so there the words are
+# plain reads and writes and there is no lock.
+
 ### Takes the table's lock.
+@target(os: not "none")
 secret routine lock_pool() -> None
     loop
         if POOL_LOCK.swap_unbroken(1) == 0
             return
 
 ### Gives the table's lock back.
+@target(os: not "none")
 secret routine unlock_pool() -> None
     POOL_LOCK.poke_unbroken(0)
+    return
+
+### Reads a word of the table that another thread may write, unbroken.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :returns: Its value.
+@target(os: not "none")
+@inline
+secret routine pool_read[T](at: @T) -> T
+needs T obeys UnbrokenStorable
+    return at.peek_unbroken[ACQUIRE]()
+
+### Writes a word of the table that another thread may read, unbroken.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :param value: What it holds from now on.
+@target(os: not "none")
+@inline
+secret routine pool_write[T](at: @T, value: T) -> None
+needs T obeys UnbrokenStorable
+    at.poke_unbroken(value)
+    return
+
+### Takes the table's lock.
+@target(arch: "aarch64", os: "none")
+secret routine lock_pool() -> None
+    loop
+        if POOL_LOCK.swap_unbroken(1) == 0
+            return
+
+### Gives the table's lock back.
+@target(arch: "aarch64", os: "none")
+secret routine unlock_pool() -> None
+    POOL_LOCK.poke_unbroken(0)
+    return
+
+### Reads a word of the table that another thread may write, unbroken.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :returns: Its value.
+@target(arch: "aarch64", os: "none")
+@inline
+secret routine pool_read[T](at: @T) -> T
+needs T obeys UnbrokenStorable
+    return at.peek_unbroken[ACQUIRE]()
+
+### Writes a word of the table that another thread may read, unbroken.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :param value: What it holds from now on.
+@target(arch: "aarch64", os: "none")
+@inline
+secret routine pool_write[T](at: @T, value: T) -> None
+needs T obeys UnbrokenStorable
+    at.poke_unbroken(value)
+    return
+
+### Takes the table's lock: one flow, nothing to wait for.
+@target(arch: not "aarch64", os: "none")
+secret routine lock_pool() -> None
+    return
+
+### Gives the table's lock back: one flow, nothing to give.
+@target(arch: not "aarch64", os: "none")
+secret routine unlock_pool() -> None
+    return
+
+### Reads a word of the table: one flow, a plain read.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :returns: Its value.
+@target(arch: not "aarch64", os: "none")
+@inline
+secret routine pool_read[T](at: @T) -> T
+    return at.peek()
+
+### Writes a word of the table: one flow, a plain write.
+### :typeparam T: The word's type.
+### :param at: The word.
+### :param value: What it holds from now on.
+@target(arch: not "aarch64", os: "none")
+@inline
+secret routine pool_write[T](at: @T, value: T) -> None
+    at.poke(value)
     return
 
 ### The entry of a slot that was taken once: the chunk from the directory, then the entry in it. No lock.
@@ -123,8 +214,8 @@ secret routine unlock_pool() -> None
 ### :returns: The entry.
 @inline
 secret routine pool_entry(slot: U32) -> @PoolEntry
-    directory: @Addr = POOL_DIRECTORY.peek_unbroken[ACQUIRE]().to[@Addr]()
-    chunk: Addr = directory.stride((slot >> 12).to[U64]()).peek_unbroken[ACQUIRE]()
+    directory: @Addr = pool_read(POOL_DIRECTORY).to[@Addr]()
+    chunk: Addr = pool_read(directory.stride((slot >> 12).to[U64]()))
     return chunk.to[@PoolEntry]().stride((slot & 4095).to[U64]())
 
 ### Adds a chunk, and a directory twice the size when the directory is full. The directory it replaces stays. Called
@@ -143,14 +234,14 @@ secret routine add_pool_chunk() -> None
             throw OutOfMemoryError()
         if chunks > 0
             fresh.to[@Addr]().copy(src: POOL_DIRECTORY.peek().to[@Addr](), count: chunks)
-        POOL_DIRECTORY.poke_unbroken(fresh)
+        pool_write(POOL_DIRECTORY, value: fresh)
         POOL_DIRECTORY_ROOM.poke(grown)
     chunk: Addr = allocate[PoolEntry](count: POOL_CHUNK_SLOTS, manager: memory)
     if chunk.is_hollow()
         throw OutOfMemoryError()
     chunk.to[@PoolEntry]().zeroinit(POOL_CHUNK_SLOTS)
     directory: @Addr = POOL_DIRECTORY.peek().to[@Addr]()
-    directory.stride(chunks).poke_unbroken(chunk)
+    pool_write(directory.stride(chunks), value: chunk)
     POOL_CHUNKS.poke(chunks + 1)
     return
 
@@ -166,7 +257,7 @@ common routine PoolManager.take(at: Addr) -> U32
         entry: @PoolEntry = pool_entry(free)
         POOL_FREE.poke(entry.next_free.peek())
         entry.next_free.poke(0)
-        entry.at.poke_unbroken(at)
+        pool_write(entry.at, value: at)
         unlock_pool()
         return free
     next: U32 = when
@@ -178,7 +269,7 @@ common routine PoolManager.take(at: Addr) -> U32
     if (next >> 12).to[U64]() == POOL_CHUNKS.peek()
         add_pool_chunk()
     POOL_NEXT.poke(next + 1)
-    pool_entry(next).at.poke_unbroken(at)
+    pool_write(pool_entry(next).at, value: at)
     unlock_pool()
     return next
 
@@ -187,7 +278,7 @@ common routine PoolManager.take(at: Addr) -> U32
 ### :returns: Its generation.
 @inline
 common routine PoolManager.generation(slot: U32) -> U32
-    return pool_entry(slot).generation.peek_unbroken[ACQUIRE]()
+    return pool_read(pool_entry(slot).generation)
 
 ### Ends the entity in a slot: its address is cleared and its generation goes up, so its stamps fail, and the slot is
 ### free for the next stamp. A slot whose generation reaches U32.MAX is retired instead. For a language runtime that
@@ -196,12 +287,12 @@ common routine PoolManager.generation(slot: U32) -> U32
 common routine PoolManager.end(slot: U32) -> None
     lock_pool()
     entry: @PoolEntry = pool_entry(slot)
-    entry.at.poke_unbroken(Addr.zero())
+    pool_write(entry.at, value: Addr.zero())
     generation: U32 = entry.generation.peek()
     if generation == U32.MAX
         unlock_pool()
         return
-    entry.generation.poke_unbroken(generation + 1)
+    pool_write(entry.generation, value: generation + 1)
     entry.next_free.poke(POOL_FREE.peek())
     POOL_FREE.poke(slot)
     unlock_pool()
@@ -238,7 +329,7 @@ routine PointedCell[T].stamp() -> Stamped[T]
     taken: U32 = slot.peek()
     if taken != 0
         entry: @PoolEntry = pool_entry(taken)
-        entry.at.poke_unbroken(me)
+        pool_write(entry.at, value: me)
         return Stamped[T](slot: taken, generation: entry.generation.peek())
     fresh: U32 = PoolManager.take(at: me)
     slot.poke(fresh)
@@ -289,7 +380,7 @@ secret routine release_stamp[T](at: @T) -> None
 secret routine detach_stamp_slot(slot: U32) -> None
     if slot == 0
         return
-    pool_entry(slot).at.poke_unbroken(Addr.zero())
+    pool_write(pool_entry(slot).at, value: Addr.zero())
     return
 
 ### Gives the slot of the entity `at` points at its new address, if it has one: the builder calls it where a value that
@@ -302,7 +393,7 @@ secret routine move_stamp[T](at: @T) -> None
             taken: U32 = slot.peek()
             if taken == 0
                 return
-            pool_entry(taken).at.poke_unbroken(at)
+            pool_write(pool_entry(taken).at, value: at)
             return
         is None => return
 
