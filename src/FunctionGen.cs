@@ -2178,6 +2178,7 @@ public sealed partial class FunctionGen
                     _cur.Lines[^1] = $"{op} = {_cur.Lines[^1][produced.Length..]}";
                 else
                     Line($"{op} = {Copy(v, t)}");
+                CheckViewedCopy(b.Value, t, b.Pos, b.Name);
                 Define(b.Name, new Val(op, t), b.Pos);
                 NoteReadOnlyView(b.Name, b.Value, t);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
@@ -3051,6 +3052,7 @@ public sealed partial class FunctionGen
 
     private Val EvalArg(Expr e, DType expected, int argument)
     {
+        if (expected is not PtrType) CheckViewedCopy(e, InferQuiet(e), e.Pos);
         if (e is not TempSlotExpr && InferQuiet(e) is { } given && SlotsTemp(given, expected))
             return Eval(new TempSlotExpr(e, e.Pos), expected, argument);
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
@@ -6916,6 +6918,7 @@ public sealed partial class FunctionGen
         }
         if (_decl.AnnotationNamed("noreturn") is not null)
             throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or a throw, or drop the annotation");
+        if (r.Value is { } handedBack) CheckViewedCopy(handedBack, InferQuiet(handedBack), handedBack.Pos);
         if (_inst.IsFailable)
         {
             EmitFailableReturn(r);

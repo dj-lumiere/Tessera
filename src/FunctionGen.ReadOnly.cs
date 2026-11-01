@@ -143,4 +143,45 @@ public sealed partial class FunctionGen
         { } span when Compiler.IsCoreSpan(span, out var elem) => $"copy: &Items[{elem}, _] <- [...]",
         _ => "copy: &T <- ...",
     };
+
+    /// The part of `t` that is a way to change an entity, as the source would name it (`Stamped[Node]`, or the field
+    /// that holds one: `parent: Stamped[Node]`), found through the fields of records and the branches of variants. Null
+    /// when a value of `t` holds none. A view (a pointer) is no copy of what it views, so it holds none.
+    private string? WayToChange(DType? t, HashSet<string>? seen = null)
+    {
+        seen ??= [];
+        switch (t)
+        {
+            case RecordType { Decl.Name: "Stamped" } stamp when stamp.Decl.Module == "System/Memory":
+                return stamp.ToString();
+            case RecordType s when seen.Add(s.Key):
+                foreach (var (name, type) in _c.Fields(s))
+                    if (WayToChange(type, seen) is { } held)
+                        return type is RecordType { Decl.Name: "Stamped" } ? $"{name}: {held}" : $"{name}.{held}";
+                return null;
+            case VariantType v when seen.Add(v.Key):
+                foreach (var branch in v.Branches)
+                    if (WayToChange(branch, seen) is { } held)
+                        return held;
+                return null;
+            case ArrayType a:
+                return WayToChange(a.Elem, seen);
+            default:
+                return null;
+        }
+    }
+
+    /// A value that holds a way to change an entity, copied out of the view of a shared read access, is a build error:
+    /// that view promises nothing it reaches can be changed, and a stamp (`fetch()` gives the entity's `@E`, written
+    /// through) is a way to change one. The stamp is read where it is: `view.parent.fetch()` gives a view that reads only.
+    private void CheckViewedCopy(Expr value, DType? type, Pos pos, string? name = null)
+    {
+        if (_c.Prechecking || type is null or PtrType || value is not (ValueRef or FieldExpr or IndexExpr or MethodCallExpr)
+            || !ReadOnlyView(value) || WayToChange(type) is not { } way) return;
+        string what = name ?? Spelled(value);
+        throw Err(pos, $"'{what}' holds a way to change an entity ({way}) and is read through the view of a shared read access, "
+            + "which reads only: copying it out would hand out a way to change what that view reaches. Read the stamp where "
+            + "it is (peek it in the view and fetch() it: it gives a view that reads only), or take exclusive access "
+            + "(get_exclusive_access) to keep it");
+    }
 }

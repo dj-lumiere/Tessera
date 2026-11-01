@@ -62,11 +62,17 @@ public sealed partial class FunctionGen
                 FieldExpr f => f.Base,
                 IndexExpr ix => ix.Base,
                 MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getslice" or "to" or "getview" or "peek" } m => m.Receiver,
+                // A stamp read through the view gives the entity's view, read only too.
+                MethodCallExpr { Name: "fetch", Args.Count: 0 } m when IsStampFetch(m) => m.Receiver,
                 _ => null,
             };
         }
         return false;
     }
+
+    /// Whether `m` is `fetch()` on a `Stamped`.
+    private bool IsStampFetch(MethodCallExpr m) => InferQuiet(m.Receiver) is RecordType { Decl.Name: "Stamped" } r
+        && r.Decl.Module == "System/Memory";
 
     /// A write through the view of a shared read access, or handing it to a routine that may move its memory, is a
     /// build error: a shared read access reads only.
@@ -212,6 +218,7 @@ public sealed partial class FunctionGen
         }
         // A view: a pointer, or a run of values (`v: @[T] = held.getview()`).
         if (t is not PtrType && !Compiler.IsCoreSpan(t, out _)) return;
+        if (ReadOnlyView(value)) _readOnlyViews.Add(name);
         if (FromAddr(value)) _fromAddr.Add(name);
         if (RootName(value) is { } root)
         {

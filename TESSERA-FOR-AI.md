@@ -423,7 +423,13 @@ routine start() -> None
   - `this takes a shared read access to 'counter', and an exclusive access to it is held already`: taking a second
     access to a place the path holds one to would wait for itself.
   - `view is the view of a shared read access, which reads only`: a `poke` (or any write) through the view of a
-    `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error.
+    `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error. Nothing reachable from that view can
+    be changed, a stamp's entity included: `fetch()` on a stamp read through the view (`view.target.peek().fetch()`)
+    gives a view that reads only, so `view.target.peek().fetch().value.poke(5)` is the same error. A value that holds a
+    way to change an entity (a `Stamped[E]`, or a record, tuple, optional or array with one) is read where it is and not
+    copied out of the view, in a binding, an argument or a `return`: `'copy' holds a way to change an entity (target:
+    Stamped[Node]) and is read through the view of a shared read access, which reads only`. Peek the stamp in the view
+    and fetch it there, or take exclusive access (`get_exclusive_access`) to keep it.
   - A routine that returns an access hands it to its caller, and a routine that gives back an access it is handed
     (`close(held)`) ends the caller's at the call. The build works both out from the bodies.
 - **What thread work changes.** Work on a thread or a passable fiber (`t.put_work(work)` on a `Thread` or a
