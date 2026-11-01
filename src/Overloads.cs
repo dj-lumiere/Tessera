@@ -216,8 +216,9 @@ public sealed partial class Compiler
     }
 
     /// The types `===` and `!==` work on: what `same` and `notsame` mean. Only memory has an identity, a place that two
-    /// names can reach, so the standard library's addresses and spans declare them and nothing else does.
-    private static readonly HashSet<string> IdentityOwners = ["PointedCell", "Addr", "PointedSlice"];
+    /// names can reach, so the standard library's addresses and spans declare them, and so does `Stamped`, which names
+    /// an entity (the same slot and generation is the same entity). Nothing else does.
+    private static readonly HashSet<string> IdentityOwners = ["PointedCell", "Addr", "PointedSlice", "Stamped"];
 
     /// `a === b` is `a.same(b)`: whether two names reach the same memory. A routine `same` or `notsame` on any other
     /// type would give `===` another meaning, so it is a build error that points at `==` (`eq`).
@@ -230,7 +231,7 @@ public sealed partial class Compiler
             {
                 if (r.IsLibrary && IdentityOwners.Contains(owner)) continue;
                 throw new CompileError(r.Pos, $"'{r.Header}' would be what {(name == "same" ? "===" : "!==")} means on {owner}, and === asks "
-                    + "whether two names reach the same memory, which only an address (@T, Addr) or a span (@[T]) has: compare values "
+                    + "whether two names reach the same memory, which only an address (@T, Addr), a span (@[T]) or a stamp has: compare values "
                     + "with ==, which is eq, or give the routine another name");
             }
         }

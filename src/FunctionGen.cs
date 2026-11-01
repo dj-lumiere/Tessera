@@ -4559,10 +4559,10 @@ public sealed partial class FunctionGen
                 if (b.Op is "==" or "!=" && TryInfer(b.Left) is PtrType)
                     throw Err(b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
 
-                // `===` / `!==` ask whether two names reach the same memory, which an address or a span has: values
-                // compare with `==` / `!=`.
-                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" })
-                    throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr) or a span (@[T]) has, "
+                // `===` / `!==` ask whether two names reach the same memory, which an address or a span has, or the same
+                // entity, which a stamp names: values compare with `==` / `!=`.
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" or "Stamped" })
+                    throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
                 bool literalLeft = b.Left is IntLit or FloatLit;

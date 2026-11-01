@@ -380,7 +380,8 @@ routine start() -> None
     anywhere: a field (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E`
     wherever it lives now, and throws `StaleStampError` once it ended: a bare `fetch()` crashes, `try s.fetch()` gives
     None. A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
-    Two stamps compare with `==` (same slot and generation). The `PoolManager` is a service: `start` calls
+    Two stamps compare with `===` / `!==` (the same entity: the same slot and generation). A stamp has no `==` and is no
+    `Set` or `Dict` key: a set that groups by "same entity" keys on a number the program assigns. The `PoolManager` is a service: `start` calls
     `PoolManager.set_up(memory: HEAP)` (any manager) before the first `stamp()`, with or without an OS. A `stamp()`
     before it, or a second `set_up`, crashes with `UnacceptedValueError`. The builder gives an entity type a hidden
     U32 slot (the last member of its layout) only when the program's source writes `Stamped[E]` with that type's name
@@ -873,7 +874,7 @@ routine start() -> None
   (`+^ -^` still clamp).
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv`, `%` `mod`, `**`
   `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr`, spans and `Stamped` declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/System/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
