@@ -880,6 +880,7 @@ public sealed partial class Compiler
     {
         if (c.AnnotationNamed("threadlocal") is { } tl) CheckThreadLocal(c, tl);
         if (c.AnnotationNamed("external") is { } ext) CheckExternalVariable(c, ext);
+        if (c.AnnotationNamed("export") is { } export) CheckExportedVariable(c, export);
         var env = new TypeEnv(c.File);
         DType? self = null;
         if (c.Owner is not null)
@@ -966,6 +967,21 @@ public sealed partial class Compiler
             throw new CompileError(ext.Pos, $"a global can only be @external(\"c\"), a C variable; found @external(\"{ext.First}\")");
         if (c.Value is not null)
             throw new CompileError(c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
+    }
+
+    /// `@export("tessera_pool_next")` above a global defines it under that C name, so code outside the program (a
+    /// language runtime's library linked with it) reads and writes the same variable through an `@external("c")`
+    /// declaration of the name.
+    private static void CheckExportedVariable(PresetDecl c, Annotation export)
+    {
+        if (!c.IsGlobal)
+            throw new CompileError(export.Pos, $"@export names the C symbol of a global or a routine, and '{c.Name}' is a preset: a preset has no memory C could reach");
+        if (export.First is null || export.Args.Count != 1)
+            throw new CompileError(export.Pos, $"@export on a global takes its C name: @export(\"{c.Name.ToLowerInvariant()}\")");
+        if (c.AnnotationNamed("external") is not null)
+            throw new CompileError(export.Pos, $"'{c.Name}' is @external(\"c\"), a C variable defined elsewhere, so it can't be @export too");
+        if (c.AnnotationNamed("threadlocal") is not null)
+            throw new CompileError(export.Pos, $"'{c.Name}' is @threadlocal: each thread has its own copy, so there is no one variable for C to reach");
     }
 
     /// The symbol of a C variable: its @symbol, or its own name.
@@ -2387,7 +2403,8 @@ public sealed partial class Compiler
     {
         if (Prechecking) return "@precheck";
         var external = c.AnnotationNamed("external");
-        string symbol = external is null ? MangleVariable(c, null) : ExternalSymbol(c);
+        string? exported = external is null ? c.AnnotationNamed("export")?.First : null;
+        string symbol = external is not null ? ExternalSymbol(c) : exported ?? MangleVariable(c, null);
         if (_globalVars.TryGetValue(symbol, out var name)) return name;
         EnsureTypeDefined(t);
         // Without an operating system the program is one static image, so a thread-local is an offset from TPIDR_EL0.
@@ -2415,8 +2432,11 @@ public sealed partial class Compiler
                 + $"memory or a routine that is never empty ({noZero}). Give it one: global {c.Name}: &{t} <- value, "
                 + "or make what may be missing optional (@T? or Callable?, None() when absent), or write lateinit global when the program fills it before it reads it");
         string init = c.Value is null ? "zeroinitializer" : GlobalInitializer(c.Value, t, env);
-        string linkage = ExposeDefinitions ? "" : "internal ";
+        // An exported global keeps its C name and is visible outside the module.
+        string linkage = ExposeDefinitions || exported is not null ? "" : "internal ";
         if (ExposeDefinitions) NoteExposed(symbol);
+        if (exported is not null) name = "@" + Quote(symbol);
+        _globalVars[symbol] = name;
         _globals.AppendLine($"{name} = {linkage}{threadLocal}global {t.Llvm} {init}");
         if (threadLocal != "") _threadLocals.Add((name, t.Llvm, init));
         return name;

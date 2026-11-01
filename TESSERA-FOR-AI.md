@@ -678,6 +678,11 @@ routine start() -> None
   runtime (libgcc, compiler-rt) is left out, so a program may define `__udivti3`.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
+- `@export("tessera_stamp_next")` above a `global` defines it under that C name, visible outside the module, so a
+  library linked with the program (a language runtime's) reaches the same variable through an `@external("c")`
+  declaration of the name. Only a global: a preset, an `@external("c")` or a `@threadlocal` global with `@export` is a
+  build error. The standard library exports the stamp table's directory and next-slot bound this way
+  (`tessera_stamp_directory`, `tessera_stamp_next`), which RazorForge's inlined `Stamped` fetch reads.
 - `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the
   running thread's copy. Its address stays on its thread: handing it to work on another thread (`t.put_work(work)` "hands
   the work the address of this thread's 'X'"), work returning it ("runs 'f' on another thread, and it returns the
