@@ -328,12 +328,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// A program's routine stops where a failure happens when nothing above it receives one: its plain form gives no
     /// failure back, and a `try` or `check` above reaches its recovering form. A library routine whose lines throw, or
     /// whose `when check` lines leave failures out, gives them back from its plain form too, so a bare call of it stops
-    /// on the caller's line. `start` gives nothing back: a failure that reaches it ends the program.
+    /// on the caller's line. A `@track_caller` one stops on its own throw instead, which reports the caller's line too,
+    /// and its plain form returns no carrier for each call to look at. `start` gives nothing back: a failure that
+    /// reaches it ends the program.
     private static RoutineDecl Failability(RoutineDecl r, bool infallible, bool library) => r with
     {
         IsInfallible = infallible,
         IsFailable = library && !infallible && Compiler.CanReturnFailure(r) && !(r.Owner is null && r.Name is "start")
-                     && (Throws(r) || ReceivesFailures(r)),
+                     && (Throws(r) && r.AnnotationNamed("track_caller") is null || ReceivesFailures(r)),
     };
 
     /// Whether a routine's lines put `check` in front of a call: its `when check` may leave failures to pass on.

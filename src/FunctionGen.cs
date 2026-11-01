@@ -196,6 +196,7 @@ public sealed partial class FunctionGen
 
     private void Mem(MemoryRules.Event e)
     {
+        if (MemOn) TrackHolds(e);
         if (!MemOn || _memMuted) return;
         (_memEvents.TryGetValue(_region, out var list) ? list : _memEvents[_region] = []).Add(e);
     }
@@ -1508,6 +1509,7 @@ public sealed partial class FunctionGen
         if (!MemOn)
             for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
                 NoteWorkName(_decl.Params[i].Name, _inst.Params[i], null, _decl.Params[i].Pos);
+        var handedIn = new List<string>();
         if (MemOn)
         {
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
@@ -1517,6 +1519,7 @@ public sealed partial class FunctionGen
                 {
                     _memTracked.Add(_decl.Params[i].Name);
                     handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
+                    if (_inst.Params[i] is not PtrType && GivenBackAtExit(_inst.Params[i])) handedIn.Add(_decl.Params[i].Name);
                 }
                 else NoteWorkName(_decl.Params[i].Name, _inst.Params[i], null, _decl.Params[i].Pos, handed);
             // A destruct gives back each field of me that holds memory or an entity: each is followed as a handle.
@@ -1533,6 +1536,7 @@ public sealed partial class FunctionGen
         if (Debug) BeginSubprogram();
         if (Debug && _traced && _c.TraceFromStack) _c.NoteTracedSubprogram(_sp, _decl.DisplayName, FramePlace.File.Replace('\\', '/'));
         EmitHead();
+        foreach (var name in handedIn) HoldUntilFailure(name, fromStart: true);
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
         // A place reached through a parameter, `me`, or a global outlives the routine: one is from outside when its root
@@ -1930,6 +1934,10 @@ public sealed partial class FunctionGen
                 (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
                     .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Source ?? b.Params[i].Pos));
         }
+        // What the jump handed this block is its own now: a failure passing on gives it back.
+        for (int i = 0; i < b.Params.Count; i++)
+            if (MemOn && ManagedValue(types[i]) && types[i] is not PtrType && GivenBackAtExit(types[i]))
+                HoldUntilFailure(b.Params[i].Name);
 
         // An entity the program stamps ends its slot first thing in its destruct, written or the builder's walk: every
         // end of the entity (drop, the give back of a STACK place, the old value of y <- v, a holder's walk) runs it.
@@ -1959,6 +1967,7 @@ public sealed partial class FunctionGen
         // The body ends: the STACK places it borrowed go back, the last one first, at the body's last line.
         if (!_cur.Terminated) GiveBackStackPlaces(_boxScopes.Count - 1, body.Count > 0 ? BodyEnd(body) : _decl.Pos);
         _boxScopes.RemoveAt(_boxScopes.Count - 1);
+        _failureHolds.RemoveAll(h => h.Depth >= _boxScopes.Count);
     }
 
     /// Where a body ends: its last line, inside the body of its last line when that line has one (an `if`'s `else`, a
@@ -2124,6 +2133,13 @@ public sealed partial class FunctionGen
                 var (lowered, stack) = LowerBorrow(borrow);
                 EmitStmtCore(lowered);
                 if (stack && !_cur.Terminated) RegisterStackPlace(lowered.Name, lowered.Pos);
+                // Something borrowed the program gives back itself: a failure passing on in the middle of a line gives
+                // it back too.
+                else if (MemOn && !_cur.Terminated && lowered.Type is { Name: "PointedCell" }
+                         && (_memTracked.Contains(lowered.Name) || _accessViews.Contains(lowered.Name))
+                         && _values.TryGetValue(lowered.Name, out var borrowedSlot) && borrowedSlot.Type is PtrType { Pointee: { } borrowedHeld }
+                         && GivenBackAtExit(borrowedHeld))
+                    HoldUntilFailure(lowered.Name);
                 break;
             }
             case BindStmt b:
@@ -3186,9 +3202,32 @@ public sealed partial class FunctionGen
             new ClaimExpr(slot.Pos) { Contents = slot.Value }, slot.Pos));
         _lineSource = line;
         _statementTemps.Add((name, slot.Pos));
+        // Under a try or check, a call before this one in the statement may fail and skip it: the slot is ended only
+        // where it was made, so a flag says so, and its address waits in a slot every path reaches.
+        if (_recover.Count > 0 && Emitting && !_cur.Terminated)
+        {
+            string flag = $"%held.{_allocas.Count}";
+            _allocas.Add($"{flag} = alloca i1");
+            _flagInits.Add($"store i1 false, ptr {flag}");
+            string at = $"%tempat.{_allocas.Count}";
+            _allocas.Add($"{at} = alloca ptr");
+            Line($"store ptr {_values[name].Op}, ptr {at}");
+            Line($"store i1 true, ptr {flag}");
+            _guardedTemps[name] = (flag, at);
+        }
         // It ends with the statement, after the value whens it was made in have joined: they see it past their join.
         foreach (var frame in _valueWhens) frame.OuterNames.Add(name);
         return _values[name];
+    }
+
+    /// A written return (or throw) inside the statement that made temporary slots (an arm of `when check f(File.at(p))`):
+    /// they end before it leaves, the last made first, unless what leaves (of type `leaving`) may point into them. They
+    /// stay on the statement's list for its other paths.
+    private void EndStatementTemps(DType? leaving, Pos pos)
+    {
+        if (leaving is not null && MayBorrow(leaving, null)) return;
+        for (int i = _statementTemps.Count - 1; i >= 0 && !_cur.Terminated; i--)
+            DropTemp(_statementTemps[i].Name, pos);
     }
 
     /// Ends the statement's temporary slots made since `from`, the last made first.
@@ -3198,8 +3237,41 @@ public sealed partial class FunctionGen
         {
             var (name, pos) = _statementTemps[^1];
             _statementTemps.RemoveAt(_statementTemps.Count - 1);
-            if (!_cur.Terminated) EmitStmtCore(new DropStmt(new ValueRef(name, pos), pos));
+            DropTemp(name, pos);
         }
+    }
+
+    /// The temporary slots made under a try or check: the flag that says each was made, and where its address waits.
+    private readonly Dictionary<string, (string Flag, string At)> _guardedTemps = [];
+
+    /// Ends one temporary slot of the statement: one made under a try or check only where it was made.
+    private void DropTemp(string name, Pos pos)
+    {
+        if (_cur.Terminated) return;
+        if (!_guardedTemps.TryGetValue(name, out var guard))
+        {
+            EmitStmtCore(new DropStmt(new ValueRef(name, pos), pos));
+            return;
+        }
+        // The memory check follows the statement's lines, where the slot ends here.
+        Mem(new MemoryRules.End(name, $"drop {name}", pos));
+        var drop = NewLBlock("tempdrop");
+        var after = NewLBlock("tempdropped");
+        Terminate($"br i1 {EmitTmp($"load i1, ptr {guard.Flag}")}, label %{drop.Label}, label %{after.Label}");
+        _cur = drop;
+        var saved = _values[name];
+        _values[name] = new Val(EmitTmp($"load ptr, ptr {guard.At}"), saved.Type);
+        bool muted = _memMuted;
+        _memMuted = true;
+        try { EmitStmtCore(new DropStmt(new ValueRef(name, pos), pos)); }
+        finally
+        {
+            _memMuted = muted;
+            _values[name] = saved;
+        }
+        Line($"store i1 false, ptr {guard.Flag}");
+        Terminate($"br label %{after.Label}");
+        _cur = after;
     }
 
     /// Whether a value of `t` may point into memory something else owns: a pointer, a PointedSlice, or a record, array, or
@@ -5794,14 +5866,14 @@ public sealed partial class FunctionGen
                 ? "a range check is a chained comparison: `lo <= x <= hi`"
                 : "a range check is a chained comparison: `lo <= x < end`");
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
-                + "failable: receive its failure with check or try in front of the call");
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone: receive the failure of "
+                + $"'{m.Name[..^"_result".Length]}' with check or try in front of the call");
         if (m.Name.EndsWith("_checked", StringComparison.Ordinal))
         {
             string plain = m.Name[..^"_checked".Length];
             string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{plain}' is "
-                + $"failable: write try in front of the call for an Optional, {example}");
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone: write try in front of "
+                + $"a call of '{plain}' for an Optional, {example}");
         }
         if (m.Name == "stride" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } strided } ? strided : rt, out DType element))
         {
@@ -6853,6 +6925,7 @@ public sealed partial class FunctionGen
         if (_inst.Ret is VoidType)
         {
             if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
+            EndStatementTemps(null, r.Pos);
             Return("ret void");
             return;
         }
@@ -6867,6 +6940,7 @@ public sealed partial class FunctionGen
         }
         var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
+        EndStatementTemps(v.Type, r.Pos);
         // An entity going to the caller's place leaves this one's address until it lands there.
         if (!ReferenceEquals(returned, r.Value)) StampsLeave(v, r.Pos);
         if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
@@ -7086,7 +7160,7 @@ public sealed partial class FunctionGen
                     _values.Remove("$emitter");
                 }
                 if (emitPlan is null || !(emitPlan.Decl.IsFailable || _c.CanRecover(emitPlan.Decl)) || emitted is null || emitted is VoidType)
-                    throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose failable emit gives "
+                    throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose emit gives "
                         + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;
                 // An entity lives in a place and is not handed out by value: said at the loop, not inside the emitter's own body.

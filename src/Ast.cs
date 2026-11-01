@@ -159,8 +159,9 @@ public sealed record RoutineDecl(
     /// reaches it, and every call in it that fails passes its failure on to the caller instead of stopping.
     public bool IsRecovering { get; init; }
 
-    /// A lambda written where a failable Callable goes: a failure of a bare call in its one expression goes to whoever
-    /// calls the value.
+    /// Whether a bare call in this form that fails passes the failure on to the caller: a recovering form (of a program's
+    /// routine or a standard library one), and a lambda given to a routine that only calls it. Elsewhere a bare call
+    /// that fails stops the program on its line.
     public bool PassesOnFailures { get; init; }
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
@@ -195,7 +196,7 @@ public sealed record RecordDecl(
     /// is lent as `@Name`, moves with `steal`, and ends with `drop`.
     public bool IsEntity { get; init; }
 
-    /// `crashable Name`: a record a failable routine throws. Its fields are plain values, it has a name (the type's,
+    /// `crashable Name`: a record a routine throws. Its fields are plain values, it has a name (the type's,
     /// written by the builder) and a `message_into` routine that writes its message into a Writer, and the builder
     /// makes it obey `Crashable`.
     public bool IsCrashable { get; init; }
@@ -375,8 +376,8 @@ public sealed record ReturnStmt(Expr? Value, Pos Pos) : Stmt(Pos)
     /// The `return` the end of a file's top-level lines stands for: skipped when every path already left before it.
     public bool AtFileEnd { get; init; }
 
-    /// `throw e`: the routine (a failable one) ends with the crashable `e` instead of its value, and the failure goes
-    /// back to the caller. Everything that treats a return as the end of a path treats a throw the same way.
+    /// `throw e`: the routine ends with the crashable `e` instead of its value, and the failure goes back to the caller
+    /// (in an `infallible` routine, a `@noreturn` one, or a teardown, it stops the program there). Everything that treats a return as the end of a path treats a throw the same way.
     public bool IsThrow { get; init; }
 }
 

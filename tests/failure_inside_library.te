@@ -1,0 +1,150 @@
+# A try or check receives a failure made inside a standard library routine several calls below it: a rank past the end
+# in a sorted list's remove, an index past the end in List.swap (through the view's swap and getslot), a division by
+# zero and an overflow in S64.div_trunc, a negative isqrt, and a clamp given an empty range. A routine the failure
+# passes through gives back what it still holds: the access it took (the list is free again after), and the memory it
+# took, so the counting manager has nothing out at the end.
+
+import Collections
+import Hosted
+
+@external("c")
+@symbol("malloc")
+routine c_malloc(size: CSize) -> Addr
+
+@external("c")
+@symbol("realloc")
+routine c_realloc(ptr: Addr, size: CSize) -> Addr
+
+@external("c")
+@symbol("free")
+routine c_free(ptr: Addr) -> None
+
+### A memory manager that counts the blocks it has out.
+record Counting
+    ### The blocks borrowed and not given back.
+    out: U64
+
+obeys MemoryManageable[Counting]
+
+### A block from C, counted.
+### :param size: The bytes.
+### :param align: The alignment.
+### :returns: The block.
+routine @Counting.borrow(size: U64, align: U64) -> Addr
+    (me.out.peek() + 1).poke_into(me.out)
+    return c_malloc(size.to[CSize]())
+
+### The block grown or shrunk.
+### :param at: The block.
+### :param size: The new bytes.
+### :param align: The alignment.
+### :returns: The block.
+routine @Counting.reborrow(at: Addr, size: U64, align: U64) -> Addr
+    return c_realloc(at, size.to[CSize]())
+
+### The block back to C.
+### :param at: The block.
+routine @Counting.give_back(at: Addr) -> None
+    (me.out.peek() - 1).poke_into(me.out)
+    c_free(at)
+    return
+
+### Removes the element of rank `at` through a helper.
+### :param xs: The list.
+### :param at: The rank.
+### :returns: The element.
+routine take(xs: @SortedList[S64], at: U64) -> S64
+    return xs.remove(at)
+
+### Swaps two elements, through List.swap.
+### :param xs: The list.
+### :param a: One index.
+### :param b: The other.
+routine swap_in(xs: @List[S64], a: U64, b: U64) -> None
+    xs.swap(a, b)
+    return
+
+### The quotient toward zero, through a helper.
+### :param a: The dividend.
+### :param b: The divisor.
+### :returns: The quotient.
+routine quotient(a: S64, b: S64) -> S64
+    return a.div_trunc(b)
+
+### Reads past the end of a list it makes while it holds other borrowed memory.
+### :param at: The index read.
+### :param manager: Where the memory comes from.
+### :returns: The element.
+routine read_held(at: U64, manager: @MemoryManager) -> S64
+    scratch: &[Byte] <- BorrowedSlice[Byte].construct(count: 64, manager)
+    xs: &List[S64] <- .construct(manager)
+    xs.add_last(1)
+    xs.add_last(2)
+    value: S64 = xs[at]
+    drop xs
+    drop scratch
+    return value
+
+### Reads an element while it holds exclusive access to the list.
+### :param xs: The list.
+### :param at: The index read.
+### :returns: The element.
+routine read_locked(xs: @List[S64], at: U64) -> S64
+    held: Authorized[List[S64]] <- xs.get_exclusive_access()
+    value: S64 = held.getview().getitem(at)
+    drop held
+    return value
+
+### Says what a check of quotient received.
+### :param a: The dividend.
+### :param b: The divisor.
+routine show_quotient(a: S64, b: S64) -> None
+    when check quotient(a, b)
+        is S64 as q => Console.show("quotient {a} {b}: {q}")
+        is DivisionByZeroError => Console.show("quotient {a} {b}: division by zero")
+        is IntegerOverflowError => Console.show("quotient {a} {b}: overflow")
+        is Crashables as e => Console.show("quotient {a} {b}: {e.name()}")
+    return
+
+### Runs every case.
+routine start() -> None
+    sorted: &SortedList[S64] <- .construct(HEAP)
+    sorted.add(5)
+    sorted.add(3)
+    Console.show("remove 9: {try take(sorted, at: 9)}")
+    Console.show("remove 0: {try take(sorted, at: 0)}")
+    drop sorted
+
+    list: &List[S64] <- .construct(HEAP)
+    list.add_last(1)
+    list.add_last(2)
+    when check swap_in(xs: list, a: 0, b: 7)
+        is None => Console.show("swap 0 7: done")
+        is IndexOutOfBoundsError as e => Console.show("swap 0 7: index {e.index} past {e.count}")
+        is Crashables as e => Console.show("swap 0 7: {e.name()}")
+    swap_in(xs: list, a: 0, b: 1)
+    Console.show("locked 4: {try read_locked(list, at: 4)}, held: {AccessManager.held_count()}")
+    Console.show("swapped: {list}")
+    drop list
+
+    show_quotient(7, 2)
+    show_quotient(7, 0)
+    show_quotient(S64.MIN, -1)
+    negative: S64 = -4
+    when check negative.isqrt()
+        is S64 as r => Console.show("isqrt: {r}")
+        is NumericDomainError => Console.show("isqrt: no real root")
+        is Crashables as e => Console.show("isqrt: {e.name()}")
+    five: S64 = 5
+    when check five.clamp(lo: 9, hi: 1)
+        is S64 as c => Console.show("clamp: {c}")
+        is UnacceptedValueError => Console.show("clamp: empty range")
+        is Crashables as e => Console.show("clamp: {e.name()}")
+
+    counter: &Counting <- (out: 0)
+    manager: &MemoryManager <- counter.to[MemoryManager]()
+    for round: U64 in 0 til 3
+        Console.show("read {round}: {try read_held(at: round, manager)}")
+    Console.show("blocks out: {counter.out.peek()}")
+    drop manager
+    return

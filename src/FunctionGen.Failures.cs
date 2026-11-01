@@ -206,12 +206,12 @@ public sealed partial class FunctionGen
         return LoadValue(slot, carrierLlvm, declared, valueType);
     }
 
-    /// A bare call that failed in a lambda written where a failable Callable goes: the failure goes on to whoever called
-    /// the value. Its crashable waits in the mold already, so the lambda's carrier takes the tag alone.
+    /// A bare call that failed in a recovering form (or a lambda written where a failable Callable goes): the failure
+    /// goes on to the caller. Its crashable waits in the mold already, so the carrier takes the tag alone.
     private void PassOnBare(string slot, string carrierLlvm, List<DType> failures, Pos pos)
     {
-        // The way out a failure takes in the middle of a line is no step the memory rules follow: what it gives back
-        // there (the line's temporaries, the routine's places) is given back by the lines below.
+        // The way out a failure takes in the middle of a line is no step the memory rules follow: the builder gives
+        // back there what the routine holds (the line's temporaries, its places, what it borrowed and still holds).
         bool muted = _memMuted;
         _memMuted = true;
         try { PassOnBareCore(slot, carrierLlvm, failures, pos); }
@@ -223,7 +223,8 @@ public sealed partial class FunctionGen
         _c.AddThrows(_inst, failures);
         string carrier = Compiler.CarrierName(_inst);
         for (int i = _statementTemps.Count - 1; i >= 0; i--)
-            EmitStmtCore(new DropStmt(new ValueRef(_statementTemps[i].Name, pos), pos));
+            DropTemp(_statementTemps[i].Name, pos);
+        GiveBackHolds(pos);
         string own = CarrierOutSlot(carrier);
         string tag = EmitTmp($"load i64, ptr {CarrierField(slot, carrierLlvm, 0)}");
         Line($"store i64 {tag}, ptr {CarrierField(own, carrier, 0)}");
@@ -408,7 +409,7 @@ public sealed partial class FunctionGen
     private void NoFailableAddress(RoutineDecl routine, Pos pos)
     {
         if (routine.IsFailable)
-            throw Err(pos, $"addr() gives '{routine.DisplayName}' to C, and it is failable, which C has no way to receive: "
+            throw Err(pos, $"addr() gives '{routine.DisplayName}' to C, and it gives its failures back, which C has no way to receive: "
                 + "hand C a routine that receives the failure itself (with check or try)");
     }
 
@@ -428,12 +429,12 @@ public sealed partial class FunctionGen
         {
             if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
                 throw Err(r.Pos, $"'{r.DisplayName}' is a C routine, and C has no way to receive a failure: its parameter "
-                    + $"'{r.Params[param].Name}' can't be a failable Callable");
+                    + $"'{r.Params[param].Name}' can't take a routine value that fails");
             return value;
         }
         if (!value.Failable) return null;
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
-            throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is a failable routine's value, whose "
+            throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is the value of a routine that can fail, whose "
                 + "failure C has no way to receive: hand it a routine that receives the failure itself (with check or try)");
         // A routine that only calls the value is built for it: a failure through it stops the program on the line of
         // that call, or passes on from the routine's recovering form.
@@ -551,11 +552,14 @@ public sealed partial class FunctionGen
     /// keyword, or in a recovering form, where every call passes its failures on), else the call as it is.
     /// A call written while a value is dropped (a teardown, `drop x`, a place given back on the way out) stays as it
     /// is: a teardown is a wall, where nothing takes a failure.
-    private CallPlan Recovering(CallPlan plan, bool underKeyword = false) =>
-        (underKeyword || _recover.Count > 0 || _decl.IsRecovering && !_decl.IsLibrary) && _dropping is null && _tearingDown == 0
-        && _c.CanRecover(plan.Decl)
-            ? plan with { Decl = _c.RecoveringOf(plan.Decl) }
-            : plan;
+    private CallPlan Recovering(CallPlan plan, bool underKeyword = false)
+    {
+        if (!(underKeyword || _recover.Count > 0 || _decl.IsRecovering) || _dropping is not null || _tearingDown != 0
+            || !_c.CanRecover(plan.Decl))
+            return plan;
+        var recovering = plan with { Decl = _c.RecoveringOf(plan.Decl) };
+        return _c.RecoversNothing(recovering.Decl, plan.Decl, plan.Env, _inst) ? plan : recovering;
+    }
 
     private DType MaybeOf(DType value, Pos pos) =>
         _c.ResolveType(new TypeRef("Optional", [new TypeArgType(new TypeRef("$value", [], pos) { Known = value })], pos)
@@ -654,6 +658,7 @@ public sealed partial class FunctionGen
         {
             if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
             v = new Val("zeroinitializer", _c.ValueTypeOf(VoidType.Instance, r.Pos));
+            EndStatementTemps(null, r.Pos);
         }
         else
         {
@@ -666,6 +671,7 @@ public sealed partial class FunctionGen
             }
             v = Eval(returned, _inst.Ret);
             if (_cur.Terminated) return;
+            EndStatementTemps(v.Type, r.Pos);
             if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
             if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
             RecordReturn(returned, r.Pos);
@@ -693,6 +699,7 @@ public sealed partial class FunctionGen
         MemReturn(r with { Value = null });
         var v = EvalAny(r.Value!);
         if (_cur.Terminated) return;
+        EndStatementTemps(v.Type, r.Pos);
         string carrier = Compiler.CarrierName(_inst);
         if (Crashing.IsCrashable(v.Type))
         {
@@ -815,12 +822,19 @@ public sealed partial class FunctionGen
         {
             _c.AddThrows(_inst, passed);
             string carrier = Compiler.CarrierName(_inst);
-            // The temporary slots the statements around it made (`File.at(p)` an argument of the call) end first: no
-            // line of the program names them.
-            for (int i = _statementTemps.Count - 1; i >= 0; i--)
-                EmitStmtCore(new DropStmt(new ValueRef(_statementTemps[i].Name, w.Pos), w.Pos));
-            if (!Emitting) Return($"ret {carrier} poison");
-            else ReturnFailure(slot, llvm, w.Pos);
+            // No line of the program is this way out, so the memory rules don't follow it: the temporary slots the
+            // statements around it made (`File.at(p)` an argument of the call) end first, then what the routine holds.
+            bool muted = _memMuted;
+            _memMuted = true;
+            try
+            {
+                for (int i = _statementTemps.Count - 1; i >= 0; i--)
+                    DropTemp(_statementTemps[i].Name, w.Pos);
+                GiveBackHolds(w.Pos);
+                if (!Emitting) Return($"ret {carrier} poison");
+                else ReturnFailure(slot, llvm, w.Pos);
+            }
+            finally { _memMuted = muted; }
         }
         else StopOnFailure(slot, llvm, missing, w.Pos, inMold: false);
         _cur = saved;

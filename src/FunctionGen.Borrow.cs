@@ -232,6 +232,84 @@ public sealed partial class FunctionGen
     {
         if (e is ValueRef r && _stackPlaces.TryGetValue(r.Name, out var place) && place.Flag is { } flag && !_cur.Terminated)
             Line($"store i1 false, ptr {flag}");
+        if (e is ValueRef held) SetHold(held.Name, false);
+    }
+
+    // ── What a failure passing on gives back ────────────────────────────────
+
+    /// Something the routine holds by a name of its own: a `<-` binding of something borrowed (memory, an access, an
+    /// entity, a ticket) or a parameter handed in by value. `Flag` says the program still holds it under that name, and
+    /// the program's own end clears it (drop, steal, return, handing it over). `Op` is the name's value when it was
+    /// taken, `Depth` the body it was taken in.
+    private sealed record FailureHold(string Name, string Flag, string Op, int Depth);
+
+    /// The holds of the bodies the builder is in, in the order they were taken.
+    private readonly List<FailureHold> _failureHolds = [];
+
+    /// A written return or throw ends what the routine holds in its lines, which the memory check follows. A failure
+    /// that passes on in the middle of a line (a bare call in a recovering form, or the failures a `when check` leaves)
+    /// has no line of its own, so the builder ends there what the routine still holds: `name` is one such.
+    private void HoldUntilFailure(string name, bool fromStart = false)
+    {
+        if (!Emitting || !_values.TryGetValue(name, out var v)) return;
+        string flag = $"%held.{_allocas.Count}";
+        _allocas.Add($"{flag} = alloca i1");
+        _flagInits.Add($"store i1 {(fromStart ? "true" : "false")}, ptr {flag}");
+        if (!fromStart && !_cur.Terminated) Line($"store i1 true, ptr {flag}");
+        _failureHolds.Add(new FailureHold(name, flag, v.Op, fromStart ? 0 : _boxScopes.Count - 1));
+    }
+
+    /// The program ended `name` (or put a new value under it): its hold's flag says so.
+    private void SetHold(string name, bool held)
+    {
+        if (!Emitting || _cur.Terminated || _failureHolds.FindLast(h => h.Name == name) is not { } hold) return;
+        Line($"store i1 {(held ? "true" : "false")}, ptr {hold.Flag}");
+    }
+
+    /// What an event of the memory check does to a hold. The routine's own end of a group clears its flag. A group that
+    /// goes somewhere else (another name, a slot, the next block's parameter) is that place's to end from then on, so
+    /// the name's hold clears too: a failure then leaves it to whoever holds it, and never ends it twice.
+    private void TrackHolds(MemoryRules.Event e)
+    {
+        if (_failureHolds.Count == 0) return;
+        switch (e)
+        {
+            case MemoryRules.End end: SetHold(end.Name, false); break;
+            case MemoryRules.AutoEnd auto: SetHold(auto.Name, false); break;
+            case MemoryRules.Alias alias: SetHold(alias.Of, false); break;
+            case MemoryRules.MayEndAccess handed: SetHold(handed.Name, false); break;
+            case MemoryRules.KeptInto kept: SetHold(kept.Name, false); break;
+            case MemoryRules.Store store:
+                if (store.From is { } from) SetHold(from, false);
+                if (!_memMuted) SetHold(store.Slot, !store.Hollow);
+                break;
+            case MemoryRules.Exit exit:
+                foreach (var (_, arg) in exit.Args) SetHold(arg, false);
+                break;
+        }
+    }
+
+    /// Ends what the routine still holds, the last taken first, where a failure passes on to its caller.
+    private void GiveBackHolds(Pos pos)
+    {
+        for (int i = _failureHolds.Count - 1; i >= 0 && !_cur.Terminated; i--)
+        {
+            var hold = _failureHolds[i];
+            // A name bound again since (an inner body's) is another value: this one went with its body.
+            if (!_values.TryGetValue(hold.Name, out var now) || now.Op != hold.Op) continue;
+            var drop = NewLBlock("failback");
+            var after = NewLBlock("failedback");
+            string held = EmitTmp($"load i1, ptr {hold.Flag}");
+            Terminate($"br i1 {held}, label %{drop.Label}, label %{after.Label}");
+            _cur = drop;
+            bool muted = _memMuted;
+            _memMuted = true;
+            try { EmitStmtCore(new DropStmt(new ValueRef(hold.Name, pos), pos)); }
+            finally { _memMuted = muted; }
+            Line($"store i1 false, ptr {hold.Flag}");
+            Terminate($"br label %{after.Label}");
+            _cur = after;
+        }
     }
 
     /// A whole new value put into a STACK place the program gave back or handed over (`steal t`, then `t.poke(v)`):

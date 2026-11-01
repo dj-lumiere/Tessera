@@ -116,8 +116,8 @@ routine start() -> None
   (a convention: the builder only warns). It sits
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
-  order, `:returns:` unless it returns `None`, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
-  error it returns), `:absent:` (when an `Optional` comes back `None`), `:note:`, and `:see:` as needed. No `;` in the
+  order, `:returns:` unless it returns `None`, then `:throws:` ("Throws `IndexOutOfBoundsError` when ...", or "Crashes with" in an `infallible` or
+  `@noreturn` routine), `:absent:` (when an `Optional` comes back `None`), `:note:`, and `:see:` as needed. No `;` in the
   prose, facts only. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns on a routine
   without one, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
   missing `:returns:`, in every file except those under a `tests`, `playground`, `scratch`, or `generated` directory, and except
@@ -1261,7 +1261,12 @@ routine start() -> None
   their routines.
 - **A failure nobody receives stops the program where it happens.** A `throw` in a program's routine stops on its own
   line, and a call of a standard library routine that fails stops on the line of the call, the way an overflowing `+`
-  does: the `Crash` service reports the failure's name and message, the place, the crash trace, and where the failure
+  does. A failure inside a standard library routine, however deep, reaches a `try` or `check` above the call like one
+  in the program's own routines: the library's only walls are the `Crash` and `Trace` services (the failure report
+  itself), the handlers a CPU event runs, `AccessManager.enlist` (the access check the builder puts in), the stack
+  overflow report, and its `@noreturn` and `destruct` routines. A routine a failure passes through gives back what it
+  still holds on the way out: its STACK places, the line's temporary slots, and what it borrowed with `<-` or was
+  handed by value (a parameter, a block's parameter) while that name still holds it. When it isn't received: the `Crash` service reports the failure's name and message, the place, the crash trace, and where the failure
   was made, and stops (status 82 with an OS).
 - **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Optional[T]`, `None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
@@ -1802,15 +1807,15 @@ nothing to give back and a `Slots` when they are entities, which picks the overl
 pair collections take only `Items`. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
-and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Items` and `Slots` through their pointer, `@[T]`, and
+and an index past the end throws like `getitem`: on `List`, `RotatableList`, `Items` and `Slots` through their pointer, `@[T]`, and
 `BorrowedSlice`), and `getview()` /
 `getslice(start, count)` a `@[T]` of the elements (a `BorrowedSlice` has its own element routines, above, and no `setitem`) (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
-`remove`, and `remove_entry` are failable, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
-gives `Optional[T]`. `setitem` (on `List`, `RotatableList`, `BitList`, `Bits` and a file storage) is failable too and throws
-`IndexOutOfBoundsError`, and `swap` still crashes. Each insertion and `reserve` is failable: it throws
+`remove`, and `remove_entry` throw, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
+gives `Optional[T]`. `setitem` (on `List`, `RotatableList`, `BitList`, `Bits` and a file storage) and `swap` throw
+`IndexOutOfBoundsError` too. Each insertion and `reserve` throws
 `OutOfMemoryError` when the memory can't grow (a size in bytes past U64 included) and leaves the collection unchanged, so a bare call stops there and
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Optional`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,

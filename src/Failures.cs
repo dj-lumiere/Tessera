@@ -161,7 +161,7 @@ public sealed partial class Compiler
                              && kv.Value.Any(seen => ThrowsKey(_inferredThrows.GetValueOrDefault(seen.Key) ?? []) != seen.Value))
                 .Select(kv => kv.Key).ToList();
             if (stale.Count == 0) return;
-            if (round > 64) throw new CompileError(default, "the lists of crashables of recursive failable routines don't settle");
+            if (round > 64) throw new CompileError(default, "the lists of crashables of routines that call each other don't settle");
             foreach (var symbol in stale) BuildInstance(_instances[symbol]);
             while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         }
@@ -383,34 +383,35 @@ public sealed partial class Compiler
     public bool CanRecover(RoutineDecl r) =>
         !r.IsInfallible && !r.IsRecovering && r.Blocks is not null && r.Name != "destruct" && r.AnnotationNamed("export") is null
         && r.AnnotationNamed("external") is null && r.AnnotationNamed("noreturn") is null && r.AnnotationNamed("template") is null
-        && !_requirementOf.ContainsKey(r) && (!r.IsLibrary || r.IsFailable || ReceivesFailures(r));
-
-    /// Whether a routine's lines put `try` or `check` in front of a call: a library routine passes failures on only
-    /// when its lines throw (its plain form already gives them back) or work with a call's failure, the routines the
-    /// library writes to fail. Its other routines keep their failures where they happen.
-    private static bool ReceivesFailures(RoutineDecl r) =>
-        (r.Blocks ?? []).Any(b => Bodies.All(b.Stmts).Any(st => Bodies.Exprs(st).Any(top =>
-            ExprTree.All(top).Any(e => e is UnaryExpr { Op: "try" or "check" }))));
+        && !_requirementOf.ContainsKey(r);
 
     private readonly Dictionary<RoutineDecl, RoutineDecl> _recovering = new(ReferenceEqualityComparer.Instance);
+
+    /// Whether the recovering form `recovering` of `plain` gives no failure back, so a call of it can run the plain form
+    /// at no cost (`U64.hash` under a `try`, or in a recovering form): its lines are built to learn its list, which is
+    /// empty. A routine being built (recursion) and one whose Callable parameters take failing values keep the
+    /// recovering form. `observer` is built again if the list grows later.
+    public bool RecoversNothing(RoutineDecl recovering, RoutineDecl plain, TypeEnv env, Instance observer)
+    {
+        if (Prechecking || recovering.Params.Where((p, i) => p.Type.Failable != plain.Params[i].Type.Failable).Any()) return false;
+        var inst = RequireInstance(recovering, env);
+        EnsureThrowsKnown(inst);
+        return !_emittingSymbols.Contains(inst.Symbol) && _emittedSymbols.Contains(inst.Symbol) && ThrowsOf(inst, observer).Count == 0;
+    }
 
     /// The recovering form of `r`: the routine a `try` or `check` above a call of it reaches, and every call of a routine
     /// made in a recovering form. It returns a carrier, a throw gives the failure back, and a call in it that fails passes
     /// the failure on to its caller. A Callable parameter it only calls takes the value it is given as one that may fail,
-    /// so a lambda's failure passes on too. It is never inline (it returns the carrier a caller looks at).
+    /// so a lambda's failure passes on too. An `@inline` routine's recovering form is inline too: LLVM inlines the
+    /// carrier it returns like any value.
     public RoutineDecl RecoveringOf(RoutineDecl r)
     {
-        // A library routine whose lines throw already gives its failures back: it is its own recovering form.
-        if (r.IsLibrary && r.IsFailable) return r;
         if (_recovering.TryGetValue(r, out var made)) return made;
         made = r with
         {
             IsFailable = true,
             IsRecovering = true,
-            // A library routine passes on what its `when check` lines leave, and a bare call in it that fails stops on
-            // its line, so the failures it gives back are the ones it was written to give.
-            PassesOnFailures = !r.IsLibrary,
-            Annotations = r.Annotations.Where(a => a.Name != "inline").ToList(),
+            PassesOnFailures = true,
             Params = r.Params.Select(p => p.Type is { Name: "Callable", Path: null, Question: false, Amp: false } && OnlyCalled(r, p.Name)
                 ? p with { Type = p.Type with { Failable = true } }
                 : p).ToList(),
@@ -450,15 +451,15 @@ public sealed partial class Compiler
         }
         if (r.AnnotationNamed("export") is { } export)
             throw new CompileError(export.Pos, $"'{r.DisplayName}' is @export, so C calls it, and C has no failure to receive: "
-                + "an exported routine isn't failable. Receive the failure inside with check (or try), or let a bare call stop the program");
+                + "an exported routine gives no failure back. Receive the failure inside with check (or try), or let it stop the program there");
         if (r.AnnotationNamed("external") is { First: "c" } external)
-            throw new CompileError(external.Pos, $"'{r.DisplayName}' is a C routine, and C doesn't throw: it isn't failable");
+            throw new CompileError(external.Pos, $"'{r.DisplayName}' is a C routine, and C doesn't throw: it gives no failure back");
         if (r.AnnotationNamed("external") is { First: "asm" or "llvm" } other)
-            throw new CompileError(other.Pos, $"'{r.DisplayName}' is @external(\"{other.First}\"), which has no way to throw: it isn't failable");
+            throw new CompileError(other.Pos, $"'{r.DisplayName}' is @external(\"{other.First}\"), which has no way to throw: it gives no failure back");
         if (r.AnnotationNamed("noreturn") is { } noreturn)
-            throw new CompileError(noreturn.Pos, $"'{r.DisplayName}' is @noreturn, so it never gives anything back, a failure included: it isn't failable");
-        if (r.AnnotationNamed("inline") is { } inline)
-            throw new CompileError(inline.Pos, $"'{r.DisplayName}' is failable, and a failable routine isn't @inline");
+            throw new CompileError(noreturn.Pos, $"'{r.DisplayName}' is @noreturn, so it never gives anything back, a failure included");
+        if (r.AnnotationNamed("inline") is { } inline && !r.IsRecovering)
+            throw new CompileError(inline.Pos, $"'{r.DisplayName}' gives its failures back to its caller, and a routine that does isn't @inline");
     }
 }
 

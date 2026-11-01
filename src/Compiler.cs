@@ -1671,7 +1671,7 @@ public sealed partial class Compiler
     public static string NoOptionalCallable(VariantType optional) =>
         $"a Callable can't return {optional.Name}: a routine that returns one is given the place for its "
         + $"{optional.Leaves[0].Name} by each call, which a call through a Callable doesn't pass. Return the "
-        + $"{optional.Leaves[0].Name} from a failable routine, and call it with try";
+        + $"{optional.Leaves[0].Name} from a routine that throws when it has none, and call it with try";
 
     /// `Result[T, TErrorCode]` is for the C boundary, where its code is an integer C reads: TErrorCode is a choice (a
     /// type parameter in a generic body, checked again at each instance).
