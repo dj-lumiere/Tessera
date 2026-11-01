@@ -287,15 +287,17 @@ public sealed partial class Compiler
     /// for failable ones doesn't share its symbol with the one for plain ones.
     private string FailingCallableTag(RoutineDecl r, TypeEnv env)
     {
+        // The recovering form of a routine is a function of its own beside the plain one.
+        string recovering = r.IsRecovering ? "B" + Source("recover") : "";
         var given = r.Params.Select(p => env.Get(FailingParamKey(p.Name))).OfType<DType>().ToList();
-        if (given.Count == 0) return "";
+        if (given.Count == 0) return recovering;
         uint h = 2166136261;
         foreach (char c in string.Join(";", given.Select(g => g.Key)))
         {
             h ^= c;
             h *= 16777619;
         }
-        return "B" + Source($"failing_{h:x8}");
+        return recovering + "B" + Source($"failing_{h:x8}");
     }
 
     /// The routines put in the Crash service's slot (`Crash.report_with(r.to[Callable]())`), with where each was handed
@@ -370,14 +372,80 @@ public sealed partial class Compiler
         if (_declaredSymbols.Add(name)) _declares.Add((name, $"declare void @{name}(ptr, ptr, i64, i1 immarg)"));
     }
 
+    /// Whether a routine's plain form may return a carrier: one with lines of its own that C, an assembly expansion or
+    /// an inline expansion doesn't reach, and not a `destruct` (it runs at a scope's end, where nothing takes a failure).
+    public static bool CanReturnFailure(RoutineDecl r) =>
+        r.Blocks is not null && r.Name != "destruct" && r.AnnotationNamed("export") is null && r.AnnotationNamed("external") is null
+        && r.AnnotationNamed("noreturn") is null && r.AnnotationNamed("inline") is null && r.AnnotationNamed("template") is null;
+
+    /// Whether a routine has a recovering form: every routine with lines of its own but an `infallible` one, a
+    /// `destruct`, and one C reaches (`@export`, `@external`, `@noreturn`).
+    public bool CanRecover(RoutineDecl r) =>
+        !r.IsInfallible && !r.IsRecovering && r.Blocks is not null && r.Name != "destruct" && r.AnnotationNamed("export") is null
+        && r.AnnotationNamed("external") is null && r.AnnotationNamed("noreturn") is null && r.AnnotationNamed("template") is null
+        && !_requirementOf.ContainsKey(r) && (!r.IsLibrary || r.IsFailable || ReceivesFailures(r));
+
+    /// Whether a routine's lines put `try` or `check` in front of a call: a library routine passes failures on only
+    /// when its lines throw (its plain form already gives them back) or work with a call's failure, the routines the
+    /// library writes to fail. Its other routines keep their failures where they happen.
+    private static bool ReceivesFailures(RoutineDecl r) =>
+        (r.Blocks ?? []).Any(b => Bodies.All(b.Stmts).Any(st => Bodies.Exprs(st).Any(top =>
+            ExprTree.All(top).Any(e => e is UnaryExpr { Op: "try" or "check" }))));
+
+    private readonly Dictionary<RoutineDecl, RoutineDecl> _recovering = new(ReferenceEqualityComparer.Instance);
+
+    /// The recovering form of `r`: the routine a `try` or `check` above a call of it reaches, and every call of a routine
+    /// made in a recovering form. It returns a carrier, a throw gives the failure back, and a call in it that fails passes
+    /// the failure on to its caller. A Callable parameter it only calls takes the value it is given as one that may fail,
+    /// so a lambda's failure passes on too. It is never inline (it returns the carrier a caller looks at).
+    public RoutineDecl RecoveringOf(RoutineDecl r)
+    {
+        // A library routine whose lines throw already gives its failures back: it is its own recovering form.
+        if (r.IsLibrary && r.IsFailable) return r;
+        if (_recovering.TryGetValue(r, out var made)) return made;
+        made = r with
+        {
+            IsFailable = true,
+            IsRecovering = true,
+            // A library routine passes on what its `when check` lines leave, and a bare call in it that fails stops on
+            // its line, so the failures it gives back are the ones it was written to give.
+            PassesOnFailures = !r.IsLibrary,
+            Annotations = r.Annotations.Where(a => a.Name != "inline").ToList(),
+            Params = r.Params.Select(p => p.Type is { Name: "Callable", Path: null, Question: false, Amp: false } && OnlyCalled(r, p.Name)
+                ? p with { Type = p.Type with { Failable = true } }
+                : p).ToList(),
+        };
+        _recovering[r] = made;
+        if (_requirementOf.TryGetValue(r, out var requirement)) _requirementOf[made] = requirement;
+        return made;
+    }
+
+    /// Whether a routine only calls its parameter `name` (`f.call(x)`) or hands it to another call, never keeps it.
+    internal static bool OnlyCalled(RoutineDecl r, string name)
+    {
+        int uses = 0, calls = 0;
+        foreach (var b in r.Blocks ?? [])
+            foreach (var st in Bodies.All(b.Stmts))
+                foreach (var top in Bodies.Exprs(st))
+                    foreach (var e in ExprTree.All(top))
+                    {
+                        if (e is ValueRef v && v.Name == name) uses++;
+                        if (e is MethodCallExpr { Name: "call", Receiver: ValueRef called } && called.Name == name) calls++;
+                        // Handed on to another call, the value goes to that routine's parameter, which is judged the same way.
+                        var args = e switch { CallExpr c => c.Args, MethodCallExpr m => m.Args, _ => [] };
+                        calls += args.Count(a => a is ValueRef handed && handed.Name == name);
+                    }
+        return uses > 0 && uses == calls;
+    }
+
     /// Where a failable routine meets C, which has no failure to receive: an `@export` routine is called from C, and an
     /// `@external("c")` one is C's.
     private static void CheckFailableBoundary(RoutineDecl r)
     {
         if (!r.IsFailable)
         {
-            if (r.AnnotationNamed("throws") is { } stray)
-                throw new CompileError(stray.Pos, $"@throws lists what a failable routine may throw, and '{r.DisplayName}' isn't failable");
+            if (r.IsInfallible && r.AnnotationNamed("throws") is { } stray)
+                throw new CompileError(stray.Pos, $"@throws lists what a routine may throw, and '{r.DisplayName}' is infallible: it promises not to fail");
             return;
         }
         if (r.AnnotationNamed("export") is { } export)
@@ -391,5 +459,49 @@ public sealed partial class Compiler
             throw new CompileError(noreturn.Pos, $"'{r.DisplayName}' is @noreturn, so it never gives anything back, a failure included: it isn't failable");
         if (r.AnnotationNamed("inline") is { } inline)
             throw new CompileError(inline.Pos, $"'{r.DisplayName}' is failable, and a failable routine isn't @inline");
+    }
+}
+
+/// Every expression inside an expression, itself first: read off the records' expression-typed members.
+internal static class ExprTree
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.PropertyInfo[]> Members = new();
+
+    public static IEnumerable<Expr> All(Expr root)
+    {
+        var stack = new Stack<Expr>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var e = stack.Pop();
+            yield return e;
+            foreach (var child in Children(e)) stack.Push(child);
+        }
+    }
+
+    private static IEnumerable<Expr> Children(Expr e)
+    {
+        // A `when` written as a value holds its subject and its arms' lines.
+        if (e is WhenExpr we)
+        {
+            foreach (var st in Bodies.All([we.When]))
+                foreach (var inner in Bodies.Exprs(st))
+                    yield return inner;
+            yield break;
+        }
+
+        var props = Members.GetOrAdd(e.GetType(), type => type.GetProperties().Where(p => p.GetIndexParameters().Length == 0
+            && (typeof(Expr).IsAssignableFrom(p.PropertyType) || typeof(IEnumerable<Expr>).IsAssignableFrom(p.PropertyType))).ToArray());
+        foreach (var p in props)
+        {
+            switch (p.GetValue(e))
+            {
+                case Expr child: yield return child; break;
+                case IEnumerable<Expr> list:
+                    foreach (var item in list)
+                        if (item is not null) yield return item;
+                    break;
+            }
+        }
     }
 }

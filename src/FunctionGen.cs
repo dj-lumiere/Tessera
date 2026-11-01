@@ -2091,6 +2091,19 @@ public sealed partial class FunctionGen
 
     private void EmitStmtCore(Stmt s)
     {
+        // A drop is a teardown: the calls it makes are walls (see Recovering).
+        if (s is DropStmt)
+        {
+            _tearingDown++;
+            try { EmitStmtCoreOf(s); }
+            finally { _tearingDown--; }
+            return;
+        }
+        EmitStmtCoreOf(s);
+    }
+
+    private void EmitStmtCoreOf(Stmt s)
+    {
         _lineSource = s.Source;
         At(s.Source ?? s.Pos);
         // `e: &ListEmitter[T] <- xs.emitter()` (or the place a `for` over `xs.emitter()` holds it in) walks `xs`.
@@ -4837,6 +4850,9 @@ public sealed partial class FunctionGen
                              + "and a call through a pointer can't be; wrap it in a routine without @inline");
         if (routine.TypeParams.Count != 0)
             throw Err(r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
+        // Handed where a routine value's failure passes on (a recovering routine's Callable parameter), the value is the
+        // routine's recovering form, so its failure reaches the try or check above.
+        if (expected is CallableType { Failable: true } && _c.CanRecover(routine)) routine = _c.RecoveringOf(routine);
         var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
         if (_reportingArgument) _c.NoteReportingRoutine(inst, r.Pos);
         var own = OwnCallable(inst);
@@ -5353,7 +5369,7 @@ public sealed partial class FunctionGen
     {
         if (InferQuiet(m.Receiver) is not { } rt) return false;
         foreach (var owner in rt is PtrType { Pointee: { } pointee } ? new[] { pointee, rt } : [rt])
-            if (_c.MethodsNamed(owner, m.Name).Any(d => d.IsFailable)) return true;
+            if (_c.MethodsNamed(owner, m.Name).Any(d => d.IsFailable || _c.CanRecover(d))) return true;
         return false;
     }
 
@@ -6198,6 +6214,7 @@ public sealed partial class FunctionGen
             try { return EmitCall(plan); }
             finally { _reportingArgument = false; }
         }
+        plan = Recovering(plan);
         BindFailingCallables(plan);
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
@@ -7068,7 +7085,7 @@ public sealed partial class FunctionGen
                 {
                     _values.Remove("$emitter");
                 }
-                if (emitPlan is not { Decl.IsFailable: true } || emitted is null || emitted is VoidType)
+                if (emitPlan is null || !(emitPlan.Decl.IsFailable || _c.CanRecover(emitPlan.Decl)) || emitted is null || emitted is VoidType)
                     throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose failable emit gives "
                         + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;

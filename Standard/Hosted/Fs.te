@@ -319,7 +319,7 @@ secret routine path_error(path: @[Byte]) -> FsError
 ### Whether something is at path (a link counts as what it points at).
 ### :param path: The path to look at.
 ### :returns: True when the metadata of `path` can be read. Any failure, not only `NotFoundError`, gives false.
-secret routine is_present(path: @[Byte]) -> Bool
+secret infallible routine is_present(path: @[Byte]) -> Bool
     when check metadata(path)
         is Metadata => return true
         is FsError => return false
@@ -328,7 +328,7 @@ secret routine is_present(path: @[Byte]) -> Bool
 ### :param path: The path to look at.
 ### :param kind: The kind to test for.
 ### :returns: True when the metadata of `path` can be read and its kind is `kind`.
-secret routine is_kind(path: @[Byte], kind: FileKind) -> Bool
+secret infallible routine is_kind(path: @[Byte], kind: FileKind) -> Bool
     m: Check[Metadata] = check metadata(path)
     when m
         is Metadata as info => return info.kind == kind
@@ -338,7 +338,7 @@ secret routine is_kind(path: @[Byte], kind: FileKind) -> Bool
 ### :param path: The directory to make.
 ### :throws: Throws the reason when the last step fails, `AlreadyExistsError` when something other than a directory is
 ###     at `path`.
-secret failable routine create_dir_all(path: @[Byte]) -> None
+secret routine create_dir_all(path: @[Byte]) -> None
     # Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
     for i in 1 til path.count()
         if is_separator(path.byte_at(i).bits())
@@ -355,7 +355,7 @@ secret failable routine create_dir_all(path: @[Byte]) -> None
 ### :param manager: The memory manager for the child paths, each given back before the next.
 ### :throws: Throws the first failure, which stops the removal partway. Crashes with `OutOfMemoryError` when
 ###     `manager` fails for a child path.
-secret failable routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -> None
+secret routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -> None
     info: Metadata = when check symlink_metadata(path)
         is Metadata as found => found
     if not (info.kind == FileKind.DIRECTORY)
@@ -371,7 +371,7 @@ secret failable routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -
 ### :param path: The directory to empty.
 ### :param manager: The memory manager for the child paths.
 ### :throws: Throws the first failure. Crashes with `OutOfMemoryError` when `manager` fails for a child path.
-secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -> None
+secret routine remove_entries(path: @[Byte], manager: @MemoryManager) -> None
     # open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     lateinit iter: &DirEmitter
 
@@ -402,7 +402,7 @@ secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -
 ### :returns: The file's bytes.
 ### :throws: Throws the reason when the file can't be opened or read, `OutOfMemoryError` when `manager` fails or
 ###     the file is too large for the address space (4 GiB or more on a 32-bit target).
-secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
+secret routine read_file(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     f: &FileHandle
 
     when check FileHandle.open(path, mode: OpenMode.READ)
@@ -422,7 +422,7 @@ secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> Bor
 ### :returns: The bytes read.
 ### :throws: Throws the reason when a read fails, `OutOfMemoryError` when `manager` fails or the file is too large
 ###     for the address space (it reports a size, or grows to one, that a U64 can't hold).
-secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> BorrowedSlice[Byte]
+secret routine read_rest(f: @FileHandle, manager: @MemoryManager) -> BorrowedSlice[Byte]
     lateinit buffer: &[Byte]
 
     capacity: U64 = when check f.size()
@@ -469,7 +469,7 @@ secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Bo
 ### :param path: The file to write.
 ### :param data: The bytes that become the file.
 ### :throws: Throws the reason when the file can't be opened or written, `NotFoundError` when nothing is at `path`.
-secret failable routine write_file(path: @[Byte], data: @[Byte]) -> None
+secret routine write_file(path: @[Byte], data: @[Byte]) -> None
     f: &FileHandle
 
     when check FileHandle.open(path, mode: OpenMode.WRITE)
@@ -489,7 +489,7 @@ obeys Writer[FileHandle]
 ### :param count: How many bytes to write.
 ### :throws: Throws the reason when a write fails, `IoError` when a write makes no progress.
 @expensive("asks the operating system")
-failable routine @FileHandle.write_all(data: @Byte, count: U64) -> None
+routine @FileHandle.write_all(data: @Byte, count: U64) -> None
     until remaining == 0 with at: @Byte = data, remaining: U64 = count
         n: U64 = when check me.write_some(data: at, count: remaining)
             is U64 as written => written
@@ -503,7 +503,7 @@ failable routine @FileHandle.write_all(data: @Byte, count: U64) -> None
 ### :param data: The first byte to write.
 ### :param count: How many bytes to write.
 @expensive("asks the operating system")
-routine @FileHandle.write_bytes(data: @Byte, count: U64) -> None
+infallible routine @FileHandle.write_bytes(data: @Byte, count: U64) -> None
     when check me.write_all(data, count)
         is None => return
         is FsError => me.failed.poke(true)
@@ -747,7 +747,7 @@ needs T obeys StorageCell
 ### :returns: The value.
 ### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()`, and `InvalidCellError` when the cell's
 ###     bytes aren't a `T` (four bytes that aren't a Unicode scalar, in a `FileStorage[Char]`).
-failable routine @FileStorage[T].getitem(index: U64) -> T
+routine @FileStorage[T].getitem(index: U64) -> T
 needs T obeys StorageCell
     count: U64 = me.count.peek()
     if index >= count
@@ -763,7 +763,7 @@ needs T obeys StorageCell
 ### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()` (a storage never grows its file),
 ###     and `UnacceptedValueError` when the storage was mapped without `write`.
 @track_caller
-failable routine @FileStorage[T].setitem(index: U64, value: T) -> None
+routine @FileStorage[T].setitem(index: U64, value: T) -> None
 needs T obeys StorageCell
     if index >= me.count.peek()
         throw IndexOutOfBoundsError(index, count: me.count.peek())
@@ -774,7 +774,7 @@ needs T obeys StorageCell
 
 ### Writes changed pages back to the file.
 ### :throws: Throws the reason when the OS can't write them.
-failable routine @FileStorage[T].flush() -> None
+routine @FileStorage[T].flush() -> None
 needs T obeys StorageCell
     base: Addr = me.base.peek()
     if base.is_hollow()
@@ -832,7 +832,7 @@ secret routine cell_window(size: U64, start: U64, count: U64, cell: U64) -> (U64
 ### :param to: Where the copy goes.
 ### :param manager: The memory manager for the child paths.
 ### :throws: Throws the first failure, which stops the copy partway.
-secret failable routine copy_tree(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
+secret routine copy_tree(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
     lateinit iter: &DirEmitter
 
     when check create_dir(to)
@@ -866,7 +866,7 @@ secret failable routine copy_tree(from: @[Byte], to: @[Byte], manager: @MemoryMa
 ### :param to: Where the copy goes, which must not be there.
 ### :param manager: The memory manager for the child paths.
 ### :throws: Throws the first failure.
-secret failable routine copy_entry(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
+secret routine copy_entry(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
     if is_kind(path: from, kind: FileKind.DIRECTORY)
         when check copy_tree(from, to, manager)
             is None => return
@@ -876,7 +876,7 @@ secret failable routine copy_entry(from: @[Byte], to: @[Byte], manager: @MemoryM
 ### Whether path is a link itself.
 ### :param path: The path to look at.
 ### :returns: True when a link is at `path`.
-secret routine is_link(path: @[Byte]) -> Bool
+secret infallible routine is_link(path: @[Byte]) -> Bool
     when check symlink_metadata(path)
         is Metadata as info => return info.kind == FileKind.SYMLINK
         is FsError => return false
@@ -904,7 +904,7 @@ secret routine same_partition(a: @[Byte], b: @[Byte]) -> Bool
 ### :param manager: The memory manager for the child paths of a copied tree.
 ### :throws: Throws the reason the move failed. When the copy fails nothing is deleted and the partial copy is
 ###     removed. Throws `OriginalKeptError` when the copy is whole and deleting the source failed (both are there then).
-secret failable routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
+secret routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
     manager: @MemoryManager) -> None
     # A directory goes with everything in it, and a link (to a directory too) is moved as the link.
     is_directory: Bool = is_kind(path: from, kind: FileKind.DIRECTORY) and not is_link(from)

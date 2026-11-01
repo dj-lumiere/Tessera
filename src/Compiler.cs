@@ -543,9 +543,8 @@ public sealed partial class Compiler
         foreach (var list in _blanket.Values) SwapAll(list);
     }
 
-    /// The `@target` forms of one routine agree on whether it is failable: a call of it is written once for every
-    /// target, so `try` in front of it, or a bare call, reads the same wherever it is built. A form that never fails on
-    /// its target is still failable when another target's form can fail (`S64.to[CSSize]` on 64 and 32 bits).
+    /// The `@target` forms of one routine agree on whether it is infallible: a call of it is written once for every
+    /// target, so `try` in front of it, or a bare call, reads the same wherever it is built.
     private static void CheckTargetForms(Dictionary<string, RoutineDecl> forms, RoutineDecl r)
     {
         string key = $"{r.Module}|{r.DisplayName}|{string.Join(", ", r.Params.Select(p => p.Type.ToString()))}";
@@ -554,10 +553,10 @@ public sealed partial class Compiler
             forms[key] = r;
             return;
         }
-        if (first.IsFailable == r.IsFailable) return;
-        var (failable, plain) = r.IsFailable ? (r, first) : (first, r);
-        throw new CompileError(plain.Pos, $"'{r.DisplayName}' is failable on the target of line {failable.Pos.Line} and not on this "
-            + "one: a call of it is written once for every target, so declare this form failable routine too");
+        if (first.IsInfallible == r.IsInfallible || first.IsLibrary && r.IsLibrary) return;
+        var (infallible, plain) = r.IsInfallible ? (r, first) : (first, r);
+        throw new CompileError(plain.Pos, $"'{r.DisplayName}' is infallible on the target of line {infallible.Pos.Line} and not on this "
+            + "one: a call of it is written once for every target, so declare this form infallible routine too");
     }
 
     // ── Build-time selection ────────────────────────────────────────────────
@@ -2276,9 +2275,9 @@ public sealed partial class Compiler
             parameters, ret, [], [new BlockDecl("entry", [], stmts, pos)], pos)
         {
             Module = around.Module, IsPrivate = true, IsLibrary = around.IsLibrary,
-            // Written where a failable Callable goes, the lambda is failable, and a failure of its one expression goes
-            // to whoever calls the value.
-            IsFailable = ct.Failable, PassesOnFailures = ct.Failable,
+            // Handed to a routine's recovering form, the lambda is recovering too: a failure anywhere below its one
+            // expression goes to whoever calls the value.
+            IsFailable = ct.Failable, PassesOnFailures = ct.Failable, IsRecovering = ct.Failable,
         };
         _lambdas[key] = decl;
         LambdaOuter[decl] = (outer.Where(n => !l.Params.Any(p => p.Name == n)).ToHashSet(), around.DisplayName);

@@ -23,8 +23,9 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// `T?`, as written: the standard library's `Optional[T]`, which is named `Optional[T]` when T holds an entity.
     public bool Question { get; init; }
 
-    /// `failable Callable[(T,), U]`: a routine value that may fail, written as a parameter's type. The call that hands a
-    /// failable routine value to such a parameter fails the way the value does.
+    /// A Callable parameter of a routine's recovering form (the one a `try` or `check` above the call reaches) whose
+    /// value is only called: the routine is built for the value it is given, and a call through it passes the value's
+    /// failure on. Never written: there is no `failable` in a type.
     public bool Failable { get; init; }
 
     /// `MemoryOrder.RELAXED` as a type argument: the member of the choice the rest of the reference names, a value for a
@@ -39,7 +40,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
         : Path is null && Name == UnionName ? string.Join(" | ", Args)
         : Path is null && Name == "PointedCell" && Args is [TypeArgType inner] ? $"@{inner}"
         : Path is null && Name == "PointedSlice" && Args is [TypeArgType elem] ? $"@[{elem}]"
-        : (Failable ? "failable " : "") + (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
+        : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 
     /// The name of a variant written inline, `A | B`: its arguments are the branches as written.
@@ -145,10 +146,18 @@ public sealed record RoutineDecl(
     /// other lines its entry block, in the order written, and the end of the file is its `return`.
     public bool IsScript { get; init; }
 
-    /// `failable routine`: the routine may end with `throw`, giving a crashable instead of its value. A bare call of one
-    /// that fails stops the program on the call's line (through `Crash`), and `try` / `check` in front of the call
-    /// take the failure as a value instead.
+    /// Whether this form of the routine returns a carrier (its value or a failure): a routine whose lines `throw`
+    /// (its plain form), and the recovering form of every routine that can fail. A bare call of a plain form that
+    /// fails stops the program on the call's line (through `Crash`), and `try` / `check` in front of the call reach
+    /// the recovering form, which passes every failure below it on to them.
     public bool IsFailable { get; init; }
+
+    /// `infallible routine`: a promise not to fail. A failure inside it stops the program there, even under `try`.
+    public bool IsInfallible { get; init; }
+
+    /// The recovering form of a routine, made by the builder (Compiler.RecoveringOf): a `try` or `check` above a call
+    /// reaches it, and every call in it that fails passes its failure on to the caller instead of stopping.
+    public bool IsRecovering { get; init; }
 
     /// A lambda written where a failable Callable goes: a failure of a bare call in its one expression goes to whoever
     /// calls the value.
@@ -165,7 +174,7 @@ public sealed record RoutineDecl(
 
     /// The header up to the parameters, as written: `routine Point.scaled`, `routine @Point.move`,
     /// `common routine Point.origin`, `routine gcd`.
-    public string Header => (IsFailable ? "failable " : "") + (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
+    public string Header => (IsInfallible ? "infallible " : "") + (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
         + (Owner is null ? Name : $"{OwnerAsWritten}.{Name}");
 
     /// The owner as a header writes it: `PointedCell[Cell]` for a routine on the pointer type, since `@Cell.read` would take a

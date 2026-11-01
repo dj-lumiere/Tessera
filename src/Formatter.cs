@@ -416,13 +416,13 @@ public static class Formatter
     private static int RoutineWord(string line)
     {
         int i = line.StartsWith("secret ", StringComparison.Ordinal) ? "secret ".Length : 0;
-        if (string.CompareOrdinal(line, i, "failable ", 0, "failable ".Length) == 0) i += "failable ".Length;
+        if (string.CompareOrdinal(line, i, "infallible ", 0, "infallible ".Length) == 0) i += "infallible ".Length;
         if (string.CompareOrdinal(line, i, "common ", 0, "common ".Length) == 0) i += "common ".Length;
         return string.CompareOrdinal(line, i, "routine ", 0, "routine ".Length) == 0 ? i : -1;
     }
 
     private static bool StartsDeclaration(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("failable ") || line.StartsWith("record ")
+        line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("infallible ") || line.StartsWith("record ")
         || line.StartsWith("crashable ") || line.StartsWith("choice ") || line.StartsWith("flags ") ||
         line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("#") || IsAnnotation(line);
 
@@ -674,7 +674,7 @@ public static class Formatter
     {
         if (line.Length == 0 || line[0] == ' ') return null;
         string s = line.StartsWith("secret ") ? line[7..] : line;
-        if (s.StartsWith("failable ", StringComparison.Ordinal)) s = s["failable ".Length..];
+        if (s.StartsWith("infallible ", StringComparison.Ordinal)) s = s["infallible ".Length..];
         if (s.StartsWith("common routine ", StringComparison.Ordinal)) s = s["common ".Length..];
         int space = s.IndexOf(' ');
         string word = space < 0 ? s : s[..space];

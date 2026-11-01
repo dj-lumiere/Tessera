@@ -629,10 +629,10 @@ public sealed partial class Compiler
             throw new CompileError(at, HasReceiver(req)
                 ? $"{claim}: {where} doesn't take me; the protocol calls it as a method, x.{req.Name}(...)"
                 : $"{claim}: {where} takes me; the protocol calls it by its type, {owner.Name}.{req.Name}(...)");
-        // A call through the concept takes the failure the way the requirement says. A failable requirement may be met
-        // by a routine that never fails (a float's `add` meets Addable's failable one): the call just never fails.
-        if (method.IsFailable && !req.IsFailable)
-            throw new CompileError(at, $"{claim}: {where} is failable, and the protocol's {req.Name} isn't: receive the failure inside, with check");
+        // A call through the concept takes the failure the way the requirement says: an infallible requirement wants a
+        // routine that promises not to fail too.
+        if (req.IsInfallible && !method.IsInfallible && method.Blocks is not null)
+            throw new CompileError(at, $"{claim}: the protocol's {req.Name} is infallible, and {where} isn't: write it infallible routine");
         bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
         if (req.TypeParams.Count != method.TypeParams.Count)
             throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the protocol wants {req.TypeParams.Count}");

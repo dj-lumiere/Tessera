@@ -739,7 +739,7 @@ routine start() -> None
 
 - A routine body is its statements, top to bottom, 4 spaces in under the header (its leading binding lines are simply
   its first lines). Every path through the body ends in a `return` (bare for `None`, `return x` otherwise) or in a
-  `throw` in a routine that isn't failable (it stops the program there), or in a call to a `@noreturn` routine
+  `throw`, or in a call to a `@noreturn` routine
   (`Crash.stop()`), which ends the body it is in: no `return` after it. A body that can run off its end is a build error. A routine without a body must be `@external`.
 - **Where a name is seen.** The routine's parameters are seen in the whole body. Any other binding (a value, a
   place) is seen from the line after it to the end of the body it is bound in: the routine's own lines, an `if` arm,
@@ -825,8 +825,7 @@ routine start() -> None
   written as a header alone is a build error, and so is a line written `pass`.
 - **`when` as a value.** `x: T = when ...` (and `return when ...`, `becomes when ...`) gives one value from the arm
   taken: a one-line arm's expression (`is S64 as n => n`, `n < 10 => Size.SMALL`), the `becomes v` that ends a
-  multi-line arm, or the arm leaves with `return`, `break`, `continue`, or `throw` (in a failable routine only: a
-  `throw` elsewhere is a build error whose quick fix writes `failable` on the routine). A name an arm gives (`is T as name`) is
+  multi-line arm, or the arm leaves with `return`, `break`, `continue`, or `throw`. A name an arm gives (`is T as name`) is
   seen in that arm only, so the value that outlives the `when` is the chosen one. That is how a guard on a variant
   is written: the arms that fail leave, the one that succeeds gives its value:
 
@@ -990,9 +989,8 @@ routine start() -> None
   is the text for the choice member O, one text per member in the order the choice lists them.
 - `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
-  with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
-  conversion that can fail on one pointer width is failable on both (`S64.to[CSSize]` never throws on 64 bits): the
-  `@target` forms of one routine must agree on `failable`, or it is a build error.
+  with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. The
+  `@target` forms of one routine must agree on `infallible`, or it is a build error.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - **`hash()` is keyed.** Every stdlib `hash()` (and every `@derive(Hashable)`) is SipHash-2-4 under a secret 128-bit
   key drawn once per process (`hash_key()`), so a hash value differs from run to run: never print one, store one, or
@@ -1230,22 +1228,27 @@ routine start() -> None
   NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter obeys Writer`). The builder
   writes its `name()` (the type's name) and makes it obey `Crashable`. The names are RazorForge's crashables, so a
   failure reads the same in both languages.
-- **`throw` in a failable routine gives the failure to the caller.** A routine that can fail is declared `failable
-  routine` (`secret failable common routine`, and `failable routine` in a protocol), and `throw NotFoundError(code: 2)`
-  ends it with the failure instead of its value.
-- **`throw` in a routine that isn't failable crashes on the spot.** That is how a bug or a broken contract stops the
-  program: `throw ConfigurationError()`, `throw IndexOutOfBoundsError(index, count)`. The `Crash` service reports the
-  crashable's name and message and the place, and stops (status 82 with an OS), the same way a bare failed call does.
-  Nothing is given back first. The place is the throw's line, or the caller's line when the routine is
-  `@track_caller`: a stdlib routine that crashes on its caller's mistake is `@track_caller`, and a routine of your own
-  is marked the same way when its crashes are its caller's fault. To crash inside a failable routine (a bug, not a
-  failure for the caller), throw from a small routine that isn't failable: the failure can't pass it. `todo` crashes
-  with `NotImplementedError` in any routine, and never makes it failable. `crash_at(error: e, place: p)` reports a
-  crashable at a place the code knows better than its own line (a memory manager callback reporting the line that
-  freed a block twice). There's no `trap()`: every stop is a crash. `ForeignError(kind, description)` is the crashable
-  of failures another language names while the program runs (code built from RazorForge).
-- **Failures rise only through failable routines.** A routine that isn't failable is a wall: a failure inside it
-  (its own `throw`, or a bare call that fails) crashes there, even with `try` or `check` further up.
+- **Every routine passes its failures to its caller.** Nothing marks a routine that can fail (`failable routine` is
+  a build error that names the new rule), and `throw NotFoundError(code: 2)` ends the routine with the failure instead
+  of its value. A `try` or `check` above a call receives a failure from any depth below it: code inside calls plainly
+  (`below: S64 = eval(n - 1)` in a recursive `eval`), and the builder makes each routine's recovering form, the one a
+  `try`/`check` reaches, which passes every failure below it on. A call with no keyword above it runs the routine's
+  plain form, which costs nothing more: a failure nobody receives stops the program where it happens (a program's
+  routine on its `throw` line, a standard library routine on the line of the program's call of it).
+- **`infallible routine` is the only wall.** `infallible routine close(...)` (`secret infallible common routine`, and
+  `infallible routine` in a protocol) promises not to fail: a failure inside it (its own `throw`, an overflowing `+`,
+  an index past the end, a call that fails) breaks the promise and stops the program there, even with a `try` or
+  `check` further up. A `destruct`, an `@export`, `@external` or `@noreturn` routine is a wall without the marker.
+  `start()` isn't marked: a failure that reaches it ends the program with its report. `todo` crashes with
+  `NotImplementedError` in any routine, even under `try`. A stack overflow is never received; memory a manager
+  can't give is the manager call's own failure. ✗ Marking a routine infallible so you don't have to think about
+  failures: a failure the caller could have received becomes a stop at that point.
+- **`throw` in an infallible routine crashes on the spot.** That is how a bug or a broken contract stops the program:
+  the `Crash` service reports the crashable's name and message and the place, and stops (status 82 with an OS). The
+  place is the throw's line, or the caller's line when the routine is `@track_caller`. `crash_at(error: e, place: p)`
+  reports a crashable at a place the code knows better than its own line (a memory manager callback reporting the
+  line that freed a block twice). There's no `trap()`: every stop is a crash. `ForeignError(kind, description)` is
+  the crashable of failures another language names while the program runs (code built from RazorForge).
 - **The standard library's failures** are crashables of a few numbers at most: `IntegerOverflowError`,
   `DivisionByZeroError`, `NegativeExponentError`, `IndexOutOfBoundsError` (`index`, `count`), `AbsentValueError` (an
   emitter past its end, an empty list's last element, unwrap of an empty Optional), `KeyNotFoundError`,
@@ -1256,21 +1259,21 @@ routine start() -> None
   `OutOfMemoryError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
   `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
   their routines.
-- **A call written bare that fails stops the program on its own line,** the way an overflowing `+` does: the `Crash`
-  service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
-  and stops (status 82 with an OS). `throw` in a failable routine only gives the failure back to the caller. This
-  holds inside a failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
+- **A failure nobody receives stops the program where it happens.** A `throw` in a program's routine stops on its own
+  line, and a call of a standard library routine that fails stops on the line of the call, the way an overflowing `+`
+  does: the `Crash` service reports the failure's name and message, the place, the crash trace, and where the failure
+  was made, and stops (status 82 with an OS).
 - **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Optional[T]`, `None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
   calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
   and the failures: `is NotFoundError as e` one crashable, `is FsError as e` a variant of crashables (the ones the
   `Check` can hold), `is Crashables as e` every crashable the other arms don't name, `else as e` the rest. Failures no
-  arm observes go on to the caller in a failable routine (as if `is Crashables as e => throw e` were written) and stop
-  the program elsewhere. So a failure is passed on with `v: T = when check f(x)` and only the value arm, and a tail call
+  arm observes go on to the caller (as if `is Crashables as e => throw e` were written): a `try` or `check` above
+  receives them, and with none above the program stops there. So a failure is passed on with `v: T = when check f(x)` and only the value arm, and a tail call
   is `return when check f(x)` + `is T as v => v`. `throw e` of a caught crashable, a `Crashables`, or a variant of
   crashables gives it to the caller as it is. A binding may be written `r: Check[S64] = check f(x)`: the check gives
   the list.
-- **The builder collects what each call can throw.** A failable routine's list is its own `throw`s and the failures it
+- **The builder collects what each call can throw.** A routine's list is its own `throw`s and the failures it
   passes on (from its callees' lists, a fixed point over recursion), and a `Check[T]` is the variant of `T` and that
   list: as big as its largest branch, tagged by each branch's type ID, no heap, nothing looked up while the program
   runs (so it works without an OS). `e.name()` and `e.message_into(out)` on a `Crashables` (or a variant of
@@ -1291,33 +1294,28 @@ routine start() -> None
   a `when` doesn't name, `throw e` of a caught value) goes back into the mold the same way. A bare call that fails
   stops through `Crash`, which reads the crashable from the mold. One failure is in flight per flow at a time: a
   failure's crashable never holds another failure in flight.
-- **Routine values carry their list.** `f.to[Callable]()` of a failable routine is a failable Callable whose list is a
+- **Routine values carry their list.** `f.to[Callable]()` of a routine that throws is a Callable whose list is a
   hidden part of its type. A call through it fails like a call of `f`. A binding with a written `Callable[...]` type
   takes the value's list.
-- **A parameter that takes a failable routine value is written `failable Callable[(T,), U]`.** Handing a failable
-  value to a plain `Callable` parameter is a build error. The routine is built for the value it is given (a symbol of
-  its own), and the call that hands it a failable value fails the way the value does: its list includes the value's,
-  so `try apply(f: half.to[Callable](), x: 7)` and `check ...` receive the failure, and a bare call stops. Handed a
-  plain value, the call never fails. Inside, the routine passes the value's failure on with `y: U = when check
-  f.call(x)` and only the value arm (a bare `f.call(x)` stops there, like any bare call). A routine not declared
-  failable passes on only the failures of the values it was given. A lambda written where a `failable Callable` goes
-  is failable itself: `try apply(f: (x) => 10 // x, x: 0)` gives `None`. A routine that keeps a routine value to call
-  later (a fiber's or a thread's work, a reporting routine, an event handler) takes a plain `Callable`: the value
-  receives its own failures.
-- **`try` or `check` in front of an expression with no call that can fail is a build error.** Remove the keyword, or
-  declare the routine it calls failable.
-- **`@throws([NotFoundError, EmptyTextError])`** above a failable routine fixes its list (an exported routine, whose
+- **A routine that only calls its Callable parameter is built for the value it is given** (a symbol of its own), and
+  the call that hands it a value that may fail fails the way the value does. A lambda handed to a call a `try` or
+  `check` reaches passes its failure on: `try apply(f: (x) => 10 // x, x: 0)` gives `None`, and with no keyword above
+  the lambda's failure stops the program on the line it fails. A routine that keeps a routine value to call later (a
+  fiber's or a thread's work, a reporting routine, an event handler) takes one that receives its own failures: a
+  value that may fail handed to it is a build error.
+- **`try` or `check` in front of an expression with nothing that can fail gives the value.**
+- **`@throws([NotFoundError, EmptyTextError])`** above a routine fixes its list (an exported routine, whose
   callers shouldn't see it change when its body does): what the routine can throw must be in it (a build error that
   names the missing ones), and the routine's `Check` holds exactly those.
-- **C never sees a failure.** An `@export` or `@external("c")` routine can't be failable, `addr()` of a failable routine
-  or Callable is a build error, and a failable Callable can't be handed to a C routine. A Tessera routine C calls
+- **C never sees a failure.** An `@export` or `@external("c")` routine is a wall, `addr()` of a routine that throws or
+  of a Callable that may fail is a build error, and such a Callable can't be handed to a C routine. A Tessera routine C calls
   receives its failures inside (`check`, `try`), or a bare call stops the whole program there (it never returns to
   C). An `@export` routine returns a `T` or a `Result[T, TErrorCode]` (Standard/System/Result.te), never a variant (a
   build error): a C record of `value` then `code`, both always there (`struct { int64_t value; int32_t code; }` for a
   `Result[S64, RatioError]` over a choice without a written type). `TErrorCode` is a choice (a build error otherwise),
   so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` an all-zero value,
   `r.is_ok()` tests the code, and the routine turns its failures into codes with `when check`. Make 0 the success
-  code, the choice's first member (the build doesn't check it). Inside, code uses failable routines, not `Result`.
+  code, the choice's first member (the build doesn't check it). Inside, code throws and receives failures, not `Result`.
 - **The `Crash` service** (System, one per program) reports a crash and a failure nothing received, then
   stops. `Crash.report_with(routine.to[Callable]())` puts a reporting routine in its slot and returns the one before
   (a `Callable?`, None for the default; `Crash.report_with(None())` puts the default back), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
@@ -1693,7 +1691,7 @@ routine parse_or_zero(text: @[Byte]) -> B64
         is B64 as value => value
         is Crashables => 0.0
 
-failable routine parse_count(text: @[Byte]) -> U32
+routine parse_count(text: @[Byte]) -> U32
     return when check text.to[U32]()
         is U32 as count => count
 ```
@@ -1750,7 +1748,7 @@ Format through `System/Text` (`Format.te`), not printf. printf is for C interop 
   `EmptyTextError`, `InvalidValueError`, or `OutOfRangeError` (each names the text and the type), so a bare call stops
   the program there and `check text.to[S32]()` (or `try`) receives the failure. It works for every integer type (an
   optional sign and decimal digits) and every float type. There is no `parse`. A type is readable from text when it
-  obeys `Parsable[T]`, which asks for one routine, `failable routine @[Byte].to[T]() -> T`. Numbers from standard
+  obeys `Parsable[T]`, which asks for one routine, `routine @[Byte].to[T]() -> T`. Numbers from standard
   input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer goes
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Optional[T]` (`None` for both).

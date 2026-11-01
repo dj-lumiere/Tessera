@@ -627,7 +627,7 @@ public static class Derive
         {
             sb.Append($"### The {c.Name} whose members are the bits on in `me`.\n### :returns: The flags value.\n");
             sb.Append($"### :throws: Throws `UnknownBitsError` when a bit that no member of {c.Name} has is on.\n");
-            sb.Append($"failable routine {from}.to[{c.Name}]() -> {c.Name}\n");
+            sb.Append($"routine {from}.to[{c.Name}]() -> {c.Name}\n");
             sb.Append(from == "U64" ? "    wide: U64 = me\n" : "    wide: U64 = me.to[U64]()\n");
             sb.Append($"    stray: U64 = wide.bitand(0x{stray:X})\n");
             sb.Append("    if stray != 0\n");

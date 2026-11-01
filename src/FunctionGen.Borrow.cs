@@ -267,8 +267,13 @@ public sealed partial class FunctionGen
                 _cur = drop;
                 bool muted = _memMuted;
                 _memMuted = true;
+                _tearingDown++;
                 try { EmitStmtCore(new DropStmt(new ValueRef(place.Name, pos), pos)); }
-                finally { _memMuted = muted; }
+                finally
+                {
+                    _memMuted = muted;
+                    _tearingDown--;
+                }
                 Line($"store i1 false, ptr {flag}");
                 Terminate($"br label %{after.Label}");
                 _cur = after;

@@ -97,13 +97,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isPrivate = IsIdent("secret");
             if (isPrivate) Next();
             if (!isLate && IsIdent("lateinit") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "global" }) { Next(); isLate = true; }
-            bool isFailable = FailableNext();
-            if (isFailable) Next();
+            if (FailableNext()) throw Error(FailableRemoved);
+            bool isInfallible = InfallibleNext();
+            if (isInfallible) Next();
             bool isCommon = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
             if (isCommon) Next();
-            if (isFailable && !IsIdent("routine"))
-                throw Error("failable marks a routine: failable routine name(...) -> T, or failable common routine Owner.name(...)");
-            if (annotations.Count == 0 && !isPrivate && !isCommon && !isFailable && Cur.Pos.Col == 1
+            if (isInfallible && !IsIdent("routine"))
+                throw Error("infallible marks a routine: infallible routine name(...) -> T, or infallible common routine Owner.name(...)");
+            if (annotations.Count == 0 && !isPrivate && !isCommon && !isInfallible && Cur.Pos.Col == 1
                 && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !FlagsNext() && !isLibrary)
             {
                 ParseScriptLines();
@@ -115,7 +116,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Decl d = Cur.Text switch
             {
                 "flags" => ParseFlags(annotations),
-                "routine" => ParseRoutine(annotations, inConcept: false, isCommon: isCommon) with { IsFailable = isFailable },
+                "routine" => Failability(ParseRoutine(annotations, inConcept: false, isCommon: isCommon), isInfallible, isLibrary),
                 "record" or "entity" or "crashable" => ParseRecord(annotations),
                 "choice" => ParseChoice(annotations),
                 "variant" => ParseVariant(annotations),
@@ -297,7 +298,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Is(TokenKind.Eof) || (AtAnnotation() && Cur.Pos.Col == 1)
         || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1)
         || (IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" } && Cur.Pos.Col == 1)
-        || (FailableNext() && Cur.Pos.Col == 1)
+        || ((FailableNext() || InfallibleNext()) && Cur.Pos.Col == 1)
         || (FlagsNext() && Cur.Pos.Col == 1);
 
     /// Whether `flags` at the cursor starts a flags declaration, `flags Name`: elsewhere `flags` is an ordinary name
@@ -309,9 +310,39 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private bool AtMemberListEnd() => AtDeclStart() || Cur.Pos.Col == 1;
 
     /// Whether `failable` at the cursor starts a routine's header: `failable routine` or `failable common routine`.
-    private bool FailableNext() => IsIdent("failable")
+    /// The word is gone and is reported (FailableRemoved).
+    private bool FailableNext() => WordBeforeRoutine("failable");
+
+    /// Whether `infallible` at the cursor starts a routine's header: `infallible routine` or `infallible common routine`.
+    private bool InfallibleNext() => WordBeforeRoutine("infallible");
+
+    private bool WordBeforeRoutine(string word) => IsIdent(word)
         && (PeekTok(1) is { Kind: TokenKind.Ident, Escaped: false, Text: "routine" }
             || (PeekTok(1) is { Kind: TokenKind.Ident, Escaped: false, Text: "common" } && PeekTok(2) is { Kind: TokenKind.Ident, Text: "routine" }));
+
+    /// What a `failable` before a routine says now.
+    internal const string FailableRemoved = "there is no failable: every routine passes its failures to its caller, and a try or check "
+        + "above a call receives a failure from any depth below it. Remove failable. A routine that promises not to fail is "
+        + "written infallible routine";
+
+    /// A program's routine stops where a failure happens when nothing above it receives one: its plain form gives no
+    /// failure back, and a `try` or `check` above reaches its recovering form. A library routine whose lines throw, or
+    /// whose `when check` lines leave failures out, gives them back from its plain form too, so a bare call of it stops
+    /// on the caller's line. `start` gives nothing back: a failure that reaches it ends the program.
+    private static RoutineDecl Failability(RoutineDecl r, bool infallible, bool library) => r with
+    {
+        IsInfallible = infallible,
+        IsFailable = library && !infallible && Compiler.CanReturnFailure(r) && !(r.Owner is null && r.Name is "start")
+                     && (Throws(r) || ReceivesFailures(r)),
+    };
+
+    /// Whether a routine's lines put `check` in front of a call: its `when check` may leave failures to pass on.
+    private static bool ReceivesFailures(RoutineDecl r) =>
+        (r.Blocks ?? []).Any(b => Bodies.All(b.Stmts).Any(st => Bodies.Exprs(st).Any(top =>
+            ExprTree.All(top).Any(e => e is UnaryExpr { Op: "check" }))));
+
+    /// Whether a routine's own lines hold a `throw`.
+    private static bool Throws(RoutineDecl r) => r.Blocks is { } blocks && blocks.Any(b => Bodies.All(b.Stmts).OfType<ReturnStmt>().Any(s => s.IsThrow));
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -1245,19 +1276,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
         // parameters as its type arguments (`routine Bytes.to_result[T](...)`). They have no body.
         var routines = new List<RoutineDecl>();
-        while (ConceptRoutineNext(typeParams) is var (isRoutine, common, failable) && isRoutine)
+        while (ConceptRoutineNext(typeParams) is var (isRoutine, common, infallible) && isRoutine)
         {
-            if (failable) Next();
+            if (infallible) Next();
             if (common) Next();
-            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams, isCommon: common) with { IsFailable = failable });
+            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams, isCommon: common) with { IsInfallible = infallible });
         }
         return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
     }
 
     /// Whether a required routine of a concept comes next, and whether it is `common`.
-    private (bool IsRoutine, bool Common, bool Failable) ConceptRoutineNext(List<string> typeParams)
+    private (bool IsRoutine, bool Common, bool Infallible) ConceptRoutineNext(List<string> typeParams)
     {
-        bool failable = FailableNext();
+        if (FailableNext()) throw Error(FailableRemoved);
+        bool failable = InfallibleNext();
         int f = failable ? 1 : 0;
         bool common = PeekTok(f) is { Kind: TokenKind.Ident, Escaped: false, Text: "common" }
                       && PeekTok(f + 1) is { Kind: TokenKind.Ident, Text: "routine" };
@@ -1377,15 +1409,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (items.Count == 1) return items[0];
             return TupleType(items, pos);
         }
-        // `failable Callable[(T,), U]`: a routine value that may fail.
+        // `failable Callable[(T,), U]` is gone: a routine value passes its failures on under a try without it.
         if (IsIdent("failable") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "Callable" })
-        {
-            Next();
-            var callable = ParseTypeAtom();
-            return callable with { Failable = true };
-        }
-        if (IsIdent("failable"))
-            throw new CompileError(Cur.Pos, "failable goes before a Callable type, failable Callable[(T,), U]: only a routine value can fail");
+            throw new CompileError(Cur.Pos, "there is no failable Callable: a routine value called under a try or check passes its "
+                + "failure on to it. Write Callable[(T,), U]");
         var (path, name) = ParseQualifiedName("a type");
         var args = ParseTypeArgs(callable: name.Text == "Callable" && path is null);
         return new TypeRef(name.Text, args, name.Pos) { Path = path };

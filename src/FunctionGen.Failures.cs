@@ -20,6 +20,9 @@ public sealed partial class FunctionGen
     }
 
     private readonly Stack<RecoverFrame> _recover = new();
+
+    /// Set while the builder gives back a place on the way out: the calls it writes there are a teardown's.
+    private int _tearingDown;
     private int _recoverFrames;
 
     /// Names the builder binds for a moment while it writes a failure's report: no name in a program has a space.
@@ -195,7 +198,9 @@ public sealed partial class FunctionGen
             }
             Terminate($"br label %{frame.Fail.Label}");
         }
-        else if (_decl.PassesOnFailures && _inst.IsFailable) PassOnBare(slot, carrierLlvm, failures, pos);
+        // A teardown is a wall: a failure while a value is dropped stops the program there.
+        else if (_decl.PassesOnFailures && _inst.IsFailable && _tearingDown == 0 && _dropping is null)
+            PassOnBare(slot, carrierLlvm, failures, pos);
         else StopOnFailure(slot, carrierLlvm, failures, pos, inMold: true);
         _cur = ok;
         return LoadValue(slot, carrierLlvm, declared, valueType);
@@ -204,6 +209,16 @@ public sealed partial class FunctionGen
     /// A bare call that failed in a lambda written where a failable Callable goes: the failure goes on to whoever called
     /// the value. Its crashable waits in the mold already, so the lambda's carrier takes the tag alone.
     private void PassOnBare(string slot, string carrierLlvm, List<DType> failures, Pos pos)
+    {
+        // The way out a failure takes in the middle of a line is no step the memory rules follow: what it gives back
+        // there (the line's temporaries, the routine's places) is given back by the lines below.
+        bool muted = _memMuted;
+        _memMuted = true;
+        try { PassOnBareCore(slot, carrierLlvm, failures, pos); }
+        finally { _memMuted = muted; }
+    }
+
+    private void PassOnBareCore(string slot, string carrierLlvm, List<DType> failures, Pos pos)
     {
         _c.AddThrows(_inst, failures);
         string carrier = Compiler.CarrierName(_inst);
@@ -397,10 +412,10 @@ public sealed partial class FunctionGen
                 + "hand C a routine that receives the failure itself (with check or try)");
     }
 
-    /// A routine value given to a parameter written `failable Callable[...]`: the routine is built for the value it is
-    /// given, so a call through it there fails the way the routine it holds does (or never, for a plain one). A failable
-    /// value given to a plain Callable parameter is a build error: that routine has no way to pass the failure on. C has
-    /// no failure to receive: a C routine's parameter takes none.
+    /// A routine value given to a Callable parameter the routine only calls: the routine is built for the value it is
+    /// given, so a call through it there fails the way the routine it holds does (or never, for a plain one). A value that
+    /// may fail given to a parameter the routine keeps or hands on is a build error: its failure would have no caller.
+    /// C has no failure to receive: a C routine's parameter takes none.
     private DType? FailingCallable(RoutineDecl r, int param, DType given, DType declared, Pos at)
     {
         // A `Check[T]` parameter takes the list of crashables of the check it is given, the way a binding does.
@@ -420,9 +435,12 @@ public sealed partial class FunctionGen
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
             throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is a failable routine's value, whose "
                 + "failure C has no way to receive: hand it a routine that receives the failure itself (with check or try)");
-        throw Err(at, $"you hand a failable routine value to '{r.Params[param].Name}' of '{r.DisplayName}', and that parameter "
-            + $"takes a plain {wanted}, so the failure would have no way out: write the parameter's type failable {wanted}, "
-            + "or hand it a routine that receives its failures itself (with check or try)");
+        // A routine that only calls the value is built for it: a failure through it stops the program on the line of
+        // that call, or passes on from the routine's recovering form.
+        if (Compiler.OnlyCalled(r, r.Params[param].Name)) return value;
+        throw Err(at, $"you hand a routine value that may fail to '{r.Params[param].Name}' of '{r.DisplayName}', which keeps it "
+            + "or hands it on, so its failure would have no caller to go to: hand it an infallible routine, or one that "
+            + "receives its failures itself (with check or try)");
     }
 
     /// Binds each plain Callable parameter of the call's routine that is given a failable Callable, as TryFit does for a
@@ -441,6 +459,9 @@ public sealed partial class FunctionGen
             catch (CompileError) { continue; }
             if (plan.Args[i] is LambdaExpr lambda && declared is CallableType { Failable: true } open)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), FailableLambdaType(lambda, open));
+            else if (plan.Args[i] is RoutineRef named && declared is CallableType { Failable: true } wantsFailing
+                     && RoutineValue(named, wantsFailing).Type is CallableType { Failable: true } recovering)
+                plan.Env.Bind(Compiler.FailingParamKey(param.Name), recovering);
             else if (InferQuiet(plan.Args[i]) is { } given && FailingCallable(r, i + offset, given, declared, plan.Args[i].Pos) is { } failing)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), failing);
         }
@@ -507,7 +528,7 @@ public sealed partial class FunctionGen
                         if (IndirectCall(x) is { Callable: { Failable: true } ct })
                             found.AddRange(ct.Throws);
                         else if (x is not MethodCallExpr { } onUnion || CrashableGroup(onUnion) is null)
-                            if (PlanCall(x, null) is { } plan && (plan.Decl.IsFailable || plan.Decl.Params.Any(p => p.Type.Failable)))
+                            if (PlanCall(x, null) is { } found0 && Recovering(found0, underKeyword: true) is var plan && (plan.Decl.IsFailable || plan.Decl.Params.Any(p => p.Type.Failable)))
                             {
                                 BindFailingCallables(plan);
                                 var inst = _c.RequireInstance(plan.Decl, plan.Env);
@@ -526,22 +547,15 @@ public sealed partial class FunctionGen
         return Crashing.Ordered(found);
     }
 
-    /// The build error for `try` or `check` in front of an expression with no call that can fail.
-    private string NothingToRecover(UnaryExpr u)
-    {
-        string? callee = null;
-        try
-        {
-            if (u.Operand is CallExpr or NsCallExpr or MethodCallExpr && IndirectCall(u.Operand) is null)
-                callee = PlanCall(u.Operand, null)?.Decl.DisplayName;
-        }
-        catch (CompileError) { }
-        return callee is null
-            ? $"you wrote {u.Op} in front of an expression that calls no failable routine, so {u.Op} has no failure to receive: "
-                + $"remove {u.Op}, or declare the routine it calls failable"
-            : $"you wrote {u.Op} in front of a call of '{callee}', which isn't failable, so {u.Op} has no failure to receive: "
-                + $"remove {u.Op}, or declare '{callee}' failable (failable routine) if it should give its failures to its caller";
-    }
+    /// The call as a `try` or `check` above it reaches it: the routine's recovering form when it has one (under a
+    /// keyword, or in a recovering form, where every call passes its failures on), else the call as it is.
+    /// A call written while a value is dropped (a teardown, `drop x`, a place given back on the way out) stays as it
+    /// is: a teardown is a wall, where nothing takes a failure.
+    private CallPlan Recovering(CallPlan plan, bool underKeyword = false) =>
+        (underKeyword || _recover.Count > 0 || _decl.IsRecovering && !_decl.IsLibrary) && _dropping is null && _tearingDown == 0
+        && _c.CanRecover(plan.Decl)
+            ? plan with { Decl = _c.RecoveringOf(plan.Decl) }
+            : plan;
 
     private DType MaybeOf(DType value, Pos pos) =>
         _c.ResolveType(new TypeRef("Optional", [new TypeArgType(new TypeRef("$value", [], pos) { Known = value })], pos)
@@ -579,10 +593,7 @@ public sealed partial class FunctionGen
         {
             _recover.Pop();
         }
-        // In an instance of a generic routine a call through a protocol may reach a routine that never fails (the body
-        // was checked against the failable requirement): the try or check is then always the value.
-        if (frame.Calls == 0 && !(Emitting && Compiler.IsGenericRoutine(_decl)))
-            throw Err(u.Operand.Pos, NothingToRecover(u));
+        // An expression with nothing that can fail gives its value: the try or check is then always the value.
         var valueType = _c.ValueTypeOf(v.Type, u.Pos);
         var value = v.Type is VoidType ? new Val("zeroinitializer", valueType) : v;
         var join = NewLBlock(isCheck ? "checked" : "tried");
@@ -733,7 +744,12 @@ public sealed partial class FunctionGen
         var none = new Val("0", IntType.U(32));
         if (Crashing.IsCrashable(v.Type))
         {
-            Stop(v, none, pos);
+            // Thrown in a `when` arm that observed another failure, the stop notes this one and wraps that one, so the
+            // report says where both were made.
+            Stop(v, _c.Trace && !_c.Prechecking && _traced && Emitting && _values.ContainsKey(FailedBefore)
+                ? EvalCall(new CallExpr("failure_note", [], [new ValueRef(FailedBefore, pos)], pos) { Path = Compiler.SystemModule },
+                    IntType.U(32))
+                : none, pos);
             return;
         }
         if (v.Type is VariantType union && (Crashing.IsUnion(union) || union.Leaves.All(Crashing.IsCrashable)))

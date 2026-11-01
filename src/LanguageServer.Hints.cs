@@ -2,9 +2,8 @@ using System.Text.Json.Nodes;
 
 namespace Tessera;
 
-/// Inlay hints: after a call of a failable routine that no `try` or `check` takes, `may stop`, since a failure there
-/// stops the program on that line. An operator (`a + b`, `-x`, `xs[i]`) gets none: that an overflowing `+` or an index
-/// past the end stops the program is known without a mark on every line.
+/// Inlay hints. Every routine but an infallible one may fail, so a call carries no `may stop` mark: a failure nobody
+/// receives stops the program where it happens, and a `try` or `check` above a call receives it.
 public static partial class LanguageServer
 {
     private static JsonArray InlayHints(string uri)
@@ -28,28 +27,6 @@ public static partial class LanguageServer
             return hints;
         }
 
-        // The calls a `try` / `check` takes the failure of.
-        var recovered = new HashSet<Pos>();
-        var operators = new HashSet<Pos>();
-        foreach (var r in analysis.Decls.OfType<RoutineDecl>())
-            foreach (var stmt in Bodies.All((r.Blocks ?? []).SelectMany(b => b.Stmts).Concat(r.Shared)))
-                foreach (var e in Bodies.Exprs(stmt))
-                    CollectRecovered(e, under: false, recovered, operators);
-
-        var shown = new HashSet<Pos>();
-        foreach (var ((pos, _), use) in analysis.Compiler.CallUses)
-        {
-            if (!use.Decl.IsFailable || recovered.Contains(pos) || operators.Contains(pos) || pos.File != analysis.Shown || !shown.Add(pos)) continue;
-            if (CallClose(tokens, pos) is not { } close) continue;
-            hints.Add(new JsonObject
-            {
-                ["position"] = new JsonObject { ["line"] = close.Pos.Line - 1, ["character"] = close.Pos.Col },
-                ["label"] = "may stop",
-                ["kind"] = 2,
-                ["paddingLeft"] = true,
-                ["tooltip"] = "A failure of this call stops the program on this line. Take it with try or check in front of the call.",
-            });
-        }
         return hints;
     }
 
