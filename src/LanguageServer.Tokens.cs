@@ -290,6 +290,41 @@ public static partial class LanguageServer
             return null;
         }
 
+        /// Marks the names a call's arguments are written under (`gcd(a: x)`, `Point(x: 1)`) as `kind`: a field of what
+        /// the call builds, else a parameter of the routine it calls.
+        private void Labels(Pos at, string name, List<string?>? argNames, string kind)
+        {
+            if (argNames is null || argNames.All(n => n is null) || NameAt(at, name) is not { } callee) return;
+            int i = tokens.FindIndex(t => t.Pos.Line == callee.Pos.Line && t.Pos.Col == callee.Pos.Col);
+            if (i < 0) return;
+            i++;
+            if (i < tokens.Count && tokens[i].Kind == TokenKind.LBracket)
+            {
+                for (int depth = 0; i < tokens.Count; i++)
+                {
+                    if (tokens[i].Kind == TokenKind.LBracket) depth++;
+                    else if (tokens[i].Kind == TokenKind.RBracket && --depth == 0) { i++; break; }
+                }
+            }
+            if (i >= tokens.Count || tokens[i].Kind != TokenKind.LParen) return;
+            int open = i;
+            for (int depth = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t.Kind is TokenKind.LParen or TokenKind.LBracket or TokenKind.LBrace) depth++;
+                else if (t.Kind is TokenKind.RParen or TokenKind.RBracket or TokenKind.RBrace)
+                {
+                    if (--depth == 0) return;
+                }
+                else if (depth == 1 && t.Kind == TokenKind.Ident && i + 1 < tokens.Count && tokens[i + 1].Kind == TokenKind.Colon)
+                {
+                    int before = i - 1;
+                    while (before > open && tokens[before].Kind == TokenKind.Newline) before--;
+                    if (before == open || tokens[before].Kind == TokenKind.Comma) _kinds.TryAdd((t.Pos.Line, t.Pos.Col), kind);
+                }
+            }
+        }
+
         private void Mark(Pos pos, string name, string kind, Func<string?>? hover = null)
         {
             if (NameAt(pos, name) is not { } t) return;
@@ -1027,9 +1062,15 @@ public static partial class LanguageServer
                     // `Ledger(total: 0)` builds a value of the type it names when no routine has that name.
                     var built = new TypeRef(call.Name, [], call.Pos) { Path = call.Path };
                     if (!IsFreeRoutine(call) && TypeKind(built) is "recordType" or "entityType")
+                    {
                         Mark(call.Pos, call.Name, TypeKind(built)!, TypeHover(built));
+                        Labels(call.Pos, call.Name, call.ArgNames, "property");
+                    }
                     else
+                    {
                         Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, FreeRoutine(call)));
+                        Labels(call.Pos, call.Name, call.ArgNames, "parameter");
+                    }
                     foreach (var t in call.TypeArgs) Type(t);
                     foreach (var a in call.Args) Expr(a);
                     break;
@@ -1052,6 +1093,7 @@ public static partial class LanguageServer
                         : ns.Name is "show" or "alert" && ns.Args is [StrLit shown, ..] ? shown
                         : null;
                     if (nsTemplate is not null) TemplateHoles(nsTemplate);
+                    Labels(ns.Owner.Pos, ns.Name, ns.ArgNames, "parameter");
                     foreach (var t in ns.TypeArgs) Type(t);
                     foreach (var a in ns.Args) Expr(a);
                     break;
@@ -1064,6 +1106,7 @@ public static partial class LanguageServer
                         Mark(call.Pos, call.Name, "constant", owner is null ? null : CaseHover(owner, call.Name));
                     else
                         Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, MethodOn(owner, call.Name)));
+                    Labels(call.Pos, call.Name, call.ArgNames, "parameter");
                     foreach (var t in call.TypeArgs) Type(t);
                     foreach (var a in call.Args) Expr(a);
                     break;
@@ -1094,6 +1137,7 @@ public static partial class LanguageServer
                         ?? StrideHover(method)
                         ?? (method.Name == "write" && method.Args is [StrLit] ? TemplateHover() : null));
                     if (method.Name == "write" && method.Args is [StrLit methodTemplate]) TemplateHoles(methodTemplate);
+                    Labels(method.Pos, method.Name, method.ArgNames, "parameter");
                     foreach (var t in method.TypeArgs) Type(t);
                     foreach (var a in method.Args) Expr(a);
                     break;

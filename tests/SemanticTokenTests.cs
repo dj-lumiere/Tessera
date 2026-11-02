@@ -45,6 +45,18 @@ public class SemanticTokenTests
             p: Point = Point(x: 1)
             drop a
             return
+
+        ### Adds two numbers.
+        ### :param a: The first.
+        ### :param b: The second.
+        ### :returns: The sum.
+        routine add(a: S64, b: S64) -> S64
+            return a + b
+
+        routine sum_of_point() -> S64
+            p: Point = Point(x: 1)
+            total: S64 = add(a: p.x, b: 2)
+            return total
         """;
 
     private static readonly List<(int Line, string Text, string Kind)> Kinds = Classify();
@@ -107,5 +119,29 @@ public class SemanticTokenTests
     {
         var onLine = Kinds.Where(k => k.Line == 34 && k.Text == "Point").Select(k => k.Kind).ToList();
         Assert.Equal(["recordType", "recordType"], onLine);
+    }
+
+    [Fact]
+    public void ConstructorLabelIsProperty() => Assert.Equal("property", KindAt(34, "x"));
+
+    [Fact]
+    public void CallLabelsAreParameters()
+    {
+        var onLine = Kinds.Where(k => k.Line == 47 && k.Text is "a").Select(k => k.Kind).ToList();
+        Assert.Equal(["parameter"], onLine);
+    }
+
+    [Fact]
+    public void ParameterDeclarationAndUseAreParameters()
+    {
+        Assert.Equal("parameter", Kinds.First(k => k.Line == 42 && k.Text == "a").Kind);
+        Assert.Equal("parameter", Kinds.First(k => k.Line == 43 && k.Text == "a").Kind);
+    }
+
+    [Fact]
+    public void DeclaredValueIsVariableAndItsFieldAccessIsProperty()
+    {
+        Assert.Equal("variable", KindAt(47, "total"));
+        Assert.Equal("property", Kinds.First(k => k.Line == 47 && k.Text == "x").Kind);
     }
 }
