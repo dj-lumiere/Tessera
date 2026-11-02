@@ -381,7 +381,10 @@ routine start() -> None
     the program's stamp table, the `PoolManager`, and the slot's generation), a record copied for free that goes
     anywhere: a field (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E`
     wherever it lives now, and throws `StaleStampError` once it ended: a bare `fetch()` crashes, `try s.fetch()` gives
-    None. A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
+    None. A `Stamped[E]` always points at an entity that existed: it has no empty value (its `slot` and `generation`
+    are `secret`, so `Stamped[E](slot: 0, generation: 0)` is a build error), and a link that may be missing is a
+    `Stamped[E]?`, taken with one `try link.fetch()` (`None` for no link and for an ended entity). `check link.fetch()`
+    tells `AbsentValueError` (no link) from `StaleStampError` (ended). A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
     Two stamps compare with `===` / `!==` (the same entity: the same slot and generation). A stamp has no `==` and is no
     `Set` or `Dict` key: a set that groups by "same entity" keys on a number the program assigns. The `PoolManager` is a service: `start` calls
     `PoolManager.set_up(memory: HEAP)` (any manager) before the first `stamp()`, with or without an OS. A `stamp()`
@@ -1280,6 +1283,12 @@ routine start() -> None
   still holds on the way out: its STACK places, the line's temporary slots, and what it borrowed with `<-` or was
   handed by value (a parameter, a block's parameter) while that name still holds it. When it isn't received: the `Crash` service reports the failure's name and message, the place, the crash trace, and where the failure
   was made, and stops (status 82 with an OS).
+- **A call on a `T?` under `try`/`check`.** `try link.fetch()` with `link: Stamped[Node]?` (or `try maybe_pt.twice(2)`) is
+  allowed for every `T?` and any routine the optional has none of itself: it runs as `link.unwrap().fetch()` under the
+  keyword, so a `None` receiver is an `AbsentValueError` that the same `try`/`check` receives (`try`: `None`, `check`:
+  the `AbsentValueError`), otherwise the call runs on the value, and a failure below the call is received as usual.
+  `?` asks whether there is a link, the call asks whether what it points at still lives. Without a keyword a call on a
+  `T?` is still an error.
 - **`try` and `check` take the failure as a value.** `try f(x)` gives `T?` (`Optional[T]`, `None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
   calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
@@ -1630,7 +1639,7 @@ routine start() -> None
   a field after its `drop` as None. The holder's destruct (the builder's walk, or `drop me.next` in one written by
   hand) ends the E and gives its place back, so a linked list ends node by node, and a second `drop` of the field is
   the group check's error. Plain addresses stay as they were: a link that may be absent and is given back elsewhere
-  is `next: @Node` (hollow when there is none) or `@Node?`.
+  is `next: @Node?` (an `@Node` always points at a value).
 - Two branches of the same type are a build error (a `variant` listing `S64` twice, `Optional[None]`), and so is a branch that is a
   variant holding another branch's type (`Optional[Optional[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).

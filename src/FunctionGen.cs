@@ -2926,6 +2926,7 @@ public sealed partial class FunctionGen
 
     private DType? InferCall(Expr e, DType? expected)
     {
+        if (e is MethodCallExpr reached && ReachedThroughOptional(reached) is { } through) e = through;
         if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is { } union)
             return InferUnionCall(onUnion, union);
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
@@ -6213,6 +6214,7 @@ public sealed partial class FunctionGen
 
     private Val EvalCall(Expr e, DType? expected)
     {
+        if (e is MethodCallExpr reached && ReachedThroughOptional(reached) is { } through) e = through;
         if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall)
             return placeCall is MethodCallExpr ? EvalCall(placeCall, expected) : Eval(placeCall, expected ?? Infer(placeCall)!);
         if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is { } union)

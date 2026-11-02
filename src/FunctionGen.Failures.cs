@@ -21,6 +21,27 @@ public sealed partial class FunctionGen
 
     private readonly Stack<RecoverFrame> _recover = new();
 
+    /// How many `try` or `check` operands are being read or built: inside one, a call on a `T?` that `T?` has no routine
+    /// of reaches the `T` through `unwrap()`, so a none receiver is an `AbsentValueError` that the same keyword receives.
+    private int _reach;
+
+    /// The call as a `try` or `check` above it makes it: on a `T?` receiver, a routine the optional has no routine of
+    /// goes to the value (`try link.fetch()` is `try link.unwrap().fetch()`). Null for any other call.
+    private MethodCallExpr? ReachedThroughOptional(MethodCallExpr m)
+    {
+        if (_reach == 0 || m.Name == "unwrap") return null;
+        // Asked at every level of a chain by inference and by the build, and each answer infers the receiver: kept per call.
+        if (_reached.TryGetValue(m, out var known)) return known;
+        MethodCallExpr? reached = null;
+        if (InferQuiet(m.Receiver) is VariantType { Decl.Name: "Optional" } optional
+            && optional.Decl.Module == Compiler.SystemModule && _c.FindMethod(optional, m.Name, _env.File, m.Pos) is null)
+            reached = m with { Receiver = new MethodCallExpr(m.Receiver, "unwrap", [], [], m.Pos) };
+        _reached[m] = reached;
+        return reached;
+    }
+
+    private readonly Dictionary<MethodCallExpr, MethodCallExpr?> _reached = new(ReferenceEqualityComparer.Instance);
+
     /// Set while the builder gives back a place on the way out: the calls it writes there are a teardown's.
     private int _tearingDown;
     private int _recoverFrames;
@@ -474,7 +495,10 @@ public sealed partial class FunctionGen
     /// or a `Check` of it whose list of crashables the build fills in.
     private DType? InferRecover(UnaryExpr u)
     {
-        var inner = Infer(u.Operand);
+        DType? inner;
+        _reach++;
+        try { inner = Infer(u.Operand); }
+        finally { _reach--; }
         if (inner is null) return null;
         var value = _c.ValueTypeOf(inner, u.Pos);
         if (u.Op == "try") return inner is VoidType ? BoolType.Instance : MaybeOf(value, u.Pos);
@@ -488,6 +512,7 @@ public sealed partial class FunctionGen
         var found = new List<DType>();
         void Walk(Expr x)
         {
+            if (x is MethodCallExpr reached && ReachedThroughOptional(reached) is { } through) x = through;
             switch (x)
             {
                 case UnaryExpr { Op: "try" or "check" }:
@@ -588,6 +613,7 @@ public sealed partial class FunctionGen
         }
         var frame = new RecoverFrame(isCheck, fail, slot, slotType);
         _recover.Push(frame);
+        _reach++;
         Val v;
         try
         {
@@ -595,6 +621,7 @@ public sealed partial class FunctionGen
         }
         finally
         {
+            _reach--;
             _recover.Pop();
         }
         // An expression with nothing that can fail gives its value: the try or check is then always the value.

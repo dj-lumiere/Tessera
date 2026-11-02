@@ -1,0 +1,92 @@
+# try and check reach through a T? receiver: a none receiver is an AbsentValueError the same keyword receives, otherwise
+# the call runs on the value. A link that may be missing is a Stamped[E]?, and check tells a missing link
+# (AbsentValueError) from an ended entity (StaleStampError).
+
+import Hosted
+
+### A node that keeps a value and a link to its parent that may be missing.
+entity Node
+    value: S64
+    parent: Stamped[Node]?
+
+### A value with a routine that works and one that fails.
+record Pt
+    x: S64
+
+### Makes a node.
+### :param value: Its value.
+### :param parent: The link to its parent, or None.
+### :returns: The node.
+common routine Node.construct(value: S64, parent: Stamped[Me]?) -> Me
+    return Me(value, parent)
+
+### Twice the value times k.
+### :param k: The factor.
+### :returns: The product.
+routine Pt.twice(k: S64) -> S64
+    return me.x * k
+
+### Always fails.
+### :returns: Never.
+routine Pt.boom() -> S64
+    throw DivisionByZeroError()
+
+### Calls a routine that fails below the receiver.
+### :param k: The factor.
+### :returns: The sum.
+routine Pt.deep(k: S64) -> S64
+    return me.twice(k) + me.boom()
+
+### What a take of a link gives: its node's value, or -1 when there is none or it ended.
+### :param link: The link.
+### :returns: The value or -1.
+routine value_of(link: Stamped[Node]?) -> S64
+    when try link.fetch()
+        is @Node as n => return n.value.peek()
+        is None => return -1
+
+### Tells what a check of a link received.
+### :param link: The link.
+### :returns: A word for the outcome.
+routine what_happened(link: Stamped[Node]?) -> @[Byte]
+    when check link.fetch()
+        is @Node as n => return "node"
+        is AbsentValueError => return "no link"
+        is StaleStampError => return "ended"
+        is Crashables as e => return "other"
+
+routine start() -> None
+    PoolManager.set_up(memory: HEAP)
+    some: Pt? = Pt(x: 21)
+    empty: Pt? = None()
+    tried: S64? = try some.twice(2)
+    when tried
+        is S64 as v => Console.show("try on a value: {v}")
+        is None => Console.show("try on a value: none")
+    tried_none: S64? = try empty.twice(2)
+    when tried_none
+        is S64 as v => Console.show("try on none: {v}")
+        is None => Console.show("try on none: none")
+    below: S64? = try some.deep(2)
+    when below
+        is S64 as v => Console.show("try below the receiver: {v}")
+        is None => Console.show("try below the receiver: none")
+    when check empty.twice(3)
+        is S64 as v => Console.show("check on none gave {v}")
+        is AbsentValueError => Console.show("check on none: absent")
+        is Crashables as e => Console.show("check on none: {e.name()}")
+    when check some.twice(3)
+        is S64 as v => Console.show("check on a value: {v}")
+        is Crashables as e => Console.show("check on a value failed: {e.name()}")
+
+    a: &Node <- Node.construct(value: 7, parent: None())
+    b: &Node <- Node.construct(value: 8, parent: a.stamp())
+    link: Stamped[Node]? = a.stamp()
+    missing: Stamped[Node]? = None()
+    Console.show("link: {value_of(link)}, missing: {value_of(missing)}")
+    Console.show("parent of b: {value_of(b.parent.peek())}, of a: {value_of(a.parent.peek())}")
+    Console.show("split: {what_happened(link)}, {what_happened(missing)}")
+    drop a
+    Console.show("after a ended: {value_of(link)}, {what_happened(link)}, {what_happened(b.parent.peek())}")
+    drop b
+    return
