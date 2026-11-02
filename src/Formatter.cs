@@ -136,7 +136,9 @@ public static class Formatter
                 var p = pieces[i - 1];
                 bool space = c.Space;
                 if (c.Role == Role.Binary || p.Role == Role.Binary) space = true;
-                else if (p.Role is Role.Unary or Role.Open || c.Role is Role.Close or Role.Comma or Role.Dot || p.Role == Role.Dot) space = false;
+                else if (p.Role is Role.Unary or Role.Open || c.Role is Role.Close or Role.Comma || p.Role == Role.Dot) space = false;
+                // a `.` after a name, a literal or a bracket is member access, but one that starts a value (`slot: .construct()`) keeps its space
+                else if (c.Role == Role.Dot && (p.Role is Role.Operand or Role.Close || p.Role == Role.Word && !OperatorWords.Contains(p.Text))) space = false;
                 else if (p.Role == Role.Comma) space = true;
                 else if (c.Role == Role.Unary && p.Role is Role.Word or Role.Operand) space = true;
                 if (p.Role == Role.Comma && c.Role == Role.Close) space = false;
@@ -232,6 +234,14 @@ public static class Formatter
             }
             else
             {
+                // `Module/name`: a module path has no spaces, unlike a division, which is told apart by the names around it
+                if (c == '/' && !space && prev is { Role: Role.Word } && char.IsAsciiLetterUpper(prev.Text[0]) && i + 1 < s.Length
+                    && (char.IsAsciiLetter(s[i + 1]) || s[i + 1] == '_'))
+                {
+                    pieces.Add(new Piece(Role.Dot, "/", false));
+                    i++;
+                    continue;
+                }
                 string? op = Operators.FirstOrDefault(o => string.CompareOrdinal(s, i, o, 0, o.Length) == 0);
                 if (op is null && c is '+' or '-' or '*')
                 {

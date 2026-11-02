@@ -10,6 +10,16 @@ namespace Tessera.Tests;
 public class FormatterTests
 {
     [Fact]
+    public void ModulePathsAndLeadingDotsKeepTheirShape()
+    {
+        const string source = "routine f() -> Physics/Point\n    a: Physics/Point = Physics/Point.make(4)\n    b: S64 = Total/2\n"
+                              + "    c: Slot = Slot(slot: .construct(), pool: .make())\n    return .from_bits(b|1)\n";
+        const string expected = "routine f() -> Physics/Point\n    a: Physics/Point = Physics/Point.make(4)\n    b: S64 = Total / 2\n"
+                                + "    c: Slot = Slot(slot: .construct(), pool: .make())\n    return .from_bits(b | 1)\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
     public void ModuleImportsAndBodyAreSeparatedByOneBlankLine()
     {
         const string expected = "module A\n\nimport B\nimport C\n\nroutine start() -> None\n    return\n";
