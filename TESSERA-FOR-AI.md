@@ -1622,7 +1622,9 @@ routine start() -> None
   take it out with steal first.next as old"), and one it can't follow checks while running and
   crashes with `UnacceptedValueError`. A construct writes `None()` for it. Emptying it gives back
   what it holds: `drop me.next` (the E's destruct, then the place back to its manager, the field hollow), or `steal
-  me.next as old` (`old` is a `&Node` place the routine ends). `when me.next` observes it without
+  me.next as old` (`old` is a `&Node` place the routine ends). What comes out of a place that keeps an `E?` is an `E?`
+  again, hollow when the place held None, so reading it as an `E` before a `when old` (`is None`, `is Node as n`) is a build error;
+  `steal old` and `drop old` need no look. `when me.next` observes it without
   moving it: `is Node as n` names the E where it is, a `@Node` (so a walk is `loop with cur: @Node = first`, `when
   cur.next`, `is Node as next => continue with cur: next`, `is None => break`), `is None` a hollow field, and it reads
   a field after its `drop` as None. The holder's destruct (the builder's walk, or `drop me.next` in one written by

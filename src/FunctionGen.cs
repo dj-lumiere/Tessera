@@ -181,6 +181,14 @@ public sealed partial class FunctionGen
     /// The lateinit places of the routine, by name, with the type written for each.
     private readonly Dictionary<string, TypeRef> _lateTypes = [];
 
+    /// The names that came out of a place keeping an `E?` (`steal me.next as old`): the `&E` they hold is hollow when
+    /// the place held None, so the program must look with `when` before it reads one as an E.
+    private readonly Dictionary<string, string> _maybeHollow = [];
+
+    /// The one name read that may be hollow without being looked at: the subject of a `when`, the operand of a
+    /// `steal`, and the value of a `drop`. Compared by identity.
+    private ValueRef? _hollowSeen;
+
     /// A call to a BorrowedSlice or BorrowedCell routine that gives back the same memory (`with_count`): the call, and the handle it
     /// was made on, so a binding of it is a copy of that handle.
     private (Pos Call, string Of)? _memSame;
@@ -366,6 +374,7 @@ public sealed partial class FunctionGen
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
     private Val EvalSteal(StealExpr s, DType expected)
     {
+        if (s.Value is ValueRef handedOn) _hollowSeen = handedOn;
         if (s.Place)
         {
             _moving = true;
@@ -456,8 +465,9 @@ public sealed partial class FunctionGen
     /// error, so a hollow entity is never used by mistake.
     private void EmitSteal(StealStmt st)
     {
-        if (st.From is ValueRef)
+        if (st.From is ValueRef from)
         {
+            _maybeHollow.TryGetValue(from.Name, out var stillHollow);
             var stolen = new StealExpr(st.From, st.Pos);
             var t = Infer(stolen) ?? throw Err(st.From.Pos, "cannot infer what steal takes here");
             // The entity's stamps follow it into the new slot.
@@ -470,13 +480,17 @@ public sealed partial class FunctionGen
             finally { _stampFollows = false; }
             if (!_cur.Terminated) RegisterStackPlace(st.Name, st.Pos);
             StampCall("move_stamp", t, new ValueRef(st.Name, st.NamePos), st.Pos);
+            if (stillHollow is not null) _maybeHollow[st.Name] = stillHollow;
             return;
         }
         if (Infer(st.From) is not PtrType { Pointee: { } held } || !Entities.Holds(held))
             throw Err(st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
+        // What comes out of a place that keeps an `E?` is that E? again: hollow when the place held None.
+        string? fromKept = KeptOptional(Infer(st.From))?.Held.Name;
         if (st.Inject is not null)
         {
             EmitStealInject(st, held);
+            if (fromKept is not null) _maybeHollow[st.Name] = fromKept;
             return;
         }
         if (!st.LeavesEmpty && UnfollowedPlace(st.From) is { } why)
@@ -492,6 +506,7 @@ public sealed partial class FunctionGen
         }
         finally { _stampFollows = false; }
         StampCall("move_stamp", held, new ValueRef(st.Name, st.NamePos), st.Pos);
+        if (fromKept is not null) _maybeHollow[st.Name] = fromKept;
         // Left hollow, zeroed in place.
         EvalAny(new MethodCallExpr(st.From, "zeroinit", [], [new IntLit(1, st.Pos)], st.Pos));
         if (MemOn && !st.LeavesEmpty && PlaceKey(st.From) is { } key)
@@ -795,6 +810,14 @@ public sealed partial class FunctionGen
     private readonly HashSet<string> _viewNames = [];
 
     private Val MemUseView(ValueRef r)
+    {
+        if (_maybeHollow.TryGetValue(r.Name, out var hollowKind) && !ReferenceEquals(r, _hollowSeen))
+            throw Err(r.Pos, $"'{r.Name}' came out of a place that keeps a {hollowKind}?, so it may hold nothing: look at it with when "
+                + $"(is None, is {hollowKind} as x) before you use it as a {hollowKind}, or hand it on with steal {r.Name}");
+        return MemUseViewChecked(r);
+    }
+
+    private Val MemUseViewChecked(ValueRef r)
     {
         // The view an access is given back through isn't read: a second give-back says so itself.
         if (_viewNames.Contains(r.Name) && !ReferenceEquals(r, _givingBack)) Mem(new MemoryRules.UseView(r.Name, r.Pos));
@@ -2185,6 +2208,7 @@ public sealed partial class FunctionGen
             }
             case BindStmt b:
             {
+                _maybeHollow.Remove(b.Name);
                 var t = Resolve(b.Type);
                 CheckBareZero(b, t);
                 if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(b.Pos, borrowedWithEquals);
@@ -2353,6 +2377,7 @@ public sealed partial class FunctionGen
             }
             case DropStmt d:
             {
+                if (d.Value is ValueRef givenBackName) _hollowSeen = givenBackName;
                 // A piece of work ends only on a ticket, which runs it and ends its arguments.
                 if (d.Value is ValueRef droppedWork && RunsOnce(droppedWork.Name, out var droppedOnce))
                     throw Err(d.Pos, $"{droppedOnce}, so the work in '{droppedWork.Name}' runs once, and only the ticket that runs it "
@@ -3783,6 +3808,7 @@ public sealed partial class FunctionGen
             bool mutedBefore = _memMuted;
             _memMuted |= observesKept;
             Val v;
+            if (w.Value is ValueRef looked) _hollowSeen = looked;
             try { v = EvalAny(w.Value); }
             finally { _memMuted = mutedBefore; }
             // The subject read through a temporary slot (`when Counter.at(n).get()`): a subject that
