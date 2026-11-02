@@ -28,7 +28,7 @@ public sealed partial class FunctionGen
     {
         if (_c.Prechecking || _decl.Blocks is not { Count: > 0 } || _inst.IsAsm) return;
         _escape = _c.Escapes.Begin(_inst, reports: EscapeOn);
-        foreach (var (moved, _) in ReshapedParams(_decl))
+        foreach (var (moved, _) in DeclaredReshapes(_decl))
             if (_decl.Params.FindIndex(p => p.Name == moved) is >= 0 and var index) _escape.Reshapes.Add(index);
         for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
         {

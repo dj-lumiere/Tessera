@@ -968,17 +968,13 @@ public sealed partial class FunctionGen
     private static string SpelledCall(CallPlan plan) =>
         (plan.Receiver is { } receiver ? Spelled(receiver) + "." : "") + plan.Decl.Name + (plan.Args.Count == 0 ? "()" : "(...)");
 
-    /// The parameters a `#reshaping` routine may move the memory of: the ones named, or `me` alone.
-    private static List<(string Param, string? Field)> ReshapedParams(RoutineDecl r)
+    /// The parameters a routine's own `#reshaping` says it may move the memory of: the ones named, or `me` alone. The
+    /// builder adds what a body shows (Compiler.ReshapesOf), so this is for what it can't see: a move made in raw memory.
+    internal static List<(string Param, string? Field)> DeclaredReshapes(RoutineDecl r)
     {
         if (r.AnnotationNamed("reshaping") is not { } a) return [];
         if (a.Args.Count == 0) return r.Params is [{ Name: "me" }, ..] ? [("me", null)] : [];
-        return a.Args.Select(arg =>
-        {
-            string text = arg.Value ?? arg.Key ?? "";
-            int dot = text.IndexOf('.');
-            return dot < 0 ? (text, (string?)null) : (text[..dot], text[(dot + 1)..]);
-        }).ToList();
+        return a.Args.Select(arg => (arg.Value ?? arg.Key ?? "", (string?)null)).ToList();
     }
 
     /// Checks a `#reshaping` annotation: it names parameters of the routine, or stands alone on one that takes `me`.
@@ -988,25 +984,21 @@ public sealed partial class FunctionGen
         if (a.Args.Count == 0 && _decl.Params is not [{ Name: "me" }, ..])
             throw Err(a.Pos, $"@reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
                 + "name the parameters, @reshaping(items)");
-        foreach (var (name, _) in ReshapedParams(_decl))
+        foreach (var (name, _) in DeclaredReshapes(_decl))
             if (_decl.Params.All(p => p.Name != name))
                 throw Err(a.Pos, $"@reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
     }
 
-    /// A call to a `#reshaping` routine: the views of the memory it may move no longer see it, and when that memory is
-    /// a parameter's, this routine moves it too, which its own `#reshaping` says.
-    private void CheckReshapingCall(CallPlan plan)
+    /// A call to a routine that may move memory: the views of the memory it may move no longer see it, and when that
+    /// memory is a parameter's, this routine moves it too, which its callers learn from here.
+    private void CheckReshapingCall(CallPlan plan, Instance sig)
     {
-        var movedParams = ReshapedParams(plan.Decl);
+        var movedParams = _c.ReshapesOf(sig, _inst, plan.Pos);
         if (movedParams.Count == 0) return;
-        // An instance of a generic routine reaches routines through its type parameters, which one instance makes
-        // #reshaping and another doesn't: the generic routine is checked as it is written, with the parameters
-        // unknown.
-        bool instance = !_c.Prechecking && Compiler.IsGenericRoutine(_decl);
         int offset = plan.Receiver is null ? 0 : 1;
         foreach (var (name, declared) in movedParams)
         {
-            int index = plan.Decl.Params.FindIndex(p => p.Name == name);
+            int index = sig.Decl.Params.FindIndex(p => p.Name == name);
             Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
                 : index - offset >= 0 && index - offset < plan.Args.Count ? plan.Args[index - offset] : null;
             if (arg is null || ShapeRoot(arg) is not { } root) continue;
@@ -1021,23 +1013,23 @@ public sealed partial class FunctionGen
                     named = from;
                 if (_partViews.Contains(named)) inner = named;
             }
-            // The memory moved is a field of the root when the argument reaches into one (`b.log`) or the routine says it moves
-            // only one (`@reshaping(me.log)`): what is taken from another field stays where it is.
+            // The memory moved is a field of the root when the argument reaches into one (`b.log`) or the routine moves
+            // only one (`me.log`): what is taken from another field stays where it is.
             string? field = FieldOf(arg) ?? declared;
             root = ResolveRoot(root);
+            // What the message says of the memory: a field the call reaches into, or one of a user's own type. The fields
+            // of a library type are its inside.
+            string moved = field is not null && (FieldOf(arg) is not null || !sig.Decl.IsLibrary) ? root + "." + field : root;
             // Rule 4 for the emitter a `for` holds: it views the memory it walks until the loop ends.
             if (_loops.FirstOrDefault(f => f.Walks is { } w && w.Root == root && SameMemory(w.Field, field))?.Walks is { } walk)
-                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{root}{(field is null ? "" : "." + field)}', which the "
+                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{moved}', which the "
                     + $"for loop on line {walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the "
                     + $"changes and make them after the loop, or walk by position"
                     + (InferQuiet(walk.Source) is RecordType { Decl.Name: "List" } ? $" (for i in 0 til {Spelled(walk.Source)}.count())" : ""));
             Mem(new MemoryRules.Reshape(root, SpelledCall(plan), plan.Pos) { Inner = inner, Field = field });
-            if (!instance && _decl.Params.Any(p => p.Name == root)
-                && !ReshapedParams(_decl).Any(r => r.Param == root && (r.Field is null || r.Field == field)))
-                throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}{(field is null ? "" : "." + field)}' here "
-                    + $"('{plan.Decl.DisplayName}' is @reshaping): mark it "
-                    + $"{(field is not null ? $"@reshaping({root}.{field})" : root == "me" ? "@reshaping" : $"@reshaping({root})")}, "
-                    + $"so its callers know a view of '{root}' doesn't outlive the call");
+            // The memory is a parameter's: this routine moves it too.
+            if (!_c.Prechecking && _decl.Params.FindIndex(p => p.Name == root) is >= 0 and var own && _c.NoteReshape(_inst, root, field))
+                _escape?.Reshapes.Add(own);
         }
     }
 
@@ -2988,6 +2980,21 @@ public sealed partial class FunctionGen
     internal static string ArgumentMismatch(int argument, string actual, DType parameter) =>
         $"argument {argument} is {actual}, and the parameter is {parameter}";
 
+    /// The same wording for types in hand. Two Callable types that differ only in whether a call through them can fail
+    /// (or in what it can throw) print alike, so the message says which may fail.
+    internal static string ArgumentMismatch(int argument, DType actual, DType parameter) =>
+        actual is CallableType given && parameter is CallableType wanted
+        && given.Plain.Equals(wanted.Plain) && !given.Equals(wanted)
+            ? $"argument {argument} is {given}, and the parameter is {wanted}: they are the same Callable except that {FailingNote(given, wanted)}"
+            : ArgumentMismatch(argument, actual.ToString() ?? "", parameter);
+
+    private static string FailingNote(CallableType given, CallableType wanted) =>
+        given.Failable != wanted.Failable
+            ? (given.Failable
+                ? "the argument may fail (it can throw " + string.Join(", ", given.Throws.Select(t => t.Name)) + ") and the parameter's type does not allow a failure"
+                : "the parameter's type allows a failure and the argument does not fail")
+            : $"the argument can throw {string.Join(", ", given.Throws.Select(t => t.Name))} and the parameter allows {string.Join(", ", wanted.Throws.Select(t => t.Name))}";
+
     /// Evaluates `e` as a value of type `expected`. `argument` is the argument's position (1 for the first) when `e` is
     /// one, so a type mismatch names it the way overload resolution does.
     private Val Eval(Expr e, DType expected, int argument = 0)
@@ -3072,7 +3079,7 @@ public sealed partial class FunctionGen
         // A call that returns nothing, where the None record goes (a `T` bound to None), gives its one value.
         if (v.Type is VoidType && Compiler.IsNoneRecord(expected)) v = new Val("zeroinitializer", expected);
         if (!Compatible(v.Type, expected))
-            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type.ToString(), expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
+            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
         return v;
     }
 
@@ -5400,7 +5407,7 @@ public sealed partial class FunctionGen
                     else if (FailingCallable(r, i + first, at, pt, args[i].Pos) is { } failing)
                         env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
                     else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)))
-                        return No(ArgumentMismatch(i + 1, at.ToString(), pt));
+                        return No(ArgumentMismatch(i + 1, at, pt));
                     continue;
                 }
                 if (UntypedMisfit(args[i], pt, ref preferred) is { } why) return No($"argument {i + 1}: {why}");
@@ -6375,7 +6382,7 @@ public sealed partial class FunctionGen
             return new Val(addr, new PtrType(pointee));
         }
         var args = new List<Val>();
-        CheckReadOnlyWrite(plan);
+        CheckReadOnlyWrite(plan, sig);
         if (plan.Receiver is not null)
             args.Add(plan.Receiver == access ? Address(plan.Receiver, sig.Params[0], 0) : EvalReceiver(plan.Receiver, sig.Params[0]));
         for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset], ReferenceEquals(plan.Args[i], _claimContents) ? 0 : i + 1));
@@ -6396,7 +6403,7 @@ public sealed partial class FunctionGen
         if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
             NoteTable(slot.Name, held, plan.Pos);
         CheckGlobalReachingCall(plan);
-        if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan);
+        if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan, sig);
         CheckGlobalMemoryCall(plan);
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);

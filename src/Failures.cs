@@ -109,11 +109,76 @@ public sealed partial class Compiler
         BuildInstance(inst);
     }
 
+    /// The memory of its parameters each instance moves that its body shows (`me.log.add_last(x)` moves the `log` of `me`),
+    /// by symbol. A routine's own `@reshaping` adds what the builder can't see, such as a move made in raw memory.
+    private readonly Dictionary<string, HashSet<(string Param, string? Field)>> _inferredReshapes = [];
+
+    /// For each instance built, the moves it read from other instances (by their symbol, as a key): one that grew after
+    /// it was read means the instance is built again.
+    private readonly Dictionary<string, Dictionary<string, string>> _observedReshapes = [];
+
+    /// How many instances are being built one inside the other to learn their moves. Past the limit a callee is built in
+    /// its turn, and its caller is built again if the callee turns out to move something.
+    private int _reshapeDepth;
+    private const int MaxReshapeDepth = 24;
+
+    /// The parameters (and the field of each, when only one moves) a call of this instance may move the memory of: the
+    /// ones its `@reshaping` names and the ones its body moves. `observer` is the instance whose lines read it: it is
+    /// built again if the moves grow later.
+    public List<(string Param, string? Field)> ReshapesOf(Instance inst, Instance? observer = null, Pos at = default)
+    {
+        var moves = FunctionGen.DeclaredReshapes(inst.Decl);
+        if (Prechecking) return moves;
+        EnsureReshapesKnown(inst, observer, at);
+        foreach (var inferred in _inferredReshapes.GetValueOrDefault(inst.Symbol) ?? [])
+            if (!moves.Contains(inferred)) moves.Add(inferred);
+        if (observer is not null)
+        {
+            if (!_observedReshapes.TryGetValue(observer.Symbol, out var seen)) _observedReshapes[observer.Symbol] = seen = [];
+            seen[inst.Symbol] = ReshapesKey(moves);
+        }
+        return moves;
+    }
+
+    private static string ReshapesKey(List<(string Param, string? Field)> moves) =>
+        string.Join("|", moves.Select(m => m.Param + "." + m.Field).Order(StringComparer.Ordinal));
+
+    /// Records that `inst` moves the memory of its parameter (`field` of it, when only one field moves). Returns whether
+    /// that is new. Moving the parameter as a whole covers each of its fields.
+    public bool NoteReshape(Instance inst, string param, string? field)
+    {
+        if (Prechecking) return false;
+        if (!_inferredReshapes.TryGetValue(inst.Symbol, out var set)) _inferredReshapes[inst.Symbol] = set = [];
+        if (set.Contains((param, null)) || FunctionGen.DeclaredReshapes(inst.Decl).Contains((param, null))) return false;
+        if (field is null) set.RemoveWhere(m => m.Param == param);
+        return set.Add((param, field));
+    }
+
+    /// Builds an instance now, if it isn't built or being built, so the caller about to read what it moves reads it
+    /// whole. A routine being built (recursion) gives the moves it has so far: the caller is built again at the end if
+    /// they grow (FinishThrows).
+    private void EnsureReshapesKnown(Instance inst, Instance? caller, Pos at)
+    {
+        if (inst.Decl.Blocks is null || inst.IsExternalC || inst.IsAsm || inst.IsTemplate || _reshapeDepth >= MaxReshapeDepth) return;
+        if (_emittedSymbols.Contains(inst.Symbol) || _emittingSymbols.Contains(inst.Symbol)) return;
+        // The instance is queued, and its call recorded, before it is built, as the call itself would do: its build
+        // errors are reported in the order and at the line they would be without this build.
+        inst = RequireInstance(inst.Decl, inst.Env);
+        if (caller is not null) MadeBy.TryAdd(inst.Symbol, (at, caller));
+        if (_emittedSymbols.Contains(inst.Symbol) || _emittingSymbols.Contains(inst.Symbol)) return;
+        _reshapeDepth++;
+        // A build error in the callee is reported where the callee is built in its turn, so the errors keep their order.
+        try { BuildInstance(inst); }
+        catch (CompileError) { }
+        finally { _reshapeDepth--; }
+    }
+
     /// Builds one instance's lines into its own text (replacing the text of an earlier build of it).
     private void BuildInstance(Instance inst)
     {
         _emittingSymbols.Add(inst.Symbol);
         _observedThrows.Remove(inst.Symbol);
+        _observedReshapes.Remove(inst.Symbol);
         _frameTypes.Remove(inst.Symbol);
         var text = new StringBuilder();
         try
@@ -159,9 +224,14 @@ public sealed partial class Compiler
             var stale = _observedThrows
                 .Where(kv => _emittedSymbols.Contains(kv.Key) && _instances.ContainsKey(kv.Key)
                              && kv.Value.Any(seen => ThrowsKey(_inferredThrows.GetValueOrDefault(seen.Key) ?? []) != seen.Value))
-                .Select(kv => kv.Key).ToList();
+                .Select(kv => kv.Key)
+                .Concat(_observedReshapes
+                    .Where(kv => _emittedSymbols.Contains(kv.Key) && _instances.ContainsKey(kv.Key)
+                                 && kv.Value.Any(seen => _instances.TryGetValue(seen.Key, out var callee) && ReshapesKey(ReshapesOf(callee)) != seen.Value))
+                    .Select(kv => kv.Key))
+                .Distinct().ToList();
             if (stale.Count == 0) return;
-            if (round > 64) throw new CompileError(default, "the lists of crashables of routines that call each other don't settle");
+            if (round > 64) throw new CompileError(default, "the crashables and the moved memory of routines that call each other don't settle");
             foreach (var symbol in stale) BuildInstance(_instances[symbol]);
             while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         }

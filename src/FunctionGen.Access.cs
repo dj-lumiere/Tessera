@@ -76,7 +76,7 @@ public sealed partial class FunctionGen
 
     /// A write through the view of a shared read access, or handing it to a routine that may move its memory, is a
     /// build error: a shared read access reads only.
-    private void CheckReadOnlyWrite(CallPlan plan)
+    private void CheckReadOnlyWrite(CallPlan plan, Instance sig)
     {
         if (_c.Prechecking) return;
         Expr? written = plan.Decl.Name switch
@@ -89,7 +89,7 @@ public sealed partial class FunctionGen
         if (written is not null && ReadOnlyView(written))
             throw Err(plan.Pos, $"{Spelled(written)} is the view of a shared read access, which reads only: take exclusive access "
                 + "(get_exclusive_access, an Authorized[T], or an AuthorizedSlice[T] for a run of values) to write");
-        foreach (var (name, _) in ReshapedParams(plan.Decl))
+        foreach (var (name, _) in _c.ReshapesOf(sig, _inst, plan.Pos))
         {
             int index = plan.Decl.Params.FindIndex(p => p.Name == name);
             int offset = plan.Receiver is null ? 0 : 1;

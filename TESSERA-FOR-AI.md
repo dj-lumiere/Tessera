@@ -297,8 +297,8 @@ routine start() -> None
   &[Byte] <- "hello"` for a write into a literal itself). So is handing such a view to a routine whose body (or a
   routine it calls) writes through that parameter: `mark("hello") hands 'mark' a view of the text literal "hello",
   which is read-only memory, and 'mark' writes through its 'text': copy the values into a place first and hand that
-  place, copy: &[Byte] <- "hello"`. A standard library routine counts as writing a parameter only where it is
-  `@reshaping` on it. An array literal with a variable in it has no fixed place, so `xs: @[S32] = [a, 2]` is a build
+  place, copy: &[Byte] <- "hello"`. A standard library routine counts as writing a parameter only where it may move
+  its memory. An array literal with a variable in it has no fixed place, so `xs: @[S32] = [a, 2]` is a build
   error that points to `xs: Items[S32, _] = [...]`, or to `xs: &Items[S32, _] <- [...]` and `xs.getview()`.
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
@@ -315,8 +315,8 @@ routine start() -> None
   gives it back.
 - **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `BorrowedCell` / `BorrowedSlice` and accesses
   come from a manager: given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
-  routine's memory (a STACK place, a frame span) does not leave the routine. 4. A routine that moves memory says
-  `@reshaping`, and isn't called while that memory is viewed. 5. A global `&T` / `&[T]` holding memory is changed with
+  routine's memory (a STACK place, a frame span) does not leave the routine. 4. A routine that moves memory (the build finds it from the body)
+  isn't called while that memory is viewed. 5. A global `&T` / `&[T]` holding memory is changed with
   `replace`, and the last one is given back when the program ends. The build checks all five, as below, in every routine: an instance of
   a generic routine is checked with its type parameters bound (`keep[BorrowedSlice[S64]]` is followed like a routine that takes
   a `BorrowedSlice[S64]`), and an error in one says which instance (`(in keep with T = BorrowedSlice[S64])`). Build errors unless marked.
@@ -356,7 +356,7 @@ routine start() -> None
     body stores it in what another parameter reaches (`xs.add_last(m.getslice())`, `keep(out: q, v: m.getslice())`),
     which the build works out from the bodies, so `q` carries `m` from the call on.
   - **Every view has a source, and two kinds of source never end.** The memory of a global, a preset, a text
-    literal, and an `at` address is never given back: a view of it goes anywhere, and only a `@reshaping` call on a
+    literal, and an `at` address is never given back: a view of it goes anywhere, and only a call that may move a
     global moves what it holds (below). The builder doesn't follow a view made from an `Addr` (`a.to[@T]()`,
     `a.to[@T?]()`): whoever writes the `.to[@T]()` answers for how long that memory lives. An `Addr` is a number, and
     no lifetime goes through it (`v.to[Addr]()` of a view, or `o.to[Addr]()` of a `@T?`, zero for None).
@@ -425,7 +425,7 @@ routine start() -> None
   - `this takes a shared read access to 'counter', and an exclusive access to it is held already`: taking a second
     access to a place the path holds one to would wait for itself.
   - `view is the view of a shared read access, which reads only`: a `poke` (or any write) through the view of a
-    `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error. Nothing reachable from that view can
+    `ReadAuthorized[T]`, or handing it to a routine that may move memory, is a build error. Nothing reachable from that view can
     be changed, a stamp's entity included: `fetch()` on a stamp read through the view (`view.target.peek().fetch()`)
     gives a view that reads only, so `view.target.peek().fetch().value.poke(5)` is the same error. A value that holds a
     way to change an entity (a `Stamped[E]`, or a record, tuple, optional or array with one) is read where it is and not
@@ -471,7 +471,7 @@ routine start() -> None
   access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
   that hands it waits for the work and doesn't touch it meanwhile: `steal` is for handing memory over for good. A
   `@threadlocal` global is each thread's own, and an address made from an `Addr` isn't followed. A standard library
-  routine counts as changing a parameter only where it is `@reshaping` on it. Errors (each starts with the call that
+  routine counts as changing a parameter only where it may move its memory. Errors (each starts with the call that
   starts the work, `t.put_work(work)`): `t.put_work(work) runs 'f' on another thread, and it changes the global 'G'
   (line N: ...) without an exclusive access, while other threads reach it too: ...` and `t.put_work(work) hands 'xs'
   to 'f', which changes it on another thread without an exclusive access, and it isn't handed over with steal, so
@@ -527,25 +527,23 @@ routine start() -> None
     passed on to another routine. The build doesn't check an address made from a number: what it
     points at and how long that memory lives are the code's to keep right.
   - Every routine reports errors, an instance of a generic routine included.
-- **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
-  `@reshaping(items, keys)` names parameters. `@reshaping(me.log)` (a parameter and a field) says only that field's memory
-  may move: a `for` that walks another field of the same value (`for x in b.rows.getslot(0).emitter()`) may call it, and so
-  may code that holds a view taken from another field. A routine marked with a field that moves another field of that
-  parameter is a build error (`mark it @reshaping(me.rows)`). A bare `@reshaping` is every field. The base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]`
-  (`@reshaping(ptr)`), `BorrowedSlice[T].resize`, and every growing collection mutator: `List.add_last` /
-  `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `RotatableList.add_last` / `add_first`,
-  `PriorityQueue.add` / `reserve`, and the `CoroutineManager` routines (`run`, `waitfor`, `wake`,
-  ...). Giving back (`give_back`, `destruct`) isn't moving.
-  - A routine that calls a `@reshaping` routine on memory reached from its own parameter must say so:
-    `'grow' may move the memory of 'items' here ('List[T].add_last' is @reshaping): mark it @reshaping(items)`.
-    A user routine that grows a list it was handed (`items: @List[T]`) carries `@reshaping(items)`, one on `me`
-    carries `@reshaping`. A name that isn't a parameter, or a bare `@reshaping` on a routine without `me`, is an
-    error.
+- **Memory that moves (rule 4), found by the build.** The build works out from each routine body which parameters of
+  it (and which field of each, for `me`) it may move the memory of, and follows the calls: a routine that calls
+  `xs.add_last(...)` on memory reached from its parameter `items` moves `items`, and so do its callers
+  (`me.log.add_last(x)` moves the `log` of `me`, not its `rows`). Nothing is written on a routine for this, and a
+  field is never written. `@reshaping` is only for the routines the build cannot read: a move made in raw memory (a
+  call into C, a `reallocate`). `@reshaping(items, keys)` names parameters and a bare `@reshaping` means every field of
+  `me`. A mark that the body already shows changes nothing, and `@reshaping(me.log)` (a field) is a build error. The
+  base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]` (`@reshaping(ptr)`) and
+  `BorrowedSlice[T].resize`. Everything above them is inferred: `List.add_last` / `reserve` / `ensure_capacity`,
+  `Dict.setitem`, `Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`, the
+  `CoroutineManager` routines (`run`, `waitfor`, `wake`, ...) and every routine of yours that calls one. Giving back
+  (`give_back`, `destruct`) isn't moving. A call through a routine value (`Callable`) isn't followed.
   - A `for` over an emitter (`for x in xs.emitter()`, or `for x in e` with `e <- xs.emitter()`) views `xs` until
-    the loop ends, so a `@reshaping` call on `xs` in its body is an error: `'List[T].add_last' may move the memory of
+    the loop ends, so a call that may move `xs` in its body is an error: `'List[T].add_last' may move the memory of
     'xs', which the for loop on line N walks`. Collect the changes and make them after the loop, or walk by position.
-  - In every routine, a `@reshaping` call on `xs` (or through a view of it, or handing it to a routine that is
-    `@reshaping` on that parameter) ends every view of what `xs` holds made before it: `xs.getview()` and
+  - In every routine, a call that may move `xs` (or through a view of it, or handing it to a routine that moves
+    that parameter) ends every view of what `xs` holds made before it: `xs.getview()` and
     `xs.getslice(...)` of a List, `xs.getslot(i)`, a view a routine gives of an element of what it is handed
     (`first(xs)` returning `@S64`), and a value holding one of those (an emitter from `xs.emitter()`, a record made
     with `xs.getslice(...)`). A view of `xs` itself (the `@List[S64]` a `&List[S64]` lends, a second name of an
@@ -555,14 +553,13 @@ routine start() -> None
     doesn't reach a program's global, except one taking a `Callable`, which reaches every global the routine value's
     module can see (every global when the value's origin isn't known). The error then says `..., is used after grow()
     on line N, which can reach 'NUMBERS': take the view again after line N`. A view of an element of one slot (`row: @List[S64] = rows.getslot(0)`) moves only with
-    that slot's own `@reshaping` calls (`row.add_last(3)` ends `row.getslot(0)`, not `rows.getslot(1)`). Using an
+    that slot's own moving calls (`row.add_last(3)` ends `row.getslot(0)`, not `rows.getslot(1)`). Using an
     ended view is `'first', a view of what 'xs' holds, is used after grow(...) on line N, which may move it: take the
     view again after line N`, and for a value holding one `'e' holds a view of what 'xs' holds, and it is used after
     xs.add_last(...) on line N, which may move it: make 'e' again after line N`. Keep a position (a `U64` index) and
     take the view again after the call:
 
     ```tessera
-    @reshaping(items)
     routine grow(items: @List[S64]) -> None
         items.add_last(2)
         return
@@ -1833,10 +1830,10 @@ gives `Optional[T]`. `setitem` (on `List`, `RotatableList`, `BitList`, `Bits` an
 `IndexOutOfBoundsError` too. Each insertion and `reserve` throws
 `OutOfMemoryError` when the memory can't grow (a size in bytes past U64 included) and leaves the collection unchanged, so a bare call stops there and
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Optional`.
-The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
+The mutators that grow storage may move memory (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
 `Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
 `getslot` / `getview` / `getslice` / emitter taken before one is not used after it (a view of the collection itself
-is), and a routine that calls one on a collection parameter says `@reshaping(name)`.
+is), and a routine that calls one on a collection parameter moves it too, which the build finds from the body.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|

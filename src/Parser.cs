@@ -429,12 +429,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     if (a.Kind is not (TokenKind.Str or TokenKind.Int or TokenKind.Ident))
                         throw new CompileError(a.Pos, "annotation arguments must be literals");
                     string argText = a.Kind == TokenKind.Int ? a.IntValue.ToString() : a.Text;
-                    // `@reshaping(me.log)`: a name followed by the field it is about.
-                    while (a.Kind == TokenKind.Ident && Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
-                    {
-                        Next();
-                        argText += "." + Next().Text;
-                    }
+                    if (name.Text == "reshaping" && a.Kind == TokenKind.Ident && Is(TokenKind.Dot))
+                        throw new CompileError(a.Pos, $"@reshaping names a parameter, not one of its fields: the builder works out which "
+                            + $"field of '{a.Text}' a routine moves from its body, so write @reshaping({a.Text}) or leave it off");
                     args.Add(new AnnotationArg(key, argText, negated));
                 } while (Accept(TokenKind.Comma));
             }
