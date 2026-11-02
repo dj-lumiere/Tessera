@@ -4,7 +4,8 @@ namespace Tessera;
 /// most MaxOperations calls, so a reader follows at most three steps before a name says what came out (a
 /// read-modify-write such as `sum.peek().add(x).poke_into(sum)` or `x.load().add(1).store_into(x)` is one chain).
 /// Everything that looks like a call counts: `x.f()`, `T.f()`, `f()`, `.stride(i)` and `.to[T]()` included; a field
-/// (`p.x`) doesn't.
+/// (`p.x`) doesn't. The count is per line: a chain written one call per line (the `.` starting each continuation line)
+/// is never too long, however many steps it has, since the steps' names say what each does.
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
 /// It's a warning, not an error: `tessera check`, `build`, and `run` print it for the program's own files, and
@@ -60,10 +61,17 @@ public static class ChainLint
     /// Checks the chain e heads, then the chains inside it (arguments, template holes, operands).
     private static void Expr(Expr e, List<string> warnings)
     {
-        int ops = Operations(e);
-        if (ops > MaxOperations)
-            warnings.Add($"{Head(e).Pos}: warning: a chain of {ops} calls here; name a part of it, so that each chain holds at "
-                + $"most {MaxOperations} (a binding says what the steps so far give)");
+        var perLine = new Dictionary<int, int>();
+        CallsPerLine(e, perLine);
+        foreach (var (line, ops) in perLine.OrderBy(x => x.Key))
+        {
+            if (ops <= MaxOperations) continue;
+            var at = Head(e).Pos;
+            warnings.Add($"{new Pos(at.File, line, line == at.Line ? at.Col : 1)}: warning: {ops} calls of a chain on one line; "
+                + $"break it before each `.`, one call per line, or name a part of it, so that each line holds at most "
+                + $"{MaxOperations} (a binding says what the steps so far give)");
+            break;
+        }
         Inner(e, warnings);
     }
 
@@ -77,16 +85,24 @@ public static class ChainLint
         _ => e,
     };
 
-    /// The calls along the chain e is the end of: through receivers and fields, not into arguments.
-    private static int Operations(Expr e) => e switch
+    /// The calls along the chain e is the end of, by the line each is written on: through receivers and fields, not
+    /// into arguments.
+    private static void CallsPerLine(Expr e, Dictionary<int, int> counts)
     {
-        MethodCallExpr m => Operations(m.Receiver) + 1,
-        FieldExpr f => Operations(f.Base),
-        IndexExpr i => Operations(i.Base),
-        GetItemExpr g => Operations(g.Base),
-        CallExpr or NsCallExpr or ImplicitCallExpr => 1,
-        _ => 0,
-    };
+        switch (e)
+        {
+            case MethodCallExpr m:
+                CallsPerLine(m.Receiver, counts);
+                Count(m.Pos.Line, counts);
+                break;
+            case FieldExpr f: CallsPerLine(f.Base, counts); break;
+            case IndexExpr i: CallsPerLine(i.Base, counts); break;
+            case GetItemExpr g: CallsPerLine(g.Base, counts); break;
+            case CallExpr or NsCallExpr or ImplicitCallExpr: Count(e.Pos.Line, counts); break;
+        }
+    }
+
+    private static void Count(int line, Dictionary<int, int> counts) => counts[line] = counts.GetValueOrDefault(line) + 1;
 
     /// The chains that start inside e's chain: each call's arguments, a select's parts, a literal's elements.
     private static void Inner(Expr e, List<string> warnings)

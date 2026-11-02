@@ -909,9 +909,10 @@ routine start() -> None
   `and` / `or` / `not` are `Bool`'s own, and the right side of `and` / `or` runs only when the left leaves the answer
   open. `Bool` has no `& | ^ ~` (a build error naming `and` / `or` / `!=` / `not`): `!=` is the exclusive or of two
   `Bool`s. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.
-- A chain holds at most three calls (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts
+- A chain holds at most three calls on one line (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts
   (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to[T]()`), a field doesn't, and each argument and each `{...}`
-  write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`(x.peek() + y).poke_into(x)`): the basic
+  write-template hole is its own chain. A chain of more calls goes one call per line, each line after the first starting
+  with its `.` (`fmt` writes it so, and a chain written that way is never too long), or a fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`(x.peek() + y).poke_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
   `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, the doc-comment lint, and the expensive-call lint); CI holds `stdlib`, `tests`, and

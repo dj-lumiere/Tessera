@@ -423,11 +423,30 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 j = end;
                 continue;
             }
-            answer = c == '?' || (c == ':' && (j + 1 >= src.Length || src[j + 1] != '='));
+            answer = c == '?' || (c == ':' && (j + 1 >= src.Length || src[j + 1] != '=')) || ContinuesChain(j);
             break;
         }
         (_scanFrom, _scanTo, _scanAnswer) = reusable ? (_i, j, answer) : (-1, -1, false);
         return answer;
+    }
+
+    /// Whether the line that starts at `at` with a `.` and a name continues a chain of calls broken before its dots: the
+    /// line before it ends with a call or an index (`)` or `]`), or is itself such a dot line (`.up`, a field in the
+    /// middle of the chain). A statement that starts with a leading `.` (`.construct(1)`) is not a continuation.
+    private bool ContinuesChain(int at)
+    {
+        if (src[at] != '.' || at + 1 >= src.Length || !(char.IsLetter(src[at + 1]) || src[at + 1] == '_')) return false;
+        if (_tokens.Count == 0) return false;
+        var last = _tokens[^1].Kind;
+        if (last is TokenKind.RParen or TokenKind.RBracket) return true;
+        if (last != TokenKind.Ident) return false;
+        // The line that ended: does it start with a dot?
+        int end = _i - 1;
+        while (end > 0 && src[end] is '\n' or '\r') end--;
+        int start = end;
+        while (start > 0 && src[start - 1] != '\n') start--;
+        while (start < end && src[start] is ' ' or '\t') start++;
+        return src[start] == '.';
     }
 
     private bool RestOfLineIsBlank(int from)

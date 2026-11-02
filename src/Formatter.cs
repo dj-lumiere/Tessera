@@ -34,6 +34,9 @@ namespace Tessera;
 ///   routines last (`when_power_on`, then `start`). Within a kind the written order
 ///   stays, a declaration keeps the comments and annotations above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
+/// - a chain of more than three calls (`a.f().g().h().i()`) is written one call per line: the first call stays with the
+///   value it is called on, and each further one starts its own line with its `.`, 4 further in than the statement;
+///   a chain of three or fewer is joined back onto one line;
 /// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List[T]` in a
 ///   `List[T]` routine, not `List[U]`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
@@ -53,6 +56,7 @@ public static class Formatter
         lines = Space(lines);
         lines = DocBeforeAnnotations(lines);
         lines = SpaceSections(lines);
+        lines = BreakLongChains(lines);
         var continued = Continuations(lines);
         lines = lines.SelectMany((l, i) => continued[i] ? WrapContinuation(l) : Wrap(l)).ToList();
         lines = HeaderGroups(lines);
@@ -644,9 +648,11 @@ public static class Formatter
     {
         var result = new List<bool>();
         int depth = 0;
+        string previous = "";
         foreach (var line in lines)
         {
-            result.Add(depth > 0);
+            result.Add(depth > 0 || ContinuesChain(previous, line));
+            previous = line;
             for (int i = 0; i < line.Length; i++)
             {
                 char c = line[i];
@@ -657,6 +663,19 @@ public static class Formatter
             }
         }
         return result;
+    }
+
+    /// Whether `line` is a chain's next call, broken before its dot: it starts with `.` and a name, and the line before it
+    /// ends with a call or an index, or is a dot line itself (a field in the middle of the chain). A statement that starts
+    /// with a leading `.` (`.construct(1)`) is not one.
+    private static bool ContinuesChain(string previous, string line)
+    {
+        string t = line.TrimStart();
+        if (t.Length < 2 || t[0] != '.' || !(char.IsLetter(t[1]) || t[1] == '_')) return false;
+        int comment = TopLevelComment(previous);
+        string before = (comment < 0 ? previous : previous[..comment]).TrimEnd();
+        if (before.Length == 0) return false;
+        return before[^1] is ')' or ']' || before.TrimStart()[0] == '.';
     }
 
     /// A comment or annotation line at `indent`, which belongs to the declaration or block that follows it.
@@ -890,6 +909,137 @@ public static class Formatter
         return s.Length - 1;
     }
 
+    // ── Long chains ─────────────────────────────────────────────────────
+
+    /// Writes each chain of more than ChainLint.MaxOperations calls one call per line (see the list at the top).
+    private static List<string> BreakLongChains(List<string> lines)
+    {
+        var result = new List<string>();
+        foreach (var line in lines)
+        {
+            string trimmed = line.TrimStart();
+            if (trimmed.Length == 0 || trimmed[0] is '#' or '.' || IsAnnotation(trimmed) || RoutineWord(trimmed) >= 0 ||
+                trimmed.StartsWith("import ") || trimmed.StartsWith("module "))
+            {
+                result.Add(line);
+                continue;
+            }
+            result.AddRange(BreakChain(line));
+        }
+        return result;
+    }
+
+    private static readonly HashSet<string> ChainWords =
+    [
+        "return", "becomes", "and", "or", "not", "if", "until", "loop", "then", "else", "elseif", "in", "to", "til", "by", "with",
+        "when", "jump", "is", "as", "needs", "obeys", "claim", "drop", "steal", "throw", "try", "check", "for", "expand", "todo",
+        "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "define", "block", "common",
+        "secret", "infallible", "crashable", "continue", "break", "unreachable",
+    ];
+
+    /// One line, with its first chain of more than three calls broken before the dot of each call after the first, or the
+    /// line itself when it holds none. The comment at the end of the line stays on the last piece.
+    private static IEnumerable<string> BreakChain(string line)
+    {
+        int comment = TopLevelComment(line);
+        string code = comment < 0 ? line : line[..comment].TrimEnd();
+        List<Token> tokens;
+        try
+        {
+            tokens = new Lexer("fmt", code, 1, 1).Lex().Where(t => t.Kind is not (TokenKind.Newline or TokenKind.Eof)).ToList();
+        }
+        catch (CompileError)
+        {
+            return [line];
+        }
+        int n = tokens.Count;
+        int Offset(int k) => tokens[k].Pos.Col - 1;
+        int Skip(int k, TokenKind open, TokenKind close)
+        {
+            int depth = 0;
+            for (; k < n; k++)
+            {
+                if (tokens[k].Kind == open) depth++;
+                else if (tokens[k].Kind == close && --depth == 0) return k + 1;
+            }
+            return n;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            var t = tokens[i];
+            bool previousIsOperand = i > 0 && tokens[i - 1].Kind is TokenKind.Ident or TokenKind.RParen or TokenKind.RBracket
+                or TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte or TokenKind.Unit
+                && !(tokens[i - 1].Kind == TokenKind.Ident && ChainWords.Contains(tokens[i - 1].Text));
+            bool startsPrimary = t.Kind switch
+            {
+                TokenKind.Ident => !ChainWords.Contains(t.Text) && !(i + 1 < n && tokens[i + 1].Kind == TokenKind.Colon) && !previousIsOperand
+                    && !(i > 0 && tokens[i - 1].Kind == TokenKind.Dot),
+                TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte or TokenKind.Unit or TokenKind.LParen
+                    => !previousIsOperand,
+                TokenKind.Dot => !previousIsOperand && i + 1 < n && tokens[i + 1].Kind == TokenKind.Ident,
+                _ => false,
+            };
+            if (!startsPrimary) continue;
+
+            // The primary, then the calls, fields and indexes after it.
+            int j = i;
+            int ops = 0;
+            if (t.Kind == TokenKind.LParen) j = Skip(j, TokenKind.LParen, TokenKind.RParen);
+            else if (t.Kind == TokenKind.Dot) j += 2;
+            else j++;
+            if (j < n && tokens[j].Kind == TokenKind.LBracket && t.Kind is TokenKind.Ident or TokenKind.Dot)
+            {
+                int after = Skip(j, TokenKind.LBracket, TokenKind.RBracket);
+                if (after < n && tokens[after].Kind == TokenKind.LParen) j = after;
+                else j = after;
+            }
+            if (j < n && tokens[j].Kind == TokenKind.LParen && t.Kind is TokenKind.Ident or TokenKind.Dot)
+            {
+                ops++;
+                j = Skip(j, TokenKind.LParen, TokenKind.RParen);
+            }
+            var segments = new List<(int Offset, bool Calls)>();
+            while (j < n)
+            {
+                if (tokens[j].Kind == TokenKind.Dot && j + 1 < n && tokens[j + 1].Kind == TokenKind.Ident)
+                {
+                    int dot = j;
+                    j += 2;
+                    bool calls = false;
+                    while (j < n && (tokens[j].Kind == TokenKind.LBracket || tokens[j].Kind == TokenKind.LParen))
+                    {
+                        if (tokens[j].Kind == TokenKind.LParen)
+                        {
+                            calls = true;
+                            j = Skip(j, TokenKind.LParen, TokenKind.RParen);
+                        }
+                        else j = Skip(j, TokenKind.LBracket, TokenKind.RBracket);
+                    }
+                    if (calls) ops++;
+                    segments.Add((Offset(dot), calls));
+                }
+                else if (tokens[j].Kind == TokenKind.LBracket) j = Skip(j, TokenKind.LBracket, TokenKind.RBracket);
+                else break;
+            }
+            if (ops <= ChainLint.MaxOperations || segments.Count == 0) continue;
+
+            int firstCall = segments.FindIndex(s => s.Calls);
+            // The first call stays with its value: the line breaks before the dot of every segment after it.
+            var cuts = segments.Skip(firstCall + 1).Select(s => s.Offset).ToList();
+            if (cuts.Count == 0) continue;
+            string pad = new(' ', Indent(line) + ContinuationIndent);
+            var pieces = new List<string> { code[..cuts[0]].TrimEnd() };
+            for (int c = 0; c < cuts.Count; c++)
+            {
+                int end = c + 1 < cuts.Count ? cuts[c + 1] : code.Length;
+                pieces.Add(pad + code[cuts[c]..end].TrimEnd());
+            }
+            if (comment >= 0) pieces[^1] += line[(code.Length)..];
+            return pieces;
+        }
+        return [line];
+    }
+
     // ── Joining ─────────────────────────────────────────────────────────
 
     /// Joins a bracketed list that spans lines back into one line, so Wrap can break it again only where it must:
@@ -932,7 +1082,8 @@ public static class Formatter
             {
                 string piece = next.Trim();
                 char last = joined[^1];
-                bool tight = last is '(' or '[' || piece.StartsWith(')') || piece.StartsWith(']');
+                bool tight = last is '(' or '[' || piece.StartsWith(')') || piece.StartsWith(']') ||
+                             ContinuesChain(group[0], next);
                 joined.Append(tight ? "" : " ").Append(piece);
             }
             result.Add(joined.ToString());
