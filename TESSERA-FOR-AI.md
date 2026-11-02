@@ -1533,7 +1533,9 @@ routine start() -> None
 - `steal place as old inject new` takes an entity out of a place and puts another in, in one step: `new` is computed
   first (it may read the place), then the place's value goes to `old` and `new` goes into the place, so the place is
   never hollow (`steal a.getslot(i) as old inject Counter.construct(n: 0)`, `steal p.left as was inject
-  Counter.construct(n: 7)`). `inject lateinit` leaves the place holding nothing on purpose (a ticket list taken apart), and so does `steal p as old` on a place the build follows.
+  Counter.construct(n: 7)`). A name taken out of a place that keeps a `Box?` may hold nothing until it is looked at with `when`:
+  handing it with `steal` to a place that takes a `Box` (`packed.add_last(steal taken)` on a `List[Box]`) is a build error, and
+  `when steal taken` is refused with the same word (a `Box?`). `inject lateinit` leaves the place holding nothing on purpose (a ticket list taken apart), and so does `steal p as old` on a place the build follows.
   The builder follows a hollow place by how it is written: a name, a field chain from one, or an element at a constant
   index (`xs.getslot(0)`). An element at an index that is a variable or a computation (`xs.getslot(i)`) is not
   followed (`j: U64 = i` then `xs.getslot(j)` reaches the same place), so a `steal` that would leave one hollow is a

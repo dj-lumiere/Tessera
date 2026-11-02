@@ -374,7 +374,14 @@ public sealed partial class FunctionGen
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
     private Val EvalSteal(StealExpr s, DType expected)
     {
-        if (s.Value is ValueRef handedOn) _hollowSeen = handedOn;
+        if (s.Value is ValueRef handedOn)
+        {
+            _hollowSeen = handedOn;
+            // What may hold nothing goes only where nothing is allowed: a place that takes a Box (not a Box?) would keep a hollow one.
+            if (!s.Place && !_c.Prechecking && _maybeHollow.TryGetValue(handedOn.Name, out var mayBeNothing) && expected?.Name == mayBeNothing)
+                throw Err(handedOn.Pos, $"'{handedOn.Name}' came out of a place that keeps a {mayBeNothing}?, so it may hold nothing, and the place you hand it to takes a {mayBeNothing}: "
+                    + $"look at it with when {handedOn.Name} (is None, is {mayBeNothing} as x) and hand it on inside the arm that has a {mayBeNothing}");
+        }
         if (s.Place)
         {
             _moving = true;
@@ -3875,7 +3882,13 @@ public sealed partial class FunctionGen
             throw Err(w.Value!.Pos, $"a {flagsWhen.Name} value can have several members on at once, so when has no one arm to pick: "
                 + "test it with has, has_any or lacks in a condition when (x.has(A) => ...)");
         if (v.Type is not (IntType or ChoiceType))
+        {
+            // A name that came out of a place keeping an E? holds a Box? until it is looked at: say so, not the &Box it reads as.
+            if ((w.Value is StealExpr { Value: ValueRef stolen } ? stolen : w.Value) is ValueRef subject && _maybeHollow.TryGetValue(subject.Name, out var kept))
+                throw Err(w.Value!.Pos, $"'{subject.Name}' is a {kept}?, which may hold nothing, and when v needs an integer, Byte, Char, choice, or variant value: "
+                    + $"look at it with when {subject.Name} (is None, is {kept} as x) and hand it on with steal {subject.Name} inside the arm that has a {kept}");
             throw Err(w.Value!.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+        }
         if (w.ElseBinding is { } named)
             throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
         if (w.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
