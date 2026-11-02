@@ -140,6 +140,16 @@ public sealed partial class Compiler
         return moves;
     }
 
+    /// The moves known for an instance now, without building anything: what FinishThrows compares while it walks the
+    /// observations, which building would change under it.
+    private List<(string Param, string? Field)> KnownReshapes(Instance inst)
+    {
+        var moves = FunctionGen.DeclaredReshapes(inst.Decl);
+        foreach (var inferred in _inferredReshapes.GetValueOrDefault(inst.Symbol) ?? [])
+            if (!moves.Contains(inferred)) moves.Add(inferred);
+        return moves;
+    }
+
     private static string ReshapesKey(List<(string Param, string? Field)> moves) =>
         string.Join("|", moves.Select(m => m.Param + "." + m.Field).Order(StringComparer.Ordinal));
 
@@ -227,7 +237,7 @@ public sealed partial class Compiler
                 .Select(kv => kv.Key)
                 .Concat(_observedReshapes
                     .Where(kv => _emittedSymbols.Contains(kv.Key) && _instances.ContainsKey(kv.Key)
-                                 && kv.Value.Any(seen => _instances.TryGetValue(seen.Key, out var callee) && ReshapesKey(ReshapesOf(callee)) != seen.Value))
+                                 && kv.Value.Any(seen => _instances.TryGetValue(seen.Key, out var callee) && ReshapesKey(KnownReshapes(callee)) != seen.Value))
                     .Select(kv => kv.Key))
                 .Distinct().ToList();
             if (stale.Count == 0) return;
