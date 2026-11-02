@@ -2860,6 +2860,26 @@ public sealed partial class FunctionGen
 
     private DType? Infer(Expr e)
     {
+        // A call's type is asked again by every call above it in a chain (the plan, the checks, the evaluation), and each
+        // answer asks the receiver's: kept per node, a long chain costs a few answers per link instead of a few to the power of its length.
+        if (e is not (CallExpr or NsCallExpr or MethodCallExpr)) return InferNode(e);
+        var key = (e, _reach > 0);
+        if (_inferred.TryGetValue(key, out var known)) return known;
+        var type = InferNode(e);
+        _inferred[key] = type;
+        return type;
+    }
+
+    private readonly Dictionary<(Expr, bool), DType?> _inferred = new(new InferKeyComparer());
+
+    private sealed class InferKeyComparer : IEqualityComparer<(Expr, bool)>
+    {
+        public bool Equals((Expr, bool) a, (Expr, bool) b) => ReferenceEquals(a.Item1, b.Item1) && a.Item2 == b.Item2;
+        public int GetHashCode((Expr, bool) k) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(k.Item1) * 2 + (k.Item2 ? 1 : 0);
+    }
+
+    private DType? InferNode(Expr e)
+    {
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         switch (e)
         {
