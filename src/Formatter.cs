@@ -12,6 +12,13 @@ namespace Tessera;
 /// - a binding, a record field, a choice member and a variant case write their `:` right after
 ///   the name with one space after it (`count: U64 = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
 ///   nothing is aligned with the line above.
+/// - every binary operator (arithmetic with its `%` `^` `!` forms, comparisons, shifts, `and` / `or`, `=`, `:=`, `->`, `=>`,
+///   `<-`) has one space on each side, in code and inside a template's `{...}` holes (`"{a + b}"`), while a unary operator,
+///   `@T`, `&T`, `.`, `f(x)` and `xs[i]` attach, nothing sits inside brackets, a comma has no space before and one after,
+///   and runs of spaces become one (`routine start() -> None`). Text in a template outside its holes, escapes, a hole
+///   starting with `by`, and comments are left as written.
+/// - the `module` line, the import group, and the first declaration are three groups with exactly one blank line between
+///   them (whichever are present), and no blank line inside the import group;
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
@@ -38,6 +45,7 @@ public static class Formatter
         lines = lines.Select(UseAt).ToList();
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
+        lines = lines.Select(SpaceOperators).ToList();
         lines = OrderDeclarations(lines);
         lines = lines.SelectMany((l, i) => InVariantBody(lines, i) ? [l] : SplitAnnotationList(l)).ToList();
         lines = lines.Select(DropGroupingParens).ToList();
@@ -47,6 +55,7 @@ public static class Formatter
         lines = SpaceSections(lines);
         var continued = Continuations(lines);
         lines = lines.SelectMany((l, i) => continued[i] ? WrapContinuation(l) : Wrap(l)).ToList();
+        lines = HeaderGroups(lines);
         string result = string.Join('\n', lines).TrimEnd('\n');
         return result.Length == 0 ? "" : result + "\n";
     }
@@ -66,6 +75,271 @@ public static class Formatter
         if (comment > 0 && line[..comment].Trim().Length > 0)
             line = $"{line[..comment].TrimEnd()}  {line[comment..]}";
         return line;
+    }
+
+    /// One blank line after the `module` line and after the last import, none between imports.
+    private static List<string> HeaderGroups(List<string> lines)
+    {
+        static bool IsImport(string l) => l.StartsWith("import ");
+        static bool IsModule(string l) => l.StartsWith("module ");
+        int end = 0;
+        while (end < lines.Count && (lines[end].Length == 0 || lines[end][0] == '#' || IsImport(lines[end]) || IsModule(lines[end]))) end++;
+        int first = lines.FindIndex(0, end, IsImport);
+        int last = first < 0 ? -1 : lines.FindLastIndex(end - 1, end, IsImport);
+        var result = new List<string>();
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (lines[i].Length == 0 && i < end && first >= 0 && i > first && i < last) continue;
+            result.Add(lines[i]);
+            if (i < end && (i == last || IsModule(lines[i]) && (first < 0 || i < first)))
+            {
+                int next = i + 1;
+                while (next < lines.Count && lines[next].Length == 0) next++;
+                if (next < lines.Count) result.Add("");
+                i = next - 1;
+            }
+        }
+        return result;
+    }
+
+    // ── Operator spacing ────────────────────────────────────────────────────
+
+    private enum Role { Word, Operand, Open, Close, Comma, Dot, Binary, Unary, Other }
+
+    private sealed record Piece(Role Role, string Text, bool Space);
+
+    private static readonly HashSet<string> OperatorWords =
+    [
+        "return", "becomes", "and", "or", "not", "if", "until", "loop", "then", "else", "elseif", "in", "to", "til", "by", "with",
+        "when", "jump", "is", "as", "needs", "obeys", "claim", "drop", "steal", "throw", "try", "check", "for", "expand", "todo",
+    ];
+
+    private static readonly string[] Operators =
+    [
+        ">>>", "<=>", "===", "!==", "<<", ">>", "<=", ">=", "==", "!=", "**", "//", "/!", "->", "=>", "<-", ":=",
+    ];
+
+    /// One line with its operators spaced (see the list above): the line is cut into pieces (names, literals,
+    /// brackets, operators) and written again with the spacing each pair of neighbours gets. A comment, and a line
+    /// starting a module or an import, stay as they are.
+    private static string SpaceOperators(string line)
+    {
+        string trimmed = line.TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] == '#' || trimmed.StartsWith("import ") || trimmed.StartsWith("module ")) return line;
+        var pieces = Pieces(trimmed, out string tail);
+        var sb = new StringBuilder(line[..(line.Length - trimmed.Length)]);
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            var c = pieces[i];
+            if (i > 0)
+            {
+                var p = pieces[i - 1];
+                bool space = c.Space;
+                if (c.Role == Role.Binary || p.Role == Role.Binary) space = true;
+                else if (p.Role is Role.Unary or Role.Open || c.Role is Role.Close or Role.Comma or Role.Dot || p.Role == Role.Dot) space = false;
+                else if (p.Role == Role.Comma) space = true;
+                else if (c.Role == Role.Unary && p.Role is Role.Word or Role.Operand) space = true;
+                if (p.Role == Role.Comma && c.Role == Role.Close) space = false;
+                if (space) sb.Append(' ');
+            }
+            sb.Append(c.Text);
+        }
+        return sb.ToString() + tail;
+    }
+
+    private static List<Piece> Pieces(string s, out string tail)
+    {
+        var pieces = new List<Piece>();
+        tail = "";
+        int i = 0;
+        while (i < s.Length)
+        {
+            int begin = i;
+            while (i < s.Length && s[i] == ' ') i++;
+            bool space = i > begin;
+            if (i >= s.Length) break;
+            char c = s[i];
+            var prev = pieces.Count > 0 ? pieces[^1] : null;
+            bool operandBefore = prev is not null
+                && (prev.Role == Role.Operand || prev.Role == Role.Close && prev.Text != "(" || prev.Role == Role.Word && !OperatorWords.Contains(prev.Text));
+            if (c == '#')
+            {
+                tail = s[begin..];
+                break;
+            }
+            if (c == '"')
+            {
+                int end = StringEnd(s, i);
+                pieces.Add(new Piece(Role.Operand, SpaceString(s[i..end]), space));
+                i = end;
+            }
+            else if (c == '\'')
+            {
+                int end = Math.Min(SkipLiteral(s, i) + 1, s.Length);
+                pieces.Add(new Piece(Role.Operand, s[i..end], space));
+                i = end;
+            }
+            else if (c == '`')
+            {
+                int end = s.IndexOf('`', i + 1);
+                end = end < 0 ? s.Length : end + 1;
+                pieces.Add(new Piece(Role.Word, s[i..end], space));
+                i = end;
+            }
+            else if (char.IsAsciiLetter(c) || c == '_')
+            {
+                int end = i;
+                while (end < s.Length && (char.IsAsciiLetterOrDigit(s[end]) || s[end] == '_')) end++;
+                if (s[i] == 'b' && end == i + 1 && end < s.Length && s[end] == '\'')
+                {
+                    end = Math.Min(SkipLiteral(s, end) + 1, s.Length);
+                    pieces.Add(new Piece(Role.Operand, s[i..end], space));
+                }
+                else
+                    pieces.Add(new Piece(Role.Word, s[i..end], space));
+                i = end;
+            }
+            else if (char.IsAsciiDigit(c))
+            {
+                int end = NumberEnd(s, i, prev is { Role: Role.Dot });
+                pieces.Add(new Piece(Role.Operand, s[i..end], space));
+                i = end;
+            }
+            else if (c is '(' or '[')
+            {
+                pieces.Add(new Piece(Role.Open, c.ToString(), space));
+                i++;
+            }
+            else if (c is ')' or ']')
+            {
+                pieces.Add(new Piece(Role.Close, c.ToString(), space));
+                i++;
+            }
+            else if (c == ',')
+            {
+                pieces.Add(new Piece(Role.Comma, ",", space));
+                i++;
+            }
+            else if (c == '.')
+            {
+                pieces.Add(new Piece(Role.Dot, ".", space));
+                i++;
+            }
+            else if (c == '@' || c == '~')
+            {
+                pieces.Add(new Piece(Role.Unary, c.ToString(), space));
+                i++;
+            }
+            else
+            {
+                string? op = Operators.FirstOrDefault(o => string.CompareOrdinal(s, i, o, 0, o.Length) == 0);
+                if (op is null && c is '+' or '-' or '*')
+                {
+                    op = c.ToString();
+                    if (i + 1 < s.Length && (s[i + 1] is '%' or '^' || s[i + 1] == '!' && !(i + 2 < s.Length && s[i + 2] == '='))) op += s[i + 1];
+                }
+                op ??= c is '/' or '%' or '^' or '&' or '|' or '<' or '>' or '=' ? c.ToString() : null;
+                if (op is null)
+                {
+                    pieces.Add(new Piece(Role.Other, c.ToString(), space));
+                    i++;
+                    continue;
+                }
+                bool ambiguous = op is "-" or "&" or "%";
+                // `-> `, `<-`, and the like are always binary. A lone `-`, `&` or `%` with no operand before it is a sign,
+                // a pointer type, or an old-spelling name mark.
+                bool unary = ambiguous && !operandBefore;
+                pieces.Add(new Piece(unary ? Role.Unary : Role.Binary, op, space));
+                i += op.Length;
+            }
+        }
+        return pieces;
+    }
+
+    /// The end of the number starting at `i`: digits, a fraction, an exponent, a base prefix, or a unit (`50ms`). After a
+    /// `.` it is only digits (`pair.0`).
+    private static int NumberEnd(string s, int i, bool afterDot)
+    {
+        int j = i;
+        if (afterDot)
+        {
+            while (j < s.Length && char.IsAsciiDigit(s[j])) j++;
+            return j;
+        }
+        if (s[i] == '0' && i + 1 < s.Length && s[i + 1] is 'x' or 'o' or 'b')
+        {
+            j = i + 2;
+            while (j < s.Length)
+            {
+                if (char.IsAsciiLetterOrDigit(s[j]) || s[j] == '_') j++;
+                else if (s[j] == '.' && j + 1 < s.Length && char.IsAsciiHexDigit(s[j + 1])) j++;
+                else if (s[j] is '+' or '-' && s[j - 1] is 'p' or 'P' && j + 1 < s.Length && char.IsAsciiDigit(s[j + 1])) j++;
+                else break;
+            }
+            return j;
+        }
+        while (j < s.Length && (char.IsAsciiDigit(s[j]) || s[j] == '_')) j++;
+        if (j + 1 < s.Length && s[j] == '.' && char.IsAsciiDigit(s[j + 1]))
+        {
+            j++;
+            while (j < s.Length && (char.IsAsciiDigit(s[j]) || s[j] == '_')) j++;
+        }
+        if (j < s.Length && s[j] is 'e' or 'E'
+            && (j + 1 < s.Length && char.IsAsciiDigit(s[j + 1]) || j + 2 < s.Length && s[j + 1] is '+' or '-' && char.IsAsciiDigit(s[j + 2])))
+        {
+            j += 2;
+            while (j < s.Length && char.IsAsciiDigit(s[j])) j++;
+        }
+        while (j < s.Length && char.IsAsciiLetter(s[j])) j++;
+        return j;
+    }
+
+    /// The index after the string literal starting at `open`, holes (`{f("x")}`) included.
+    private static int StringEnd(string s, int open)
+    {
+        for (int j = open + 1; j < s.Length; j++)
+        {
+            if (s[j] == '\\') j++;
+            else if (s[j] == '"') return j + 1;
+            else if (s[j] == '{')
+            {
+                if (j + 1 < s.Length && s[j + 1] == '{') { j++; continue; }
+                int close = Lexer.HoleEnd(s, j);
+                if (close >= 0) j = close;
+            }
+        }
+        return s.Length;
+    }
+
+    /// A string literal with each hole's expression spaced; the text around the holes and the escapes stay.
+    private static string SpaceString(string literal)
+    {
+        var sb = new StringBuilder();
+        for (int j = 0; j < literal.Length; j++)
+        {
+            char c = literal[j];
+            if (c == '\\' && j + 1 < literal.Length)
+            {
+                sb.Append(c).Append(literal[++j]);
+                continue;
+            }
+            if (c == '{' && j + 1 < literal.Length && literal[j + 1] == '{')
+            {
+                sb.Append("{{");
+                j++;
+                continue;
+            }
+            int close = c == '{' ? Lexer.HoleEnd(literal, j) : -1;
+            if (close < 0)
+            {
+                sb.Append(c);
+                continue;
+            }
+            string inner = literal[(j + 1)..close].Trim();
+            sb.Append('{').Append(inner.Length == 0 || inner.StartsWith("by ") ? literal[(j + 1)..close] : SpaceOperators(inner)).Append('}');
+            j = close;
+        }
+        return sb.ToString();
     }
 
     private static int Indent(string line) => line.Length - line.TrimStart().Length;

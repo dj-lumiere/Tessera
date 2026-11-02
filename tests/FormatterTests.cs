@@ -10,6 +10,55 @@ namespace Tessera.Tests;
 public class FormatterTests
 {
     [Fact]
+    public void ModuleImportsAndBodyAreSeparatedByOneBlankLine()
+    {
+        const string expected = "module A\n\nimport B\nimport C\n\nroutine start() -> None\n    return\n";
+        Assert.Equal(expected, Formatter.Format("module A\nimport B\n\n\nimport C\nroutine start() -> None\n    return\n"));
+        Assert.Equal(expected, Formatter.Format(expected));
+        Assert.Equal("import B\n\nroutine start() -> None\n    return\n", Formatter.Format("import B\nroutine start() -> None\n    return\n"));
+        Assert.Equal("module A\n\nroutine start() -> None\n    return\n", Formatter.Format("module A\nroutine start() -> None\n    return\n"));
+    }
+
+    [Fact]
+    public void BinaryOperatorsGetOneSpaceOnEachSide()
+    {
+        const string source = "routine   start( ) ->None\n    x: S64 =  1+2*3\n    y: S64 = x+%1 -^ 2 //3%4\n"
+                              + "    ok: Bool = 0<=x<10 and x!=5 or x===y\n    z: U64 = x<<2>>>1 &3|4^5\n    return\n";
+        const string expected = "routine start() -> None\n    x: S64 = 1 + 2 * 3\n    y: S64 = x +% 1 -^ 2 // 3 % 4\n"
+                                + "    ok: Bool = 0 <= x < 10 and x != 5 or x === y\n    z: U64 = x << 2 >>> 1 & 3 | 4 ^ 5\n    return\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
+    public void UnaryOperatorsAndBracketsAttach()
+    {
+        const string source = "routine f(p: & S64,  q: @[Byte]) ->S64\n    a: S64 = - x\n    b: S64 = f( -1, - y ) -2\n"
+                              + "    c: S64 = xs[ -1 ]+pair.0\n    d: Bool = not  ok\n    e: Callable[(S64 ,), &&S64] = (x) =>x - 1\n    return a\n";
+        const string expected = "routine f(p: &S64, q: @[Byte]) -> S64\n    a: S64 = -x\n    b: S64 = f(-1, -y) - 2\n"
+                                + "    c: S64 = xs[-1] + pair.0\n    d: Bool = not ok\n    e: Callable[(S64,), &&S64] = (x) => x - 1\n    return a\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
+    public void TemplateHolesAreSpacedAndTheTextAroundThemIsNot()
+    {
+        const string source = "routine f() -> None\n    Console.show(\"a+b {a+b} \\{ {{x+y}} {f(-1,\"q+r\")}  ok\\n\")  # keep a+b\n"
+                              + "    build_error(\"{by O|a|b}\")\n    return\n";
+        const string expected = "routine f() -> None\n    Console.show(\"a+b {a + b} \\{ {{x+y}} {f(-1, \"q+r\")}  ok\\n\")  # keep a+b\n"
+                                + "    build_error(\"{by O|a|b}\")\n    return\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
+    public void OperatorSpacingIsIdempotent()
+    {
+        const string source = "routine f(x: S64) -> S64\n    y: S64 = (x+1)*-2 -x  # c+d\n    Console.show(\"{y+1}\")\n    return y+%x\n";
+        string once = Formatter.Format(source);
+        Assert.Equal(once, Formatter.Format(once));
+        Assert.Contains("(x + 1) * -2 - x", once);
+    }
+
+    [Fact]
     public void ASpanBranchStaysATypeAndAnAnnotationListSplits()
     {
         // Where the line stands decides: under a variant header `@[Byte]` is a branch type, before a declaration
