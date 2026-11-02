@@ -366,18 +366,39 @@ public sealed partial class FunctionGen
         if (m is { Name: "store_into", Args: [ValueRef into] } && _stackPlaces.ContainsKey(into.Name)
             && _values.TryGetValue(into.Name, out var intoSlot) && intoSlot.Type is PtrType)
             return m with { Name = "poke_into" };
-        if (m.Receiver is not ValueRef r || !_stackPlaces.ContainsKey(r.Name) || !_values.TryGetValue(r.Name, out var slot)) return null;
+        if (m is { Name: "store_into", Args: [PresetRef globalInto] } && IsGlobalPlace(globalInto))
+            return m with { Name = "poke_into" };
+        // A global is a `&T` place too: its name reads as the place's address, and load/store/<- work on it as on a local.
+        DType? slotType = null;
+        if (m.Receiver is ValueRef r && _stackPlaces.ContainsKey(r.Name) && _values.TryGetValue(r.Name, out var slot)) slotType = slot.Type;
+        else if (m.Receiver is PresetRef g && IsGlobalPlace(g)) slotType = InferQuiet(g);
+        if (slotType is null) return null;
         // A routine the value's own type declares under the name is the value's (a List's getview, an Unbroken's load).
-        if (slot.Type is PtrType { Pointee: { } held } && OwnRoutine(held, m))
+        if (slotType is PtrType { Pointee: { } held } && OwnRoutine(held, m))
             return null;
+        if (m is { Name: "peek" or "poke", Builder: false } && slotType is PtrType)
+        {
+            string spelled = new Printer().Expr(m.Receiver, 0);
+            throw Err(m.Pos, m.Name == "peek"
+                ? $"{spelled} is a &T place, which is read with load(): {spelled}.load()"
+                : $"{spelled} is a &T place, which is written with store(v) or with '<-': {spelled}.store({(m.Args.Count == 1 ? new Printer().Expr(m.Args[0], 0) : "value")})");
+        }
         return m switch
         {
-            { Name: "load", Args.Count: 0 } => m with { Name = "peek" },
-            { Name: "store", Args.Count: 1 } => m with { Name = "poke" },
-            { Name: "getview", Args.Count: 0 } => r,
-            { Name: "take", Args.Count: 0 } => new StealExpr(r, m.Pos),
+            { Name: "load", Args.Count: 0 } => m with { Name = "peek", Builder = true },
+            { Name: "store", Args.Count: 1 } => m with { Name = "poke", Builder = true },
+            { Name: "getview", Args.Count: 0, Receiver: ValueRef } => m.Receiver,
+            { Name: "take", Args.Count: 0, Receiver: ValueRef } => new StealExpr(m.Receiver, m.Pos),
             _ => null,
         };
+    }
+
+    /// Whether a name is a global of this program: a `&T` place declared at the top level.
+    private bool IsGlobalPlace(PresetRef g)
+    {
+        if (g.Owner is not null) return false;
+        try { return _c.FindPreset("", g.Name, _env.File, g.Pos, g.Path) is { IsGlobal: true, IsSpan: false }; }
+        catch (CompileError) { return false; }
     }
 
     /// Whether the type a STACK place holds declares a routine of this name itself.

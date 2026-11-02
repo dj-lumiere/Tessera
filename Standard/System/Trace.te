@@ -275,8 +275,8 @@ secret infallible routine next_failure_number() -> U32
 @trace("on")
 @target(os: "none")
 secret infallible routine next_failure_number() -> U32
-    next: U32 = (FAILURE_COUNT.peek() +% 1).max(1)
-    FAILURE_COUNT.poke(next)
+    next: U32 = (FAILURE_COUNT.load() +% 1).max(1)
+    FAILURE_COUNT.store(next)
     return next
 
 ### Notes the running flow's trace, read from the stack, as a new failure's, wrapping `previous` (0 for none): the
@@ -423,15 +423,15 @@ infallible routine frame_address() -> Addr
 ### :param low: The library code's first address.
 ### :param high: The address after its last.
 infallible routine trace_walk_through(low: Addr, high: Addr) -> None
-    WALK_THROUGH_LOW.poke(ptrtoint[Addr, U64](low))
-    WALK_THROUGH_HIGH.poke(ptrtoint[Addr, U64](high))
+    WALK_THROUGH_LOW.store(ptrtoint[Addr, U64](low))
+    WALK_THROUGH_HIGH.store(ptrtoint[Addr, U64](high))
     return
 
 ### Notes where the crash being reported happened, for the trace read from the stack (Crash.raise calls it).
 ### :param place: The crash's place, or hollow.
 @trace("stack")
 infallible routine note_crash_place(place: @SourceLocation) -> None
-    CRASH_PLACE.poke(place.to[Addr]())
+    CRASH_PLACE.store(place.to[Addr]())
     return
 
 ### Notes nothing: this build doesn't read the trace from the stack.
@@ -461,8 +461,8 @@ infallible routine note_fault_context(context: Addr) -> None
     top: U64 = ptrtoint[Addr, U64](stack.top.peek())
     if frame < bottom or frame >= top or (frame & 7) != 0
         return
-    FAULT_FRAME.poke(inttoptr[U64, Addr](frame))
-    FAULT_PC.poke(inttoptr[U64, Addr](pc))
+    FAULT_FRAME.store(inttoptr[U64, Addr](frame))
+    FAULT_PC.store(inttoptr[U64, Addr](pc))
     return
 
 ### Notes nothing: the trace is read from the stack only on Linux on x86-64.
@@ -481,13 +481,13 @@ infallible routine note_fault_context(context: Addr) -> None
 ### :returns: The frame pointer.
 @target(os: not "none")
 infallible routine fault_frame_pointer() -> Addr
-    return FAULT_FRAME.peek()
+    return FAULT_FRAME.load()
 
 ### The instruction a fault interrupted on this thread, hollow when none was noted.
 ### :returns: Its address.
 @target(os: not "none")
 infallible routine fault_pc() -> Addr
-    return FAULT_PC.peek()
+    return FAULT_PC.load()
 
 ### The number of frames the running flow is in: the traced routines it is in, read from the stack. Never inlined:
 ### the walk starts at its own frame, whose return address is its caller's call.
@@ -496,7 +496,7 @@ infallible routine fault_pc() -> Addr
 @trace("stack")
 infallible routine trace_depth() -> U64
     copy: TraceCopy = (skip: 0, want: 0, out: None())
-    return trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), copy, early: false)
+    return trace_walk(start: walk_start(), fault_pc: FAULT_PC.load(), copy, early: false)
 
 ### A frame of the running flow's trace, counting from the innermost: 0 is the routine that crashed, or that called
 ### the standard library routine that did, 1 its caller, and so on. Never inlined, like trace_depth.
@@ -508,14 +508,14 @@ infallible routine trace_frame(back: U64) -> TraceFrame
     frame: &TraceFrame <- (name: "", file: "", line: 0, column: 0)
 
     copy: TraceCopy = (skip: back, want: 1, out: frame)
-    trace_walk(start: walk_start(), fault_pc: FAULT_PC.peek(), copy, early: true)
+    trace_walk(start: walk_start(), fault_pc: FAULT_PC.load(), copy, early: true)
     return frame.load()
 
 ### Where a walk of this flow starts: the frame a fault interrupted, or the caller's own.
 ### :returns: The frame pointer.
 @trace("stack")
 secret infallible routine walk_start() -> Addr
-    fault: Addr = FAULT_FRAME.peek()
+    fault: Addr = FAULT_FRAME.load()
     if fault.is_not_hollow()
         return fault
     return frame_address()
@@ -619,7 +619,7 @@ infallible routine trace_walk(start: Addr, fault_pc: Addr, copy: TraceCopy, earl
             break
         next: U64 = inttoptr[U64, Addr](fp).to[@U64]().peek()
         ra: U64 = inttoptr[U64, Addr](fp + 8).to[@U64]().peek()
-        if trace_routine_at(ra) == -2 and not (ra >= WALK_THROUGH_LOW.peek() and ra < WALK_THROUGH_HIGH.peek())
+        if trace_routine_at(ra) == -2 and not (ra >= WALK_THROUGH_LOW.load() and ra < WALK_THROUGH_HIGH.load())
             break
         chain: S64 = trace_site_at(ra)
         if chain >= 0
@@ -638,7 +638,7 @@ infallible routine trace_walk(start: Addr, fault_pc: Addr, copy: TraceCopy, earl
 ### :returns: The address of its SourceLocation, or hollow.
 @target(os: not "none")
 secret infallible routine crash_place() -> Addr
-    return CRASH_PLACE.peek()
+    return CRASH_PLACE.load()
 
 ### Hollow: a target without an operating system keeps no crash place, so a shared stop's frame keeps no column.
 ### :returns: Hollow.

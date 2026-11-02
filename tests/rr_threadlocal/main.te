@@ -39,10 +39,10 @@ routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) ->
 
 ### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
 routine prepare_threads() -> None
-    GIC.poke(InterruptManagerByGic.construct(distributor: 0x08000000, cpu_interface: 0x08010000))
+    GIC.store(InterruptManagerByGic.construct(distributor: 0x08000000, cpu_interface: 0x08010000))
     GIC.start()
-    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
-        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    THREADS.store(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib,
+        stack_size: 16kib, slice: Duration.from_milliseconds(1), interrupts: GIC))
     return
 
 ### Counts its own COUNT up from 100 by 1 for each step, yielding after each step, then keeps it in SEEN_1 or SEEN_2
@@ -51,12 +51,12 @@ routine prepare_threads() -> None
 routine counter(count: @U64) -> None
     steps: U64 = count.peek()
     for i in 0 til steps
-        COUNT.poke(COUNT.peek() + 1)
+        COUNT.store(COUNT.load() + 1)
         THREADS.yield_now()
     if THREADS.current_number() == 1
-        SEEN_1.poke(COUNT.peek())
+        SEEN_1.store(COUNT.load())
     else
-        SEEN_2.poke(COUNT.peek())
+        SEEN_2.store(COUNT.load())
     return
 
 ### Turns the managers on and puts the reporting routine in the Crash service's slot.
@@ -69,13 +69,13 @@ routine when_power_on() -> None
 ### them.
 routine start() -> None
     port: &Pl011 <- serial()
-    COUNT.poke(7)
+    COUNT.store(7)
     prepare_threads()
     THREADS.launch(entry: counter.to[Callable](), arg: FEW)
     THREADS.launch(entry: counter.to[Callable](), arg: MORE)
     THREADS.run()
-    port.write("thread 1: {SEEN_1.peek()}\n")
-    port.write("thread 2: {SEEN_2.peek()}\n")
-    port.write("run's flow: {COUNT.peek()}\n")
+    port.write("thread 1: {SEEN_1.load()}\n")
+    port.write("thread 2: {SEEN_2.load()}\n")
+    port.write("run's flow: {COUNT.load()}\n")
     psci_power_off()
     return

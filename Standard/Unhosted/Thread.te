@@ -238,7 +238,7 @@ routine @ThreadManagerByRoundRobin.run() -> None
     me.boot.state.poke(RoundRobinState.RUNNING)
     me.boot.thread_locals.poke(thread_pointer())
     me.running.poke(me.boot.to[Addr]())
-    RUNNING_ROUND_ROBIN.poke(me.to[Addr]())
+    RUNNING_ROUND_ROBIN.store(me.to[Addr]())
     gic: @InterruptManagerByGic = me.interrupts.peek()
     me.timer_before.poke(gic.when_line_raised(line: CPU_TIMER_LINE,
         holder: round_robin_tick.to[Callable]()))
@@ -255,7 +255,7 @@ routine @ThreadManagerByRoundRobin.run() -> None
     cpu_timer_stop()
     gic.turn_off(CPU_TIMER_LINE)
     gic.when_line_raised(line: CPU_TIMER_LINE, holder: me.timer_before.peek())
-    RUNNING_ROUND_ROBIN.poke(Addr.zero())
+    RUNNING_ROUND_ROBIN.store(Addr.zero())
     me.running.poke(Addr.zero())
     restore_interrupts(was)
     return
@@ -520,9 +520,9 @@ secret routine @ThreadManagerByRoundRobin.switch_away() -> None
     trace_switch(to.trace_depth.peek()).poke_into(from.trace_depth)
     # The frame check measures from the bottom of the stack it runs on: the thread's slot, or the program's own.
     if to === me.boot
-        RUNNING_STACK.poke(Addr.zero())
+        RUNNING_STACK.store(Addr.zero())
     else
-        RUNNING_STACK.poke(to.stack.to[Addr]())
+        RUNNING_STACK.store(to.stack.to[Addr]())
     set_thread_pointer(to.thread_locals.peek())
     resume_at: Addr = to.stack.sp.peek()
     to.stack.sp.zeroinit(1)
@@ -548,9 +548,9 @@ secret routine @ThreadManagerByRoundRobin.check_stack(thread: @RoundRobinThread)
 @target(arch: "aarch64", os: "none")
 @noreturn
 secret routine round_robin_thread_main() -> None
-    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek().to[@ThreadManagerByRoundRobin]()
+    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.load().to[@ThreadManagerByRoundRobin]()
     thread: @RoundRobinThread = manager.running.peek().to[@RoundRobinThread]()
-    RUNNING_MOLD.poke(reserve_failure_mold())
+    RUNNING_MOLD.store(reserve_failure_mold())
     ThreadLocalManager.reset()
     unmask_interrupts()
     when thread.plain_entry.peek()
@@ -573,8 +573,8 @@ secret routine round_robin_thread_main() -> None
 @target(arch: "aarch64", os: "none")
 @noreturn
 secret routine round_robin_idle_main() -> None
-    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.peek().to[@ThreadManagerByRoundRobin]()
-    RUNNING_MOLD.poke(reserve_failure_mold())
+    manager: @ThreadManagerByRoundRobin = RUNNING_ROUND_ROBIN.load().to[@ThreadManagerByRoundRobin]()
+    RUNNING_MOLD.store(reserve_failure_mold())
     loop
         unmask_interrupts()
         wait_for_next_interrupt()
@@ -588,7 +588,7 @@ secret routine round_robin_idle_main() -> None
 ### :param line: The timer's line.
 @target(arch: "aarch64", os: "none")
 secret routine round_robin_tick(line: U32) -> None
-    running_manager: @ThreadManagerByRoundRobin? = RUNNING_ROUND_ROBIN.peek().to[@ThreadManagerByRoundRobin?]()
+    running_manager: @ThreadManagerByRoundRobin? = RUNNING_ROUND_ROBIN.load().to[@ThreadManagerByRoundRobin?]()
     if running_manager.is_absent()
         cpu_timer_stop()
         return

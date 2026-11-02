@@ -563,7 +563,7 @@ common routine AccessManager.give_back(at: Addr) -> None
 ### :returns: The flow.
 @noinline
 routine current_flow() -> @AccessFlow
-    slot: @(@AccessFlow?)? = RUNNING_FLOW.peek().to[@(@AccessFlow?)?]()
+    slot: @(@AccessFlow?)? = RUNNING_FLOW.load().to[@(@AccessFlow?)?]()
     flow: @AccessFlow = when
         slot.is_absent() => THREAD_FLOW
         else => fiber_flow(slot.unwrap())
@@ -615,8 +615,8 @@ secret routine flow_of(id: U64) -> @AccessFlow
 ### :param slot: Where the fiber or work keeps its flow, None in it until its first access.
 ### :returns: The slot that ran before, to pass back after the switch.
 common routine AccessManager.switch_flow(slot: @(@AccessFlow?)?) -> @(@AccessFlow?)?
-    before: @(@AccessFlow?)? = RUNNING_FLOW.peek().to[@(@AccessFlow?)?]()
-    RUNNING_FLOW.poke(slot.to[Addr]())
+    before: @(@AccessFlow?)? = RUNNING_FLOW.load().to[@(@AccessFlow?)?]()
+    RUNNING_FLOW.store(slot.to[Addr]())
     return before
 
 ### Gives back the flow a fiber or a piece of work kept in `slot`, when the fiber or work itself goes, and leaves the slot
@@ -649,14 +649,14 @@ common routine AccessManager.holds(access: Addr) -> Bool
 ### :param place: A routine that writes the place of the code taking an access, or None.
 common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool, words: U8,
     place: Callable[(@SourceLocation,), None]?) -> None
-    DEADLOCK_ON.poke(deadlock_check)
-    ORDER_ON.poke(access_order)
-    WORDS.poke(words)
+    DEADLOCK_ON.store(deadlock_check)
+    ORDER_ON.store(access_order)
+    WORDS.store(words)
     place_at: Addr = when place
         is Callable[(@SourceLocation,), None] as writer => writer.addr()
         is None => Addr.zero()
     PLACE.poke_unbroken(place_at)
-    MAIN_FLOW.poke(current_flow())
+    MAIN_FLOW.store(current_flow())
     return
 
 ### Sets how a waiting flow parks, for a runtime whose work the stdlib's waits don't know: the routine is given the
@@ -678,7 +678,7 @@ common routine AccessManager.place_here() -> SourceLocation
     hook: Addr = PLACE.peek_unbroken()
     if hook.is_hollow()
         return unknown
-    if not (DEADLOCK_ON.peek() or ORDER_ON.peek())
+    if not (DEADLOCK_ON.load() or ORDER_ON.load())
         return unknown
     writer: Callable[(@SourceLocation,), None] = bitcast(hook)
     writer.call(place)
@@ -714,7 +714,7 @@ secret routine unlock_table() -> None
 ### :throws: Throws `OutOfMemoryError` when the C heap has no memory to give.
 @target(os: not "none")
 secret routine new_node() -> @AccessNode
-    if FREE_NODES.peek().is_absent()
+    if FREE_NODES.load().is_absent()
         chunk_at: Addr = allocate[AccessNode](count: NODE_CHUNK, manager: C_HEAP)
         if chunk_at.is_hollow()
             throw OutOfMemoryError()
@@ -722,10 +722,10 @@ secret routine new_node() -> @AccessNode
         for i in 0 til NODE_CHUNK
             node: @AccessNode = chunk.stride(i)
             node.zeroinit(1)
-            node.left.poke(FREE_NODES.peek())
-            FREE_NODES.poke(node)
-    free: @AccessNode = FREE_NODES.peek().unwrap()
-    FREE_NODES.poke(free.left.peek())
+            node.left.poke(FREE_NODES.load())
+            FREE_NODES.store(node)
+    free: @AccessNode = FREE_NODES.load().unwrap()
+    FREE_NODES.store(free.left.peek())
     return free
 
 ### The height of a subtree, 0 for none.
@@ -966,10 +966,10 @@ secret routine take_range(ask: AccessAsk) -> Bool
         ACCESS_RANGE_CHECK.poke_unbroken(check_range.to[Callable]().addr())
     loop
         lock_table()
-        if find_own(subtree: TABLE_ROOT.peek(), start: span.start, end: span.end, flow).is_present()
+        if find_own(subtree: TABLE_ROOT.load(), start: span.start, end: span.end, flow).is_present()
             unlock_table()
             throw reenter_error()
-        blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.peek(), span, flow)
+        blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.load(), span, flow)
         if blocker.is_absent()
             node: @AccessNode = new_node()
             node.start.poke(span.start)
@@ -983,8 +983,8 @@ secret routine take_range(ask: AccessAsk) -> Bool
             node.place.poke(ask.place.peek())
             node.left.poke(None())
             node.right.poke(None())
-            TABLE_ROOT.poke(insert_node(root_or_none: TABLE_ROOT.peek(), node))
-            HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() + 1)
+            TABLE_ROOT.store(insert_node(root_or_none: TABLE_ROOT.load(), node))
+            HELD_TOTAL.poke_unbroken(HELD_TOTAL.load() + 1)
             unlock_table()
             when check note_taken(flow,
                 taken: HeldAccess(access: ask.request.at, kind: ACCESS_EXCLUSIVE, mode: span.mode, place: ask.place.peek()))
@@ -1027,7 +1027,7 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, ask: Acces
     flow.waiting_holder.poke(Addr.zero())
     flow.waiting_for.poke_unbroken(ask.request.at)
     unlock_table()
-    if DEADLOCK_ON.peek()
+    if DEADLOCK_ON.load()
         check_deadlock(flow, wait)
     park(wait, deadline: ask.deadline)
     end_wait(flow)
@@ -1052,20 +1052,20 @@ secret routine release_node(at: Addr) -> None
     start: U64 = ptrtoint[Addr, U64](at)
 
     lock_table()
-    held: @AccessNode? = find_held(subtree: TABLE_ROOT.peek(), start, flow)
+    held: @AccessNode? = find_held(subtree: TABLE_ROOT.load(), start, flow)
     if held.is_absent()
         unlock_table()
         throw AccessNotHeldError(description: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
     node: @AccessNode = held.unwrap()
-    TABLE_ROOT.poke(remove_node(root_or_none: TABLE_ROOT.peek(), node))
-    HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() - 1)
+    TABLE_ROOT.store(remove_node(root_or_none: TABLE_ROOT.load(), node))
+    HELD_TOTAL.poke_unbroken(HELD_TOTAL.load() - 1)
     waiters: U32 = node.waiters.peek()
     node.word.fetch_add_unbroken(1)
     node.waiters.poke(0)
     node.writer_waits.poke(0)
     node.holder.poke(None())
-    node.left.poke(FREE_NODES.peek())
-    FREE_NODES.poke(node)
+    node.left.poke(FREE_NODES.load())
+    FREE_NODES.store(node)
     unlock_table()
     if waiters != 0
         wake_all(node.word)
@@ -1102,13 +1102,13 @@ secret routine wait_out_range(at: Addr, size: U64) -> @[Byte]
     span: AccessSpan = span_of(ask.request)
     loop
         lock_table()
-        when find_own(subtree: TABLE_ROOT.peek(), start: span.start, end: span.end, flow)
+        when find_own(subtree: TABLE_ROOT.load(), start: span.start, end: span.end, flow)
             is @AccessNode as own =>
                 taken: SourceLocation = own.place.peek()
                 unlock_table()
                 return give_back_held_sentence(flow, taken)
             is None => nothing
-        blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.peek(), span, flow)
+        blocker: @AccessNode? = find_blocker(subtree: TABLE_ROOT.load(), span, flow)
         if blocker.is_absent()
             unlock_table()
             return @[Byte].empty()
@@ -1331,7 +1331,7 @@ secret routine held_mode(flow: @AccessFlow, access: Addr) -> U8
 secret routine note_taken(flow: @AccessFlow, taken: HeldAccess) -> None
     count: U64 = flow.count.peek()
 
-    if ORDER_ON.peek()
+    if ORDER_ON.load()
         check_order(flow, taken)
     if count < HELD_SLOTS
         flow.held.getslot(count).poke(taken)
@@ -1422,14 +1422,14 @@ needs E obeys Crashable
 @noreturn
 common routine AccessManager.stop_deadlock(error: DeadlockError, place: @SourceLocation) -> None
     shown: @SourceLocation = when
-        WORDS.peek() == WORDS_SUFLAE => NO_PLACE
+        WORDS.load() == WORDS_SUFLAE => NO_PLACE
         else => known_place(place)
     crash_at(error, place: shown)
 
 ### The failure for a flow taking an access it already holds.
 ### :returns: The failure.
 secret routine reenter_error() -> ReenterDuringAccessError
-    words: U8 = WORDS.peek()
+    words: U8 = WORDS.load()
     message: @[Byte] = when
         words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
         else => "This work opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
@@ -1488,7 +1488,7 @@ common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @Sour
     flow.waiting_holder.poke_unbroken(holder)
     flow.waiting_for.poke_unbroken(access)
     unlock_table()
-    if DEADLOCK_ON.peek()
+    if DEADLOCK_ON.load()
         check_deadlock(flow,
             wait: AccessWait(access, holder, word: None(), expected: 0, hooked: true))
     return
@@ -1522,7 +1522,7 @@ secret routine search_flow(flow: @AccessFlow, target: @AccessFlow, path: @Deadlo
     waits_for: Addr = flow.waiting_for.peek_unbroken()
     if waits_for.is_not_hollow()
         if flow.waiting_end.peek() != 0
-            if search_nodes(subtree: TABLE_ROOT.peek(), flow, target, path)
+            if search_nodes(subtree: TABLE_ROOT.load(), flow, target, path)
                 return true
         else
             holder_at: @U64 = flow.waiting_holder.peek_unbroken().to[@U64]()
@@ -1611,9 +1611,9 @@ secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
 ### :param out: Where to write.
 ### :param flow: The flow.
 secret routine write_flow(out: @SliceWriter, flow: @AccessFlow) -> None
-    words: U8 = WORDS.peek()
+    words: U8 = WORDS.load()
     number: U64 = flow.number.peek()
-    if words != WORDS_TESSERA and is_flow(a: MAIN_FLOW.peek(), b: flow)
+    if words != WORDS_TESSERA and is_flow(a: MAIN_FLOW.load(), b: flow)
         out.write("start()")
         return
     if words != WORDS_TESSERA
@@ -1644,7 +1644,7 @@ secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
 secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
     out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](),
         capacity: REPORT_BYTES)
-    words: U8 = WORDS.peek()
+    words: U8 = WORDS.load()
     length: U64 = path.count.peek()
 
     when
@@ -1697,7 +1697,7 @@ secret routine unlock_orders() -> None
 ### :param second: The access taken while it was.
 ### :returns: The index, or ORDER_SLOTS.
 secret routine find_order(first: Addr, second: Addr) -> U64
-    count: U64 = ORDER_COUNT.peek()
+    count: U64 = ORDER_COUNT.load()
 
     for i in 0 til count
         entry: @AccessOrder = ORDERS.getslot(i)
@@ -1726,11 +1726,11 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
         if opposite < ORDER_SLOTS
             unlock_orders()
             report_order(flow, before: ORDERS.getslot(opposite).place.peek())
-        count: U64 = ORDER_COUNT.peek()
+        count: U64 = ORDER_COUNT.load()
         if count < ORDER_SLOTS and find_order(first: earlier, second: access) == ORDER_SLOTS
             ORDERS.getslot(count).poke(AccessOrder(first: earlier, second: access,
                 place: place.load()))
-            ORDER_COUNT.poke(count + 1)
+            ORDER_COUNT.store(count + 1)
         continue
     then
         unlock_orders()
@@ -1743,7 +1743,7 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
 secret routine report_order(flow: @AccessFlow, before: SourceLocation) -> None
     out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](),
         capacity: REPORT_BYTES)
-    words: U8 = WORDS.peek()
+    words: U8 = WORDS.load()
 
     when
         words == WORDS_TESSERA => out.write("This takes an access while holding another, and the two were taken in the opposite order before")

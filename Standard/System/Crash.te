@@ -149,11 +149,11 @@ infallible routine @CrashMessage.write_into(out: @CrashSink) -> None
 infallible routine @CrashMessage.text() -> @[Byte]
     sink: &CrashSink <- CrashSink(state: Addr.zero(), writer: fill_crash_message.to[Callable]())
 
-    CRASH_MESSAGE_USED.poke(0)
-    CRASH_MESSAGE_CUT.poke(0)
+    CRASH_MESSAGE_USED.store(0)
+    CRASH_MESSAGE_CUT.store(0)
     me.write_into(sink)
-    used: U64 = CRASH_MESSAGE_USED.peek()
-    if CRASH_MESSAGE_CUT.peek() == 1
+    used: U64 = CRASH_MESSAGE_USED.load()
+    if CRASH_MESSAGE_CUT.load() == 1
         mark_cut(used)
     return CRASH_MESSAGE.getslice(start: 0, count: used)
 
@@ -163,15 +163,15 @@ infallible routine @CrashMessage.text() -> @[Byte]
 ### :param count: The number of bytes.
 @untraced
 secret infallible routine fill_crash_message(state: Addr, data: @Byte, count: U64) -> None
-    used: U64 = CRASH_MESSAGE_USED.peek()
+    used: U64 = CRASH_MESSAGE_USED.load()
     room: U64 = CRASH_MESSAGE_SIZE - used
     taken: U64 = count.min(room)
     if taken < count
-        CRASH_MESSAGE_CUT.poke(1)
+        CRASH_MESSAGE_CUT.store(1)
     for i in 0 til taken
         CRASH_MESSAGE.getslot(used + i).poke(data.stride(i).peek())
     then
-        CRASH_MESSAGE_USED.poke(used + taken)
+        CRASH_MESSAGE_USED.store(used + taken)
         return
 
 ### Ends a message that didn't fit with an ellipsis (`…`, three bytes in UTF-8), in the last whole characters that
@@ -188,7 +188,7 @@ secret infallible routine mark_cut(used: U64) -> None
         CRASH_MESSAGE.getslot(end).poke(0xE2)
         CRASH_MESSAGE.getslot(end + 1).poke(0x80)
         CRASH_MESSAGE.getslot(end + 2).poke(0xA6)
-        CRASH_MESSAGE_USED.poke(end + 3)
+        CRASH_MESSAGE_USED.store(end + 3)
         return
 
 ### Puts `report` in the slot of the reporting routine, for the crashes from here on: it gets the crash's name, its
@@ -246,9 +246,9 @@ infallible common routine Crash.stop() -> None
 @untraced
 @target(os: not "none")
 secret infallible routine crash_enter() -> Bool
-    if CRASH_HERE.peek() == 1
+    if CRASH_HERE.load() == 1
         return false
-    CRASH_HERE.poke(1)
+    CRASH_HERE.store(1)
     if CRASH_STATE.swap(1) == 0
         return true
     crash_wait()
@@ -258,9 +258,9 @@ secret infallible routine crash_enter() -> Bool
 @untraced
 @target(os: "none")
 secret infallible routine crash_enter() -> Bool
-    if CRASH_STATE.peek() == 1
+    if CRASH_STATE.load() == 1
         return false
-    CRASH_STATE.poke(1)
+    CRASH_STATE.store(1)
     return true
 
 ### The hosted default report (Hosted): the name, the message, the place, and the trace, on standard error.
@@ -328,7 +328,7 @@ needs E obeys Crashable
 @noinline
 @untraced
 infallible routine failure_mold() -> Addr
-    running: Addr = RUNNING_MOLD.peek()
+    running: Addr = RUNNING_MOLD.load()
     if running.is_hollow()
         return thread_failure_mold()
     return running

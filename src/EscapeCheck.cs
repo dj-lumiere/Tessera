@@ -422,7 +422,7 @@ public sealed class EscapeCheck
         /// The end of every error about a thread-local's memory leaving its thread.
         private static string ThreadLocalFix(string global) =>
             $"each thread has its own '{global}', which is gone once that thread ends. Hand on the value itself "
-            + $"({global}.peek()), or keep the address only in this thread (a name, or another @threadlocal global)";
+            + $"({global}.load()), or keep the address only in this thread (a name, or another @threadlocal global)";
 
         /// Only the views kept in an entity's field or a global: what an instance of a generic routine of the standard
         /// library reports (its other escapes are by design, and only give their effects to its callers).

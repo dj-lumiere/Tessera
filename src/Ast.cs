@@ -524,6 +524,10 @@ public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeAr
 
     /// Written as an operator (`1 + x` is `S64.add(1, x)`), so its arguments go by position.
     public bool FromOperator { get; init; }
+
+    /// A peek or poke the builder wrote itself (a place read or written by a line that spells no call): the rule that
+    /// a `&T` place is read with load() and written with store(v) applies to the program's own spelling only.
+    public bool Builder { get; init; }
 }
 
 /// `.name(args)`: a typewise call whose type is the expected one (`n: Option[T] = .absent()`).
@@ -556,6 +560,10 @@ public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> Ty
 
     /// Written as an operator (`a + b` is `a.add(b)`, `xs[i]` is `xs.getitem(i)`), so its arguments go by position.
     public bool FromOperator { get; init; }
+
+    /// A peek or poke the builder wrote itself (a place read or written by a line that spells no call): the rule that
+    /// a `&T` place is read with load() and written with store(v) applies to the program's own spelling only.
+    public bool Builder { get; init; }
 }
 
 /// `a + b`, `a == b`, `a and b`, ...: an operator, sugar for the routine of that name on the left operand

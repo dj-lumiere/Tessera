@@ -294,7 +294,7 @@ secret routine @CoroutineManager.ensure() -> None
         me.poke(Me.construct(stack_size: DEFAULT_FIBER_STACK, stack_manager: PAGES, manager: HEAP))
         if me !== FIBERS
             return
-        THREAD_CLEANUP.poke(release_fibers.to[Callable]())
+        THREAD_CLEANUP.store(release_fibers.to[Callable]())
         return
     return
 
@@ -850,34 +850,34 @@ secret routine @CoroutineManager.drive(awaited: @WorkSlot?, deadline: Duration,
 @target(os: not "none")
 secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     me.current.poke(fiber.to[Addr]())
-    outer_fiber: Waiter = RUNNING_FIBER.peek()
-    outer_work: Addr = RUNNING_WORK.peek()
-    RUNNING_FIBER.poke(Waiter(fiber, manager: me, park_fn: park_hook.to[Callable](),
+    outer_fiber: Waiter = RUNNING_FIBER.load()
+    outer_work: Addr = RUNNING_WORK.load()
+    RUNNING_FIBER.store(Waiter(fiber, manager: me, park_fn: park_hook.to[Callable](),
         wake_fn: wake_hook.to[Callable]()))
-    RUNNING_WORK.poke(fiber.work.peek())
+    RUNNING_WORK.store(fiber.work.peek())
     # The fiber's crash trace depth goes in while it runs and comes back out with it, and the thread's own stays as
     # it was.
     own: U64 = trace_switch(fiber.trace_depth.peek())
     # A failure thrown on the fiber goes in its own mold, and the thread's flow keeps the one it had.
-    outer_mold: Addr = RUNNING_MOLD.peek()
-    RUNNING_MOLD.poke(fiber.mold.peek())
+    outer_mold: Addr = RUNNING_MOLD.load()
+    RUNNING_MOLD.store(fiber.mold.peek())
     # The AccessManager sees the fiber as the flow running here while it runs.
     outer_flow: @(@AccessFlow?)? = AccessManager.switch_flow(fiber.access)
     # The running flow's StackManager is the fiber's while it runs.
-    outer_stack: Addr = RUNNING_STACK.peek()
-    RUNNING_STACK.poke(fiber.stack.to[Addr]())
+    outer_stack: Addr = RUNNING_STACK.load()
+    RUNNING_STACK.store(fiber.stack.to[Addr]())
     me.home_race.poke(race_stack_current())
     race_stack_switch(fiber.race.peek())
     # The fiber's stack pointer is the CPU's while it runs, and its switch away writes it back.
     resume_at: Addr = fiber.stack.sp.peek()
     fiber.stack.sp.poke(Addr.zero())
     switch_stack(from: me.home, to: resume_at)
-    RUNNING_STACK.poke(outer_stack)
+    RUNNING_STACK.store(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
-    RUNNING_MOLD.poke(outer_mold)
+    RUNNING_MOLD.store(outer_mold)
     AccessManager.switch_flow(outer_flow)
-    RUNNING_FIBER.poke(outer_fiber)
-    RUNNING_WORK.poke(outer_work)
+    RUNNING_FIBER.store(outer_fiber)
+    RUNNING_WORK.store(outer_work)
     me.current.poke(Addr.zero())
     then: Callable[(@Me, @FiberState), None] = fiber.then.peek()
     fiber.then.poke(requeue.to[Callable]())
@@ -896,7 +896,7 @@ secret routine fiber_start() -> None
     # each resume from now on.
     mold: Addr = reserve_failure_mold()
     fiber.mold.poke(mold)
-    RUNNING_MOLD.poke(mold)
+    RUNNING_MOLD.store(mold)
     loop
         slot: @WorkSlot = fiber.work.peek().to[@WorkSlot]()
         runner: Callable[(Addr,), None] = slot.runner.peek()
@@ -1012,7 +1012,7 @@ secret routine commit_idle(manager: @CoroutineManager, fiber: @FiberState) -> No
 ### :param deadline: When the fiber goes on without a wake, or `Duration.MAX`.
 @target(os: not "none")
 secret routine park_hook(manager: Addr, deadline: Duration) -> None
-    fibers: @CoroutineManager = RUNNING_FIBER.peek().manager.to[@CoroutineManager]()
+    fibers: @CoroutineManager = RUNNING_FIBER.load().manager.to[@CoroutineManager]()
 
     if deadline == Duration.MAX
         fibers.park()

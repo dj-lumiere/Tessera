@@ -385,7 +385,7 @@ public sealed partial class FunctionGen
         if (s.Place)
         {
             _moving = true;
-            var takenOut = Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+            var takenOut = Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos) { Builder = true }, expected);
             // An entity taken out of its place leaves that address until it lands in another, unless steal a as b
             // moves its stamps along.
             StampsLeave(takenOut, s.Pos);
@@ -405,7 +405,7 @@ public sealed partial class FunctionGen
             if (!duty || !Entities.Holds(element) && ManagedMemory(element) is null)
             {
                 _moving = true;
-                return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+                return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos) { Builder = true }, expected);
             }
             if (Entities.Holds(element) && UnfollowedPlace(s.Value) is { } why)
                 throw Err(s.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
@@ -450,7 +450,7 @@ public sealed partial class FunctionGen
         }
         else
             v = fromSlot
-                ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
+                ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos) { Builder = true }, expected)
                 : Eval(r, expected);
         // An entity moved out of its slot, or a value parameter handed on, leaves its address until it lands in
         // another, unless steal a as b moves its stamps along.
@@ -538,9 +538,9 @@ public sealed partial class FunctionGen
             EvalAny(new MethodCallExpr(late, lateType.Name == "BorrowedSlice" ? "replace" : "store", [], [f.Value], f.Pos));
             return;
         }
-        if (f.Place is ValueRef named)
+        if (f.Place is ValueRef or PresetRef { Owner: null } && (f.Place is ValueRef || IsGlobalPlace((PresetRef)f.Place)))
         {
-            EmitOverwrite(named, f);
+            EmitOverwrite(f.Place, f);
             return;
         }
         if (Infer(f.Place) is not PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var held] } cell }
@@ -603,7 +603,7 @@ public sealed partial class FunctionGen
     {
         bool filling = _filling;
         _filling = true;
-        try { EvalAny(new MethodCallExpr(f.Place, "poke", [], [value], f.Pos)); }
+        try { EvalAny(new MethodCallExpr(f.Place, "poke", [], [value], f.Pos) { Builder = true }); }
         finally { _filling = filling; }
         if (MemOn && !_cur.Terminated && PlaceKey(f.Place) is { } key)
         {
@@ -672,7 +672,7 @@ public sealed partial class FunctionGen
             Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
         }
         _injecting = true;
-        try { EvalAny(new MethodCallExpr(st.From, "poke", [], [new StealExpr(new ValueRef(fresh, st.Inject.Pos), st.Inject.Pos)], st.Pos)); }
+        try { EvalAny(new MethodCallExpr(st.From, "poke", [], [new StealExpr(new ValueRef(fresh, st.Inject.Pos), st.Inject.Pos)], st.Pos) { Builder = true }); }
         finally { _injecting = false; }
     }
 
@@ -1086,12 +1086,13 @@ public sealed partial class FunctionGen
     /// with its destruct first, once `value` is made, as `poke` into an entity slot does. A place of memory (`&[T]`)
     /// takes the new memory with `replace`, which gives the old back first. `from` borrows a new place, so on a place
     /// that holds one already it would lose the old.
-    private void EmitOverwrite(ValueRef named, FillStmt f)
+    private void EmitOverwrite(Expr named, FillStmt f)
     {
         var printer = new Printer();
+        string spelledName = printer.Expr(named, 0);
         if (f.Value is AtExpr at)
-            throw Err(f.Pos, $"'{named.Name}' holds a value already, and 'from' borrows a new place, which would lose the "
-                + $"one it has: write over it without from, {named.Name} <- {printer.Expr(at.Value, 0)}");
+            throw Err(f.Pos, $"'{spelledName}' holds a value already, and 'from' borrows a new place, which would lose the "
+                + $"one it has: write over it without from, {spelledName} <- {printer.Expr(at.Value, 0)}");
         var placeType = Infer(named);
         if (placeType is PtrType { Pointee: RecordType { Decl.Name: "BorrowedSlice" } slice } && slice.Decl.Module == Compiler.SystemModule)
         {
@@ -1099,14 +1100,14 @@ public sealed partial class FunctionGen
             return;
         }
         if (placeType is not PtrType { Pointee: { } pointee } || pointee is PtrType)
-            throw Err(f.Pos, $"'{named.Name}' is a value of {placeType?.Name ?? "unknown type"}, not a place, so '<-' has nothing "
-                + $"to write into: bind it as a place, {named.Name}: &{placeType?.Name ?? "T"} <- value, to write over it later");
+            throw Err(f.Pos, $"'{spelledName}' is a value of {placeType?.Name ?? "unknown type"}, not a place, so '<-' has nothing "
+                + $"to write into: bind it as a place, {spelledName}: &{placeType?.Name ?? "T"} <- value, to write over it later");
         Expr slot = pointee is RecordType { Decl.Name: "BorrowedCell" } cell && cell.Decl.Module == Compiler.SystemModule
             ? new MethodCallExpr(named, "getview", [], [], f.Pos)
             : named;
         var outer = _overwriteValue;
         _overwriteValue = f.Value;
-        try { EvalAny(new MethodCallExpr(slot, "poke", [], [f.Value], f.Pos)); }
+        try { EvalAny(new MethodCallExpr(slot, "poke", [], [f.Value], f.Pos) { Builder = true }); }
         finally { _overwriteValue = outer; }
     }
 
@@ -2321,7 +2322,7 @@ public sealed partial class FunctionGen
                     _claimContents = contents;
                     try
                     {
-                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "poke", [], [contents], contents.Pos), VoidType.Instance);
+                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "poke", [], [contents], contents.Pos) { Builder = true }, VoidType.Instance);
                     }
                     finally
                     {
@@ -4437,7 +4438,7 @@ public sealed partial class FunctionGen
             }
             else if (m.Receiver is PresetRef p && InMemoryPreset(p))
             {
-                (routine, shows, fix) = ("write_global_cell", "its address", $"{name}.peek()");
+                (routine, shows, fix) = ("write_global_cell", "its address", $"{name}.load()");
             }
             else (routine, shows, fix) = ("write_pointed_cell", "its address", $"{name}.peek()");
             if (IsTextArray(held)) fix += $", or {name}.getview() for its text";
@@ -5952,7 +5953,7 @@ public sealed partial class FunctionGen
         if (rt is PtrType { Pointee: { } shown } && m.Name is "represent_into" or "diagnose_into"
             && SourceTypeParams.Count > 0 && !Entities.Holds(shown)
             && _c.FindMethod(shown, m.Name, _env.File, m.Pos, FromTypeParameter(shown) || Derived) is not null)
-            return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "peek", [], [], m.Receiver.Pos) }, expected);
+            return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "peek", [], [], m.Receiver.Pos) { Builder = true } }, expected);
         if (rt is PtrType && MemoryCellWrite(m, rt, expected) is { } pointerWrite) return pointerWrite;
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
@@ -5962,7 +5963,7 @@ public sealed partial class FunctionGen
             if (SourceTypeParams.Count > 0 && !Entities.Holds(held))
             {
                 Expr Load(Expr x) => InferQuiet(x) is PtrType { Pointee: { } p } && p.Equals(held)
-                    ? new MethodCallExpr(x, "peek", [], [], x.Pos) : x;
+                    ? new MethodCallExpr(x, "peek", [], [], x.Pos) { Builder = true } : x;
                 return PlanMethod(m with { Receiver = Load(m.Receiver), Args = m.Args.Select(Load).ToList() }, expected);
             }
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; peek it: .peek().{m.Name}(...)");
@@ -7059,7 +7060,7 @@ public sealed partial class FunctionGen
         var returned = r.Value;
         if (r.Value is ValueRef named && ReturnsSlotValue(named))
         {
-            returned = new MethodCallExpr(named, "peek", [], [], named.Pos);
+            returned = new MethodCallExpr(named, "peek", [], [], named.Pos) { Builder = true };
             _moving = true;
         }
         var v = Eval(returned, _inst.Ret);

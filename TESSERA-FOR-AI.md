@@ -193,10 +193,11 @@ routine start() -> None
   one pass to the next: borrow it before the loop, or carry the value with `with`.
 - **Reading and writing a `&T`.** `load()` / `store(v)` read and write the value, `getview()` gives its `@T`, `take()`
   takes the value out. A routine of `@T` called on a `&T` works on its view (the builder inserts `getview`, an
-  effect-free step: `count.peek()`, `bump(count)` for a `@S64` parameter), while effectful steps (`store`, `poke`,
-  `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
+  effect-free step: `bump(count)` for a `@S64` parameter), while effectful steps (`store`, `drop`) are always written.
+  A `&T` (a STACK place or a global) has no `peek` / `poke`: they are build errors that point to `load()` / `store(v)`.
+  `x <- v` writes a filled place too (`count <- count.load() + 1`). A routine the held type itself declares under one of those names wins: a STACK
   `&List[S64]`'s `getview()` is the List's span. A field of the value is a place through the view the same way:
-  `p.value` on a `p: &Box` is `p.getview().value`, read with `p.value.peek()` and written with `p.value.poke(v)`. Passing a `&T` where a `@T` is expected lends its view. Returning a
+  `p.value` on a `p: &Box` is `p.getview().value`, read with `p.value.peek()` and written with `p.value.poke(v)` (a field is an `@`, so it keeps `peek` / `poke`). Passing a `&T` where a `@T` is expected lends its view. Returning a
   STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
 - **Writing over a place: `y <- v`.** On a place that holds a value already, `y <- v` writes `v` into the same memory
   (`v.store_into(y)`): nothing new is borrowed and the place is given back once, where it always was. For an entity the
@@ -505,8 +506,8 @@ routine start() -> None
     return (the result of `same(p: l)` is `l`'s address), and the parameters it stores where they outlive the call
     (into a global, or into memory another parameter reaches). Handing a view of the frame to such a parameter is
     `stash(l) hands 'stash' a value that reaches the frame slot 'l' ..., and 'stash' keeps what its 'p' reaches
-    where it outlives the call (line N: KEPT.poke(p))`. A routine that only reads its parameter may be handed one.
-  - A global put back as it was before the routine returns (`outer: W = G.peek()`, `G.poke(x)`, ..., `G.poke(outer)`)
+    where it outlives the call (line N: KEPT.store(p))`. A routine that only reads its parameter may be handed one.
+  - A global put back as it was before the routine returns (`outer: W = G.load()`, `G.store(x)`, ..., `G.store(outer)`)
     on every path holds the value only while the routine runs, and isn't counted. A path that returns without putting
     it back keeps the value there.
   - A call through a routine value is a call to the routine it names: `apply(f: keep.to[Callable](), p: l)` hands `l`
@@ -673,9 +674,9 @@ routine start() -> None
   read-only"). Globals and presets are part of the program image, there before `start` runs (nothing runs before it to
   compute one, on any target), so their contents are known at build time: literals, presets, `[...]` (an
   array), `T(field: value)` (a record field by field), a routine for a `Callable` (`f.to[Callable]()`), and in a global
-  the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node?`). A global's name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`,
+  the name of another global or of a preset (its address, and a global holding a pointer is `&@T`: `global HEAD: &@Node?`). A global is a `&T` place: `TICKS.load()`, `TICKS.store(n)`, `TICKS <- n`, and a field is `STATS.calls.poke(n)`,
   `K.getitem(i)`. Only a folded preset is a buildtime constant (`Items[S64, N]` with `preset N: U64 = 4`).
-  A global that holds an entity (`lateinit global G: &Noisy`) is filled with `G.poke(v)`. A poke into an entity
+  A global that holds an entity (`lateinit global G: &Noisy`) is filled with `G.store(v)`. A poke into an entity
   slot (a global like that, or a STACK place `x: &Noisy`) ends what the slot held itself: once `v` is made, a slot that
   isn't hollow (all zero, checked at run time, since any routine may fill a global) has its value's `destruct` run
   first. `drop G` and `steal x as old` leave the slot hollow, and `steal G as old inject new` hands the old value to
@@ -2350,10 +2351,10 @@ lateinit global THREADS: &ThreadManagerByRoundRobin
 global STACKS: &Items[U64, 8192]   # 64 KiB for the threads' slots
 
 routine start() -> None
-    GIC.poke(InterruptManagerByGic.construct(distributor: 0x08000000,
+    GIC.store(InterruptManagerByGic.construct(distributor: 0x08000000,
         cpu_interface: 0x08010000))
     GIC.start()
-    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+    THREADS.store(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
         slice: Duration.from_milliseconds(1), interrupts: GIC))
     THREADS.launch(entry: worker.to[Callable]())   # false when no slot is free
     THREADS.run()   # returns once every thread launched has returned

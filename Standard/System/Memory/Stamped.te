@@ -83,19 +83,19 @@ needs TWriter obeys Writer
 ### :throws: Throws `UnacceptedValueError` when the table is set up already.
 common routine PoolManager.set_up(memory: @MemoryManager) -> None
     lock_pool()
-    when POOL_MEMORY.peek()
+    when POOL_MEMORY.load()
         is @MemoryManager =>
             unlock_pool()
             throw UnacceptedValueError(description: "The PoolManager is set up already: call PoolManager.set_up(memory: m) once, in start.")
         is None => nothing
-    POOL_MEMORY.poke(memory)
+    POOL_MEMORY.store(memory)
     unlock_pool()
     return
 
 ### Whether `set_up` was called: a language runtime sets the table up on its first stamp.
 ### :returns: True once the table is set up.
 common routine PoolManager.is_set_up() -> Bool
-    when POOL_MEMORY.peek()
+    when POOL_MEMORY.load()
         is @MemoryManager => return true
         is None => return false
 
@@ -103,7 +103,7 @@ common routine PoolManager.is_set_up() -> Bool
 ### :returns: The manager.
 ### :throws: Throws `UnacceptedValueError` when `set_up` wasn't called.
 secret routine pool_memory() -> @MemoryManager
-    when POOL_MEMORY.peek()
+    when POOL_MEMORY.load()
         is @MemoryManager as memory => return memory
         is None =>
             throw UnacceptedValueError(description: "A stamp needs the PoolManager, and nothing set it up: call PoolManager.set_up(memory: HEAP) in start, before the first stamp().")
@@ -224,8 +224,8 @@ secret routine pool_entry(slot: U32) -> @PoolEntry
 ### :throws: Throws `OutOfMemoryError` when the manager has no memory.
 secret routine add_pool_chunk() -> None
     memory: @MemoryManager = pool_memory()
-    chunks: U64 = POOL_CHUNKS.peek()
-    room: U64 = POOL_DIRECTORY_ROOM.peek()
+    chunks: U64 = POOL_CHUNKS.load()
+    room: U64 = POOL_DIRECTORY_ROOM.load()
     if chunks == room
         grown: U64 = when
             room == 0 => 4
@@ -234,16 +234,16 @@ secret routine add_pool_chunk() -> None
         if fresh.is_hollow()
             throw OutOfMemoryError()
         if chunks > 0
-            fresh.to[@Addr]().copy(src: POOL_DIRECTORY.peek().to[@Addr](), count: chunks)
+            fresh.to[@Addr]().copy(src: POOL_DIRECTORY.load().to[@Addr](), count: chunks)
         pool_write(POOL_DIRECTORY, value: fresh)
-        POOL_DIRECTORY_ROOM.poke(grown)
+        POOL_DIRECTORY_ROOM.store(grown)
     chunk: Addr = allocate[PoolEntry](count: POOL_CHUNK_SLOTS, manager: memory)
     if chunk.is_hollow()
         throw OutOfMemoryError()
     chunk.to[@PoolEntry]().zeroinit(POOL_CHUNK_SLOTS)
-    directory: @Addr = POOL_DIRECTORY.peek().to[@Addr]()
+    directory: @Addr = POOL_DIRECTORY.load().to[@Addr]()
     pool_write(directory.stride(chunks), value: chunk)
-    POOL_CHUNKS.poke(chunks + 1)
+    POOL_CHUNKS.store(chunks + 1)
     return
 
 ### Takes a slot for the entity at `at`: a free one, else the next one never used. For a language runtime that keeps
@@ -253,23 +253,23 @@ secret routine add_pool_chunk() -> None
 ### :throws: Throws `OutOfMemoryError` when there is no memory for a chunk, or every slot is taken.
 common routine PoolManager.take(at: Addr) -> U32
     lock_pool()
-    free: U32 = POOL_FREE.peek()
+    free: U32 = POOL_FREE.load()
     if free != 0
         entry: @PoolEntry = pool_entry(free)
-        POOL_FREE.poke(entry.next_free.peek())
+        POOL_FREE.store(entry.next_free.peek())
         entry.next_free.poke(0)
         pool_write(entry.at, value: at)
         unlock_pool()
         return free
     next: U32 = when
-        POOL_NEXT.peek() == 0 => 1
-        else => POOL_NEXT.peek()
+        POOL_NEXT.load() == 0 => 1
+        else => POOL_NEXT.load()
     if next == U32.MAX
         unlock_pool()
         throw OutOfMemoryError()
-    if (next >> 12).to[U64]() == POOL_CHUNKS.peek()
+    if (next >> 12).to[U64]() == POOL_CHUNKS.load()
         add_pool_chunk()
-    POOL_NEXT.poke(next + 1)
+    POOL_NEXT.store(next + 1)
     pool_write(pool_entry(next).at, value: at)
     unlock_pool()
     return next
@@ -294,8 +294,8 @@ common routine PoolManager.end(slot: U32) -> None
         unlock_pool()
         return
     pool_write(entry.generation, value: generation + 1)
-    entry.next_free.poke(POOL_FREE.peek())
-    POOL_FREE.poke(slot)
+    entry.next_free.poke(POOL_FREE.load())
+    POOL_FREE.store(slot)
     unlock_pool()
     return
 
@@ -309,9 +309,9 @@ common routine PoolManager.end(slot: U32) -> None
 common routine PoolManager.lookup(slot: U32, generation: U32) -> Addr
     # A slot past the last one taken (a stamp made by hand) has no entry, and slot 0's entry is all zero. Below
     # POOL_NEXT the directory and the slot's chunk exist.
-    if slot >= POOL_NEXT.peek()
+    if slot >= POOL_NEXT.load()
         return Addr.zero()
-    directory: @Addr = bitcast[Addr, @Addr](POOL_DIRECTORY.peek())
+    directory: @Addr = bitcast[Addr, @Addr](POOL_DIRECTORY.load())
     chunk: Addr = directory.stride((slot >> 12).to[U64]()).peek()
     entry: @PoolEntry = bitcast[Addr, @PoolEntry](chunk).stride((slot & 4095).to[U64]())
     if entry.generation.peek() != generation

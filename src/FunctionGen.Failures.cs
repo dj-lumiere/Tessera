@@ -693,7 +693,7 @@ public sealed partial class FunctionGen
             var returned = r.Value;
             if (r.Value is ValueRef named && ReturnsSlotValue(named))
             {
-                returned = new MethodCallExpr(named, "peek", [], [], named.Pos);
+                returned = new MethodCallExpr(named, "peek", [], [], named.Pos) { Builder = true };
                 _moving = true;
             }
             v = Eval(returned, _inst.Ret);
