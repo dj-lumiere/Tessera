@@ -6332,10 +6332,11 @@ public sealed partial class FunctionGen
         return EmitCall(plan);
     }
 
-    /// A routine that takes three or more arguments besides `me` has each one named, in the order of its parameters:
-    /// `copy(dest: d, source: s, count: n)`. Two may go in order. A value already called like its parameter goes by
-    /// its name alone (`copy(dest, source: s, count: n)`). A routine marked `#positional` (its arguments alike, as in `max(a, b)`) and a C
-    /// routine take them in order, and a name written there still has to be the parameter's.
+    /// Arguments without a label fill the parameters in order from the first (`area(width, height)`), and a label says which
+    /// parameter an argument is for (`copy(dest: d, source: s, count: n)`, in the order of the parameters). A value
+    /// already called like its parameter needs no label. A value called like ANOTHER parameter of the routine, in a slot
+    /// that isn't its own (`f(n - 1, from, to, tmp)` where `to` sits in `tmp`'s place), needs a label, so the order
+    /// and the names are never two meanings silently. A routine marked `#positional` and a C routine take them in order.
     private void CheckArgNames(Expr e, CallPlan plan)
     {
         if (e is MethodCallExpr { FromOperator: true } or NsCallExpr { FromOperator: true }) return;
@@ -6352,7 +6353,6 @@ public sealed partial class FunctionGen
         if (offset < 0) return;
         var named = r.Params.Skip(offset).Where(p => p.Name != "me").ToList();
         bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { First: "c" };
-        bool needsNames = named.Count >= 3 && !inOrder;
         string Shape() => $"{r.DisplayName}({string.Join(", ", named.Select(p => $"{p.Name}: ..."))})";
         // Fewer arguments than parameters besides `me`: name the ones the call leaves out, by the names it gives or else
         // from the end.
@@ -6382,10 +6382,9 @@ public sealed partial class FunctionGen
             if (label is not null && label != p.Name)
                 throw Err(arg.Pos, $"argument {i + 1} of '{r.DisplayName}' is named '{label}', but the parameter there is "
                     + $"'{p.Name}'; the names follow the parameters' order: {Shape()}");
-            bool punned = arg is ValueRef v && v.Name == p.Name;
-            if (label is null && needsNames && !punned)
-                throw Err(arg.Pos, $"'{r.DisplayName}' takes {named.Count} arguments, so each one is named: {Shape()} "
-                    + $"(a value already called '{p.Name}' goes by its name alone)");
+            if (label is null && !inOrder && arg is ValueRef v && v.Name != p.Name && named.Any(q => q.Name == v.Name))
+                throw Err(arg.Pos, $"'{v.Name}' is the name of another parameter of '{r.DisplayName}', and this argument sits in the place of "
+                    + $"'{p.Name}': label it so the call says which it is, {p.Name}: {v.Name} ({Shape()})");
         }
     }
 

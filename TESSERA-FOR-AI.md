@@ -2488,14 +2488,15 @@ A second memory manager for another job goes just before it, and each is named f
 (`CoroutineManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). No routine has a form without the
 memory manager: a call that leaves it off is the build error "missing argument 'manager'".
 
-**Named arguments.** A call to a routine taking three or more arguments besides `me` names each one, in the order
-of the parameters (`box(width: 3, height: 4, depth: 5)`); a name out of place is a build error. A value already
-called like its parameter goes by its name alone (`box(width, height: 4, depth: 5)`), so bind values under their
-parameters' names (`retries: U32 = 3`, then `connect(host, port: 80, retries)`). One or two arguments besides `me`
-may go without names (`len.add(1)`, `area(3, 4)`), a name written there still has to be the parameter's, and `me` is
-never named (`S64.max(a, b)`). `@positional` routines (the raw operations: `add[T](a,
-b)`, `ieq`, `band`, `fadd`, ...) and C externals take their arguments in order. An operator's right side is its
-one argument.
+**Arguments.** Arguments without a name fill the parameters in order from the first, however many there are
+(`box(3, 4, 5)`), and a name says which parameter an argument is for (`box(width: 3, height: 4, depth: 5)`), the
+names that are written following the parameters' order (a name out of place is a build error). A value called like
+ANOTHER parameter of the routine, sitting in a different parameter's place, is a build error that says to label it
+(`move(1, from, to, tmp)` is written `move(1, from, tmp: to, to: tmp)`). A value in its own place is fine
+(`area(width, height)`), and `me` is never named (`S64.max(a, b)`). `@positional` routines (the raw operations:
+`add[T](a,
+b)`, `ieq`, `band`, `fadd`, ...) and C externals take their arguments in order and skip the place check. An
+operator's right side is its one argument.
 
 **Five or more parameters take a record.** A routine with five or more
 parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that
