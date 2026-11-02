@@ -428,7 +428,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     var a = Next();
                     if (a.Kind is not (TokenKind.Str or TokenKind.Int or TokenKind.Ident))
                         throw new CompileError(a.Pos, "annotation arguments must be literals");
-                    args.Add(new AnnotationArg(key, a.Kind == TokenKind.Int ? a.IntValue.ToString() : a.Text, negated));
+                    string argText = a.Kind == TokenKind.Int ? a.IntValue.ToString() : a.Text;
+                    // `@reshaping(me.log)`: a name followed by the field it is about.
+                    while (a.Kind == TokenKind.Ident && Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
+                    {
+                        Next();
+                        argText += "." + Next().Text;
+                    }
+                    args.Add(new AnnotationArg(key, argText, negated));
                 } while (Accept(TokenKind.Comma));
             }
             Expect(TokenKind.RParen, "')'");

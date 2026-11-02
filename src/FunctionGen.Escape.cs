@@ -28,7 +28,7 @@ public sealed partial class FunctionGen
     {
         if (_c.Prechecking || _decl.Blocks is not { Count: > 0 } || _inst.IsAsm) return;
         _escape = _c.Escapes.Begin(_inst, reports: EscapeOn);
-        foreach (var moved in ReshapedParams(_decl))
+        foreach (var (moved, _) in ReshapedParams(_decl))
             if (_decl.Params.FindIndex(p => p.Name == moved) is >= 0 and var index) _escape.Reshapes.Add(index);
         for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
         {
@@ -489,19 +489,19 @@ public sealed partial class FunctionGen
 
     /// What each value of this routine holds views of the contents of (an emitter, a record made with a slice): the
     /// name whose contents it sees, and the name that is reached from.
-    private readonly Dictionary<string, HashSet<(string Contents, string Root)>> _heldContents = [];
+    private readonly Dictionary<string, HashSet<(string Contents, string Root, string? Field)>> _heldContents = [];
 
     /// The names whose contents the value of `e` views or holds views of (`xs` for `xs.getslice(start: 0, count: 2)`,
     /// `xs.emitter()`, `Wrap(s: xs.getview())`, or a call that gives a view of an element of what it is handed), each with
     /// the name it is reached from. A view of a value itself (`items`, a `&T` lent where a `@T` goes) sees no contents.
-    private HashSet<(string Contents, string Root)> ContentRefs(Expr e)
+    private HashSet<(string Contents, string Root, string? Field)> ContentRefs(Expr e)
     {
-        var refs = new HashSet<(string, string)>();
+        var refs = new HashSet<(string, string, string?)>();
         e = AsValueCall(e);
         switch (e)
         {
             case ValueRef r:
-                if (ContentsOf(r.Name) is { } contents) refs.Add((contents, ResolveRoot(contents)));
+                if (ContentsOf(r.Name) is { } contents) refs.Add((contents, ResolveRoot(contents), _viewField.GetValueOrDefault(r.Name)));
                 if (_heldContents.TryGetValue(r.Name, out var held)) refs.UnionWith(held);
                 break;
             case FieldExpr f:
@@ -554,7 +554,7 @@ public sealed partial class FunctionGen
                     refs.UnionWith(ContentRefs(part));
                     if (part is StealExpr || !givesView || ShapeRoot(part) is not { } named) continue;
                     if (made is PtrType { Pointee: { } viewed } && InferQuiet(part) is { } handed && Equals(PlacedValue(handed), viewed)) continue;
-                    refs.Add((named, ResolveRoot(named)));
+                    refs.Add((named, ResolveRoot(named), FieldOf(part)));
                 }
                 break;
         }
@@ -563,7 +563,7 @@ public sealed partial class FunctionGen
 
     /// Notes that `holder` holds views of the contents `refs` names (MemoryRules.HoldsContents). `fresh` when a binding
     /// makes it here, `kept` when a call keeps them in it only if the callee's body does.
-    private void NoteHeldContents(string holder, HashSet<(string Contents, string Root)> refs, Pos pos, bool fresh,
+    private void NoteHeldContents(string holder, HashSet<(string Contents, string Root, string? Field)> refs, Pos pos, bool fresh,
         (string Callee, int From, int Into)? kept = null, bool view = false)
     {
         refs.RemoveWhere(r => r.Contents == holder || r.Root == holder);
@@ -571,9 +571,9 @@ public sealed partial class FunctionGen
         _viewNames.Add(holder);
         (_heldContents.TryGetValue(holder, out var known) ? known : _heldContents[holder] = []).UnionWith(refs);
         bool first = fresh;
-        foreach (var (contents, root) in refs.OrderBy(r => r.Contents, StringComparer.Ordinal))
+        foreach (var (contents, root, field) in refs.OrderBy(r => r.Contents, StringComparer.Ordinal))
         {
-            Mem(new MemoryRules.HoldsContents(holder, contents, root, pos) { Fresh = first, Kept = kept, View = view });
+            Mem(new MemoryRules.HoldsContents(holder, contents, root, pos) { Field = field, Fresh = first, Kept = kept, View = view });
             first = false;
         }
     }

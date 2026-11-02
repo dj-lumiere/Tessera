@@ -107,6 +107,10 @@ public static class MemoryRules
     /// `Name` is a view of the memory `Root` names: an address or a PointedSlice into it.
     public sealed record ViewOf(string Name, string Root, Pos Pos) : Event(Pos)
     {
+        /// The field of `Root` the view is taken from (`log` for `b.log.getview()`), or null when it is not from one
+        /// field. A `#reshaping` call on another field of `Root` doesn't move what the view sees.
+        public string? Field { get; init; }
+
         /// The view holds the address of `Root`'s slot itself (a manager's table holds the manager's): `Root` must not
         /// end while the view is still used.
         public bool Holds { get; init; }
@@ -125,6 +129,9 @@ public static class MemoryRules
     /// `xs.emitter()`), `Contents` reached from `Root`: a `#reshaping` call that may move those contents ends it.
     public sealed record HoldsContents(string Name, string Contents, string Root, Pos Pos) : Event(Pos)
     {
+        /// The field of `Root` the contents are reached through, as ViewOf.Field.
+        public string? Field { get; init; }
+
         /// The binding made `Name` here, so what it held before (a pass of a loop body before) is gone.
         public bool Fresh { get; init; }
 
@@ -140,6 +147,10 @@ public static class MemoryRules
     /// spells the call (`xs.add_last(...)`).
     public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos)
     {
+        /// The field of `Root` the call moves the memory of (`@reshaping(me.log)`), or null for `Root` as a whole. A view
+        /// or a held view taken from another field of `Root` stays.
+        public string? Field { get; init; }
+
         /// The call is to a routine that can reach the global `Root` (in its module or one importing it), not one that
         /// says it moves it: the message names that reach instead.
         public bool Reaches { get; init; }
@@ -285,7 +296,7 @@ public static class MemoryRules
         public HashSet<string> Holding = [];
 
         /// The values that hold views of what a name holds (HoldsContents): each such name, and the name it is reached from.
-        public Dictionary<string, HashSet<(string Contents, string Root)>> ContentHolders = [];
+        public Dictionary<string, HashSet<(string Contents, string Root, string? Field)>> ContentHolders = [];
 
         /// The group each view saw when it was made, and the groups a name holds views of (HoldsViewOf).
         public Dictionary<string, string> ViewGroups = [];
@@ -313,7 +324,7 @@ public static class MemoryRules
         public State Copy() => new()
         {
             Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding),
-            ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string)>(h.Value)),
+            ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string, string?)>(h.Value)),
             ViewGroups = new(ViewGroups), HeldViews = HeldViews.ToDictionary(h => h.Key, h => new HashSet<string>(h.Value)),
             CallerHeldEnded = new(CallerHeldEnded), HollowSlots = new(HollowSlots), Filled = new(Filled), Managers = new(Managers),
             Working = new(Working), Changed = new(Changed), Lent = new(Lent),
@@ -342,7 +353,7 @@ public static class MemoryRules
                 Views = new(Views),
                 Stale = new(Stale),
                 Holding = new(Holding),
-                ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string)>(h.Value)),
+                ContentHolders = ContentHolders.ToDictionary(h => h.Key, h => new HashSet<(string, string, string?)>(h.Value)),
                 ViewGroups = ViewGroups.Where(v => rename.ContainsKey(v.Value)).ToDictionary(v => v.Key, v => rename[v.Value]),
                 HeldViews = HeldViews.ToDictionary(h => h.Key,
                     h => h.Value.Where(rename.ContainsKey).Select(id => rename[id]).ToHashSet()),
@@ -362,7 +373,7 @@ public static class MemoryRules
             + "|" + string.Join(";", Stale.Keys.Order(StringComparer.Ordinal))
             + "|" + string.Join(";", Holding.Order(StringComparer.Ordinal))
             + "|" + string.Join(";", ContentHolders.OrderBy(h => h.Key, StringComparer.Ordinal)
-                .Select(h => $"{h.Key}>{string.Join(",", h.Value.Select(c => $"{c.Contents}@{c.Root}").Order(StringComparer.Ordinal))}"))
+                .Select(h => $"{h.Key}>{string.Join(",", h.Value.Select(c => $"{c.Contents}@{c.Root}.{c.Field}").Order(StringComparer.Ordinal))}"))
             + "|" + string.Join(";", ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
             + "|" + string.Join(";", HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal)
                 .Select(h => $"{h.Key}>{string.Join(",", h.Value.Order(StringComparer.Ordinal))}"))
@@ -393,8 +404,10 @@ public static class MemoryRules
         // A value is bound once, so the names a view was taken through are the same on every path.
         var chains = new Dictionary<string, IReadOnlyList<(string Name, bool Part)>>();
         var contents = new Dictionary<string, string>();
+        var fields = new Dictionary<string, string>();
         foreach (var v in events.Values.SelectMany(l => l).OfType<ViewOf>())
         {
+            if (v.Field is { } viewField) fields[v.Name] = viewField;
             if (v.Chain.Count > 0) chains[v.Name] = v.Chain;
             if (v.Contents is { } viewed) contents[v.Name] = viewed;
         }
@@ -402,6 +415,9 @@ public static class MemoryRules
 
         // Whether a #reshaping call on `reshaped` (null: on the root as a whole) moves what `of` holds: `of` is the
         // reshaped name, or that name is one `of` was taken through.
+        // Two fields of a root are different memory: a call on one doesn't move what is taken from the other.
+        bool Apart(string? a, string? b) => a is not null && b is not null && a != b;
+
         bool Moves(string of, string? reshaped) =>
             reshaped is null || of == reshaped || chains.TryGetValue(of, out var through) && through.Any(c => c.Name == reshaped);
 
@@ -609,10 +625,11 @@ public static class MemoryRules
                         // is still there, its contents may not be.
                         string why = rs.Reaches ? $"which can reach '{rs.Root}'" : "which may move it";
                         foreach (var (view, root) in state.Views)
-                            if (root == rs.Root && contents.TryGetValue(view, out var seenIn) && Moves(seenIn, rs.Inner))
+                            if (root == rs.Root && contents.TryGetValue(view, out var seenIn) && Moves(seenIn, rs.Inner)
+                                && !Apart(fields.GetValueOrDefault(view), rs.Field))
                                 state.Stale[view] = (rs.Pos, rs.How, why);
                         foreach (var (holder, held) in state.ContentHolders)
-                            if (held.Any(h => h.Root == rs.Root && Moves(h.Contents, rs.Inner)))
+                            if (held.Any(h => h.Root == rs.Root && Moves(h.Contents, rs.Inner) && !Apart(h.Field, rs.Field)))
                                 state.Stale[holder] = (rs.Pos, rs.How, why);
                         break;
                     case HoldsContents hc when hc.Kept is not { } kept || keeps?.Invoke(kept.Callee, kept.From, kept.Into) == true:
@@ -622,7 +639,7 @@ public static class MemoryRules
                             state.Stale.Remove(hc.Name);
                         }
                         (state.ContentHolders.TryGetValue(hc.Name, out var holds) ? holds : state.ContentHolders[hc.Name] = [])
-                            .Add((hc.Contents, hc.Root));
+                            .Add((hc.Contents, hc.Root, hc.Field));
                         break;
                     case GlobalStore gs:
                         if (gs.Restoring) state.Changed.Remove(gs.Global);

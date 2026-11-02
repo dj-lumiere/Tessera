@@ -94,7 +94,7 @@ public sealed partial class FunctionGen
         public bool HasWith { get; } = hasWith;
         /// The name whose memory a `for` over an emitter walks (`xs` in `for x in xs.emitter()`), and the loop's line:
         /// the body may not move that memory.
-        public (string Root, Pos Pos)? Walks { get; set; }
+        public (string Root, string? Field, Pos Pos, Expr Source)? Walks { get; set; }
         /// Whether a `break` was written: `then` is reached even when the loop never ends on its own.
         public bool Breaks { get; set; }
         /// The carried values, in the order of their phis: name, type, and the `with` names a continue must give.
@@ -421,9 +421,21 @@ public sealed partial class FunctionGen
         // holds, gives what it holds. A plain value, or a pointer that is a value of its own, is itself.
         bool fromSlot = t is PtrType && (Tracked(t) && !PointerOfTypeParam(r.Name) || _claimedSlots.Contains(r.Name));
         _moving = true;
-        var v = fromSlot
-            ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
-            : Eval(r, expected);
+        // A place borrowed from a manager (`fresh: &Box <- Box.construct(3) from HEAP`) stolen where the value it holds goes
+        // (`List[Box]`): the value moves out of the memory and the memory goes back to its manager. Where the place itself
+        // goes (`List[Box?]`), the place is handed over as it is.
+        bool valueOfCell = t is PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var cellHeld] } cell }
+            && cell.Decl.Module == Compiler.SystemModule && !expected.Equals(cell) && expected.Equals(cellHeld);
+        Val v;
+        if (valueOfCell)
+        {
+            v = Eval(new MethodCallExpr(r, "take", [], [], r.Pos), expected);
+            EvalAny(new MethodCallExpr(r, "give_back", [], [], r.Pos));
+        }
+        else
+            v = fromSlot
+                ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
+                : Eval(r, expected);
         // An entity moved out of its slot, or a value parameter handed on, leaves its address until it lands in
         // another, unless steal a as b moves its stamps along.
         StampsLeave(v, r.Pos);
@@ -817,6 +829,29 @@ public sealed partial class FunctionGen
     /// walks `xs`.
     private readonly Dictionary<string, string> _emitterWalks = [];
 
+    /// The field of the root each emitter of `_emitterWalks` walks the memory of (`rows` in `b.rows.getslot(0).emitter()`),
+    /// with the expression it walks, when the walk is of one field.
+    private readonly Dictionary<string, (string? Field, Expr Source)> _emitterWalkFields = [];
+
+    /// The field of its root each view of this routine is taken from (`rows` for `row: @List[U64] = b.rows.getslot(0)`): the
+    /// first field named after the root. A view of a view has the field of the one it comes from.
+    private readonly Dictionary<string, string> _viewField = [];
+
+    /// The first field of its root `e` reaches into (`rows` for `b.rows.getslot(0)` and for a view made from it), or null
+    /// when it reaches the root as a whole.
+    private string? FieldOf(Expr e) => e switch
+    {
+        FieldExpr { Base: ValueRef r } f => _viewField.GetValueOrDefault(r.Name) ?? f.Name,
+        FieldExpr f => FieldOf(f.Base),
+        IndexExpr ix => FieldOf(ix.Base),
+        MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" or "emitter" } m => FieldOf(m.Receiver),
+        ValueRef r => _viewField.GetValueOrDefault(r.Name),
+        _ => null,
+    };
+
+    /// Whether two fields of one root can be the same memory: one of them is the root as a whole, or they are the same field.
+    private static bool SameMemory(string? a, string? b) => a is null || b is null || a == b;
+
     /// Whether `e` reaches into a part of what it is taken from, rather than naming that thing again.
     private static bool TakesPart(Expr e) =>
         e is not ValueRef && e is not MethodCallExpr { Name: "to" };
@@ -934,11 +969,16 @@ public sealed partial class FunctionGen
         (plan.Receiver is { } receiver ? Spelled(receiver) + "." : "") + plan.Decl.Name + (plan.Args.Count == 0 ? "()" : "(...)");
 
     /// The parameters a `#reshaping` routine may move the memory of: the ones named, or `me` alone.
-    private static List<string> ReshapedParams(RoutineDecl r)
+    private static List<(string Param, string? Field)> ReshapedParams(RoutineDecl r)
     {
         if (r.AnnotationNamed("reshaping") is not { } a) return [];
-        if (a.Args.Count == 0) return r.Params is [{ Name: "me" }, ..] ? ["me"] : [];
-        return a.Args.Select(arg => arg.Value ?? arg.Key ?? "").ToList();
+        if (a.Args.Count == 0) return r.Params is [{ Name: "me" }, ..] ? [("me", null)] : [];
+        return a.Args.Select(arg =>
+        {
+            string text = arg.Value ?? arg.Key ?? "";
+            int dot = text.IndexOf('.');
+            return dot < 0 ? (text, (string?)null) : (text[..dot], text[(dot + 1)..]);
+        }).ToList();
     }
 
     /// Checks a `#reshaping` annotation: it names parameters of the routine, or stands alone on one that takes `me`.
@@ -948,7 +988,7 @@ public sealed partial class FunctionGen
         if (a.Args.Count == 0 && _decl.Params is not [{ Name: "me" }, ..])
             throw Err(a.Pos, $"@reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
                 + "name the parameters, @reshaping(items)");
-        foreach (var name in ReshapedParams(_decl))
+        foreach (var (name, _) in ReshapedParams(_decl))
             if (_decl.Params.All(p => p.Name != name))
                 throw Err(a.Pos, $"@reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
     }
@@ -957,14 +997,14 @@ public sealed partial class FunctionGen
     /// a parameter's, this routine moves it too, which its own `#reshaping` says.
     private void CheckReshapingCall(CallPlan plan)
     {
-        var moved = ReshapedParams(plan.Decl);
-        if (moved.Count == 0) return;
+        var movedParams = ReshapedParams(plan.Decl);
+        if (movedParams.Count == 0) return;
         // An instance of a generic routine reaches routines through its type parameters, which one instance makes
         // #reshaping and another doesn't: the generic routine is checked as it is written, with the parameters
         // unknown.
         bool instance = !_c.Prechecking && Compiler.IsGenericRoutine(_decl);
         int offset = plan.Receiver is null ? 0 : 1;
-        foreach (var name in moved)
+        foreach (var (name, declared) in movedParams)
         {
             int index = plan.Decl.Params.FindIndex(p => p.Name == name);
             Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
@@ -981,17 +1021,23 @@ public sealed partial class FunctionGen
                     named = from;
                 if (_partViews.Contains(named)) inner = named;
             }
+            // The memory moved is a field of the root when the argument reaches into one (`b.log`) or the routine says it moves
+            // only one (`@reshaping(me.log)`): what is taken from another field stays where it is.
+            string? field = FieldOf(arg) ?? declared;
             root = ResolveRoot(root);
             // Rule 4 for the emitter a `for` holds: it views the memory it walks until the loop ends.
-            if (_loops.FirstOrDefault(f => f.Walks?.Root == root)?.Walks is { } walk)
-                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{root}', which the for loop on line "
-                    + $"{walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the changes and make them "
-                    + $"after the loop, or walk by position (for i in 0 til {root}.count())");
-            Mem(new MemoryRules.Reshape(root, SpelledCall(plan), plan.Pos) { Inner = inner });
-            if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
-                throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
-                    + $"@reshaping): mark it {(root == "me" ? "@reshaping" : $"@reshaping({root})")}, so its callers know a view "
-                    + $"of '{root}' doesn't outlive the call");
+            if (_loops.FirstOrDefault(f => f.Walks is { } w && w.Root == root && SameMemory(w.Field, field))?.Walks is { } walk)
+                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{root}{(field is null ? "" : "." + field)}', which the "
+                    + $"for loop on line {walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the "
+                    + $"changes and make them after the loop, or walk by position"
+                    + (InferQuiet(walk.Source) is RecordType { Decl.Name: "List" } ? $" (for i in 0 til {Spelled(walk.Source)}.count())" : ""));
+            Mem(new MemoryRules.Reshape(root, SpelledCall(plan), plan.Pos) { Inner = inner, Field = field });
+            if (!instance && _decl.Params.Any(p => p.Name == root)
+                && !ReshapedParams(_decl).Any(r => r.Param == root && (r.Field is null || r.Field == field)))
+                throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}{(field is null ? "" : "." + field)}' here "
+                    + $"('{plan.Decl.DisplayName}' is @reshaping): mark it "
+                    + $"{(field is not null ? $"@reshaping({root}.{field})" : root == "me" ? "@reshaping" : $"@reshaping({root})")}, "
+                    + $"so its callers know a view of '{root}' doesn't outlive the call");
         }
     }
 
@@ -2118,7 +2164,10 @@ public sealed partial class FunctionGen
         // `e: &ListEmitter[T] <- xs.emitter()` (or the place a `for` over `xs.emitter()` holds it in) walks `xs`.
         if (s is BindStmt { Value: MethodCallExpr { Name: "emitter", Args.Count: 0 } emitterCall } madeBind &&
             ShapeRoot(emitterCall.Receiver) is { } walked)
+        {
             _emitterWalks[madeBind.Name] = ResolveRoot(walked);
+            _emitterWalkFields[madeBind.Name] = (FieldOf(emitterCall.Receiver), emitterCall.Receiver);
+        }
         switch (s)
         {
             case BindStmt { Borrows: true } borrow:
@@ -2186,10 +2235,14 @@ public sealed partial class FunctionGen
                 if (PointsAtMemory(t) && !IsAddr(t) && b.Value is not ClaimExpr && ShapeRoot(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
+                    if (FieldOf(b.Value) is { } viewedField) _viewField[b.Name] = viewedField;
                     if (TakesPart(b.Value)) _partViews.Add(b.Name);
                     if (TakesContents(b.Value, t)) _contentViews.Add(b.Name);
                     _viewNames.Add(b.Name);
-                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos) { Chain = ViewChain(b.Name), Contents = ContentsOf(b.Name) });
+                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos)
+                    {
+                        Chain = ViewChain(b.Name), Contents = ContentsOf(b.Name), Field = _viewField.GetValueOrDefault(b.Name)
+                    });
                 }
                 if (b.Value is ClaimExpr) _claimedSlots.Add(b.Name);
                 if ((b.Value is ClaimExpr { Contents: { } claimed } ? claimed : b.Value) is { } made2
@@ -7294,7 +7347,7 @@ public sealed partial class FunctionGen
         }
         frame.BoxDepth = _boxScopes.Count;
         if (l is { Kind: LoopKind.For, Source: ValueRef walkedEmitter } && _emitterWalks.TryGetValue(walkedEmitter.Name, out var walkedRoot))
-            frame.Walks = (walkedRoot, l.Pos);
+            frame.Walks = (walkedRoot, _emitterWalkFields[walkedEmitter.Name].Field, l.Pos, _emitterWalkFields[walkedEmitter.Name].Source);
         _loops.Push(frame);
         try
         {

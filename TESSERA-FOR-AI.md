@@ -253,7 +253,9 @@ routine start() -> None
   copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
   empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), `to[@T]()` (the first value's
   address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `BorrowedCell[T]` has `load()`,
-  `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Items[T, COUNT]` is the run of
+  `store(v)`, `getview()` (its `@T`), `take()`, `give_back()` (the memory back to its manager, after a `take()`), `duplicate()`,
+  `replace(value: new)`. A place borrowed from a manager (`fresh: &Box <- Box.construct(3) from HEAP`) stolen where the value
+  goes (`xs.add_last(steal fresh)` on a `List[Box]`) moves the value out and gives the memory back, and into a `List[Box?]` the place itself goes. `Items[T, COUNT]` is the run of
   values whose count is in the type, a record (a value), and `Slots[T, COUNT]` the entity with the same layout for any
   `T` (below). `getview()` gives a `@[T]` of anything holding contiguous elements (a `List`, an `Items` or a `Slots`
   through a pointer, its first address and `COUNT`, a `SliceWriter`, a `CStrView`), and `getview().to[@T]()` is the
@@ -526,7 +528,10 @@ routine start() -> None
     points at and how long that memory lives are the code's to keep right.
   - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
-  `@reshaping(items, keys)` names parameters. The base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]`
+  `@reshaping(items, keys)` names parameters. `@reshaping(me.log)` (a parameter and a field) says only that field's memory
+  may move: a `for` that walks another field of the same value (`for x in b.rows.getslot(0).emitter()`) may call it, and so
+  may code that holds a view taken from another field. A routine marked with a field that moves another field of that
+  parameter is a build error (`mark it @reshaping(me.rows)`). A bare `@reshaping` is every field. The base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]`
   (`@reshaping(ptr)`), `BorrowedSlice[T].resize`, and every growing collection mutator: `List.add_last` /
   `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `RotatableList.add_last` / `add_first`,
   `PriorityQueue.add` / `reserve`, and the `CoroutineManager` routines (`run`, `waitfor`, `wake`,

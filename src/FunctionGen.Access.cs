@@ -89,7 +89,7 @@ public sealed partial class FunctionGen
         if (written is not null && ReadOnlyView(written))
             throw Err(plan.Pos, $"{Spelled(written)} is the view of a shared read access, which reads only: take exclusive access "
                 + "(get_exclusive_access, an Authorized[T], or an AuthorizedSlice[T] for a run of values) to write");
-        foreach (var name in ReshapedParams(plan.Decl))
+        foreach (var (name, _) in ReshapedParams(plan.Decl))
         {
             int index = plan.Decl.Params.FindIndex(p => p.Name == name);
             int offset = plan.Receiver is null ? 0 : 1;
