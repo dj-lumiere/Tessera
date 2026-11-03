@@ -2233,6 +2233,15 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
 - opening: `open_read` / `open_write` (emptied) / `open_append` / `open_read_write` give a `FileHandle` (keep it in a
   place: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
   which leaves it empty, and `FileHandle.empty()` a handle to nothing whose `close` does nothing).
+- `h.write` on a `FileHandle` (any Writer): a template alone is written as it is (`h.write("x = {x}\n")`), `h.write(value)`
+  writes the value as `Console.show` shows it and then a line end, and `end: "..."` (a literal) replaces the end, after a
+  template too (`h.write("a", end: "|")`). `read_line(manager)`, `read_word(manager)` and `read[T]()` read as the console's
+  `ask_line`, `ask_word` and `ask[T]()` do (one input buffer, made from `HEAP` at the first such read and given back by `close`;
+  `read[T]` takes no memory), and throw `EndOfInputError` at the end of the file (`try` gives `None`) and `IoError` when the OS
+  refuses the read. `read_all(manager)`, `read_raw(manager)` (the same bytes) and `read_bytes(count, manager)` give the rest, or
+  up to `count` bytes, empty at the end. All of them, and `read_bytes(buffer, count)`, take the buffered bytes first, `seek`
+  counts them and drops them, and a write puts the OS position back to where the program has read to. There is no
+  `read_lines` / `read_words`: a list of slices is one allocation per line, so loop on `try h.read_line(manager)` instead.
 - file storage: `storage[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
   `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
   cells the file has. It lends a `FileStorage[T]`, an entity borrowed with `<-` and given back with `drop`, which

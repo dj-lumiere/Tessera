@@ -912,6 +912,7 @@ secret routine symlink_metadata(path: @[Byte]) -> Metadata
 record FileHandle
     fd: CInt
     failed: Bool  # a write_bytes failed (write_all reports each failure itself)
+    input: Addr  # the InputBuffer that reading by line, word, or value fills, hollow until the first such read
 
 ### Makes a `FileHandle` from its fields.
 ### :param fd: Its `fd`.
@@ -919,9 +920,9 @@ record FileHandle
 ### :returns: The new value.
 @target(os: ("linux", "macos"))
 common routine FileHandle.construct(fd: CInt, failed: Bool) -> Me
-    return Me(fd, failed)
+    return Me(fd, failed, input: Addr.zero())
 
-### Releases nothing: a `FileHandle` holds no memory of its own.
+### Releases nothing: `close` gives back the input buffer.
 @target(os: ("linux", "macos"))
 routine @FileHandle.destruct() -> None
     return
@@ -930,7 +931,7 @@ routine @FileHandle.destruct() -> None
 ### :returns: The empty handle.
 @target(os: ("linux", "macos"))
 common routine FileHandle.empty() -> Me
-    return Me(fd: -1, failed: false)
+    return Me(fd: -1, failed: false, input: Addr.zero())
 
 ### Opens path in mode. The file is opened close-on-exec, and one it makes gets the permissions 0o666 before the
 ### umask. Only CreateNew and CreateReplacing make a file: the other modes fail with NotFound when nothing is there.
@@ -957,23 +958,24 @@ secret common routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Me
     fd: CInt = c_open(cpath.to[CStrView](), f.cloexec | how, 438)
     if fd < 0
         throw last_error()
-    return Me(fd: fd, failed: false)
+    return Me(fd: fd, failed: false, input: Addr.zero())
 
-### Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
-### read a signal interrupts is tried again.
+### One read of up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
+### read a signal interrupts is tried again. The bytes an input buffer holds are not counted: read_bytes is the
+### one that takes them first.
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: The count read, 0 at the end of the file.
 ### :throws: Throws the reason when the read fails.
 @target(os: ("linux", "macos"))
 @expensive("asks the operating system")
-routine @FileHandle.read_bytes(buffer: @Byte, count: U64) -> U64
+routine @FileHandle.read_some(buffer: @Byte, count: U64) -> U64
     got: S64 = c_read(me.fd.peek(), buffer, count.min(1073741824).to[CSize]()).to[S64]()
     if got >= 0
         return got.to[U64]()
     # EINTR: a signal came first, so ask again
     if errno() == 4
-        when check me.read_bytes(buffer, count)
+        when check me.read_some(buffer, count)
             is U64 as returned => return returned
     throw last_error()
 
@@ -993,14 +995,15 @@ secret routine @FileHandle.write_some(data: @Byte, count: U64) -> U64
             is U64 as returned => return returned
     throw last_error()
 
-### Moves the position: the new one, from the start.
+### Moves the operating system's position: the new one, from the start. `seek` is the one that counts the bytes an
+### input buffer holds.
 ### :param offset: The distance to move, negative to go back.
 ### :param from: Where `offset` counts from.
 ### :returns: The new position from the start.
 ### :throws: Throws the reason, such as a position before the start.
 @target(os: ("linux", "macos"))
 @expensive("asks the operating system")
-routine @FileHandle.seek(offset: S64, from: SeekFrom) -> U64
+secret routine @FileHandle.seek_os(offset: S64, from: SeekFrom) -> U64
     fd: CInt = me.fd.peek()
     # SEEK_SET, SEEK_CUR, SEEK_END
     at: S64 = when from
@@ -1049,10 +1052,11 @@ routine @FileHandle.sync() -> None
     when check checked(c_fsync(me.fd.peek()))
         is None => return
 
-### Closes the file and leaves the handle empty, so a second close does nothing.
+### Closes the file, gives back its input buffer, and leaves the handle empty, so a second close does nothing.
 @target(os: ("linux", "macos"))
 @expensive("asks the operating system")
 routine @FileHandle.close() -> None
+    me.release_input()
     fd: CInt = me.fd.peek()
     if fd < 0
         return

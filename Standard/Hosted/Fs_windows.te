@@ -718,6 +718,7 @@ secret routine symlink_metadata(path: @[Byte]) -> Metadata
 record FileHandle
     handle: Addr
     failed: Bool  # a write_bytes failed (write_all reports each failure itself)
+    input: Addr  # the InputBuffer that reading by line, word, or value fills, hollow until the first such read
 
 ### Makes a `FileHandle` from its fields.
 ### :param handle: Its `handle`.
@@ -725,9 +726,9 @@ record FileHandle
 ### :returns: The new value.
 @target(os: "windows")
 common routine FileHandle.construct(handle: Addr, failed: Bool) -> Me
-    return Me(handle, failed)
+    return Me(handle, failed, input: Addr.zero())
 
-### Releases nothing: a `FileHandle` holds no memory of its own.
+### Releases nothing: `close` gives back the input buffer.
 @target(os: "windows")
 routine @FileHandle.destruct() -> None
     return
@@ -736,7 +737,7 @@ routine @FileHandle.destruct() -> None
 ### :returns: The empty handle.
 @target(os: "windows")
 common routine FileHandle.empty() -> Me
-    return Me(handle: inttoptr[U64, Addr](U64.MAX), failed: false)
+    return Me(handle: inttoptr[U64, Addr](U64.MAX), failed: false, input: Addr.zero())
 
 ### Opens path in mode. Other handles may read, write, and delete the file while it is open. Only CreateNew and
 ### CreateReplacing make a file: the other modes fail with NotFound when nothing is there.
@@ -762,17 +763,18 @@ secret common routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Me
         FILE_ATTRIBUTE_NORMAL, Addr.zero())
     if is_invalid_handle(h)
         throw last_error()
-    return Me(handle: h, failed: false)
+    return Me(handle: h, failed: false, input: Addr.zero())
 
-### Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
-### broken pipe reads as the end.
+### One read of up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
+### broken pipe reads as the end. The bytes an input buffer holds are not counted: read_bytes is the one that takes
+### them first.
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: The count read, 0 at the end of the file.
 ### :throws: Throws the reason when the read fails.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine @FileHandle.read_bytes(buffer: @Byte, count: U64) -> U64
+routine @FileHandle.read_some(buffer: @Byte, count: U64) -> U64
     got: &U32 <- 0
 
     ok: CInt = c_read_file(me.handle.peek(), buffer, count.min(1073741824).to[U32](), got,
@@ -800,14 +802,15 @@ secret routine @FileHandle.write_some(data: @Byte, count: U64) -> U64
         return wrote.load().to[U64]()
     throw last_error()
 
-### Moves the position: the new one, from the start.
+### Moves the operating system's position: the new one, from the start. `seek` is the one that counts the bytes an
+### input buffer holds.
 ### :param offset: The distance to move, negative to go back.
 ### :param from: Where `offset` counts from.
 ### :returns: The new position from the start.
 ### :throws: Throws the reason, such as a position before the start.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine @FileHandle.seek(offset: S64, from: SeekFrom) -> U64
+secret routine @FileHandle.seek_os(offset: S64, from: SeekFrom) -> U64
     at: &S64 <- 0
 
     # FILE_BEGIN, FILE_CURRENT, FILE_END
@@ -861,10 +864,11 @@ routine @FileHandle.sync() -> None
     when check checked(c_flush_file_buffers(me.handle.peek()))
         is None => return
 
-### Closes the file and leaves the handle empty, so a second close does nothing.
+### Closes the file, gives back its input buffer, and leaves the handle empty, so a second close does nothing.
 @target(os: "windows")
 @expensive("asks the operating system")
 routine @FileHandle.close() -> None
+    me.release_input()
     h: Addr = me.handle.peek()
     if is_invalid_handle(h)
         return

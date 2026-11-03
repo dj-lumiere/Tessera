@@ -4471,7 +4471,18 @@ public sealed partial class FunctionGen
     private (Expr Writer, StrLit Template, Expr? Shown)? TemplateCall(Expr e)
     {
         if (TemplateWriter(e) is { } writer)
+        {
+            if (e is MethodCallExpr { Name: "write" } written && WriteForm(written) is var (shownValue, tail) &&
+                (shownValue is not StrLit || tail is not null))
+            {
+                // `h.write(x)` / `h.write(x, end: "")`: the value, then the end ("\n" unless it is given). A template
+                // with an `end:` gets the end after it. The end is written as it is: a brace in it is a brace.
+                string ending = (tail ?? "\n").Replace("{", "{{").Replace("}", "}}");
+                if (shownValue is StrLit literal) return (writer, literal with { Value = literal.Value + ending }, null);
+                return (writer, new StrLit(ending, shownValue.Pos), shownValue);
+            }
             return (writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0]), null);
+        }
         if (e is not NsCallExpr { Name: "show" or "alert", TypeArgs.Count: 0, Args: [var first, ..] } call ||
             TryResolveOwner(call.Owner) is not { } owner || owner.Name != "Console" ||
             _c.FindMethod(owner, call.Name, _env.File, call.Pos) is not null)
@@ -4509,13 +4520,30 @@ public sealed partial class FunctionGen
                 if (_c.FindMethod(owner, "writer", _env.File, ns.Pos) is null) return null;
                 return new NsCallExpr(ns.Owner, "writer", [], [], ns.Pos);
             }
-            case MethodCallExpr { Name: "write", TypeArgs.Count: 0, Args: [StrLit] } mc:
+            case MethodCallExpr { Name: "write", TypeArgs.Count: 0 } mc when WriteForm(mc) is not null:
             {
                 if (Infer(mc.Receiver) is not PtrType { Pointee: { } pointee }) return null;
                 if (_c.FindMethod(pointee, "write", _env.File, mc.Pos) is not null) return null;
                 if (_c.FindMethod(pointee, "write_bytes", _env.File, mc.Pos) is null) return null;
                 return mc.Receiver;
             }
+            default:
+                return null;
+        }
+    }
+
+    /// The shapes a Writer's `write` takes: a template alone (`h.write("x = {x}\n")`, written as it is, its end null), a
+    /// value (`h.write(x)`, ended with a line feed), and either followed by `end:` with a string literal. Null for
+    /// any other call.
+    private static (Expr First, string? End)? WriteForm(MethodCallExpr call)
+    {
+        bool unnamed = call.ArgNames is null || call.ArgNames[0] is null;
+        switch (call.Args.Count)
+        {
+            case 1 when unnamed:
+                return (call.Args[0], call.Args[0] is StrLit ? null : "\n");
+            case 2 when unnamed && call.ArgNames is [_, "end"] && call.Args[1] is StrLit ending:
+                return (call.Args[0], ending.Value);
             default:
                 return null;
         }

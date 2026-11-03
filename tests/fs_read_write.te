@@ -1,0 +1,192 @@
+# An open file reads and writes as the console does: write(value, end:) shows a value, read_line, read_word, and
+# read[T] draw on one input buffer, and read_all, read_raw, and read_bytes take what it holds first, so the reads mix in
+# any order. At the end of the file the line, word, and value reads throw EndOfInputError (try gives None) and the others
+# give an empty result. seek counts the bytes the buffer holds, a write after a read lands where the program has read
+# to, and a line and a word longer than the buffer come out whole. A read the OS refuses is in fs_read_directory.
+
+import Hosted
+
+### Writes `bytes` after `what`, between brackets.
+routine show_bytes(what: @[Byte], bytes: @[Byte]) -> None
+    Console.show("{what}[{bytes}]")
+    return
+
+### The next line, or the name of what stopped the read.
+routine line_or_name(h: @FileHandle, manager: @MemoryManager) -> BorrowedSlice[Byte]
+    when check h.read_line(manager)
+        is BorrowedSlice[Byte] as text => return text
+        is Crashables as e => return @[Byte].concat(a: e.name(), b: "", manager)
+
+routine start() -> None
+    manager: @MemoryManager = HEAP
+    tmp: &Directory <- OsEnvironment.temp_directory(manager)
+    root: &Directory <- tmp.go_to(name: "tessera_fs_read_write", manager)
+    try OsFileManager.delete_all(at: root, manager)
+    OsFileManager.make_directory(at: root, parents: true)
+    notes: &File <- root.file(name: "notes.txt", manager)
+    OsFileManager.make_file(at: notes, replacing: false)
+
+    # write: a template alone is written as it is, a value ends with a line feed, end: changes the end
+    out: &FileHandle <- OsFileManager.open_write(at: notes)
+    count: S32 = 3
+    out.write("alpha beta\n")
+    out.write("count = {count}", end: "\r\n")
+    out.write(count)
+    out.write("tail", end: "")
+    out.write(" of the first part\n")
+    ratio: B64 = 7.5
+    out.write(ratio)
+    out.write("12 34 x\n")
+    out.write("", end: "\n")
+    out.write("last line with no end", end: "")
+    out.write("{{braces}}", end: "{{")
+    Console.show("write failed: {out.has_failed()}")
+    out.close()
+
+    # reading by word, line, and value from one buffer
+    r: &FileHandle <- OsFileManager.open_read(at: notes)
+    first: &[Byte] <- r.read_word(manager)
+    show_bytes(what: "word: ", bytes: first.getslice())
+    drop first
+    rest: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "rest of the line: ", bytes: rest.getslice())
+    drop rest
+    crlf: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "line with CRLF: ", bytes: crlf.getslice())
+    drop crlf
+    number: S32 = r.read[S32]()
+    Console.show("value: {number}")
+    tail: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "after the value: ", bytes: tail.getslice())
+    drop tail
+    glued: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "the rest of the part: ", bytes: glued.getslice())
+    drop glued
+    shown: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "a B64 written: ", bytes: shown.getslice())
+    drop shown
+    a: S32 = r.read[S32]()
+    b: S32 = r.read[S32]()
+    Console.show("a + b = {a.add(b)}")
+    bad: Check[S32] = check r.read[S32]()
+    when bad
+        is S32 => Console.show("x as S32: a number")
+        is Crashables as e => Console.show("x as S32: {e.name()}")
+    after_x: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "after x: ", bytes: after_x.getslice())
+    drop after_x
+    blank: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "blank line: ", bytes: blank.getslice())
+    drop blank
+    pos: U64 = r.seek(offset: 0, from: SeekFrom.CURRENT)
+    Console.show("position: {pos}")
+    last: &[Byte] <- r.read_all(manager)
+    show_bytes(what: "read_all: ", bytes: last.getslice())
+    drop last
+
+    # at the end
+    ended: &[Byte] <- line_or_name(r, manager)
+    show_bytes(what: "read_line at the end: ", bytes: ended.getslice())
+    drop ended
+    nothing_more: Optional[S32] = try r.read[S32]()
+    Console.show("try read at the end: {nothing_more.diagnose()}")
+    when check r.read_word(manager)
+        is BorrowedSlice[Byte] as w =>
+            drop w
+            Console.show("read_word at the end: a word")
+        is Crashables as e => Console.show("read_word at the end: {e.name()}")
+    empty_all: &[Byte] <- r.read_all(manager)
+    empty_raw: &[Byte] <- r.read_raw(manager)
+    empty_some: &[Byte] <- r.read_bytes(count: 5, manager)
+    Console.show("read_all, read_raw, read_bytes at the end: {empty_all.count()} {empty_raw.count()} {empty_some.count()}")
+    drop empty_all
+    drop empty_raw
+    drop empty_some
+
+    # seek drops the buffer, and the program's position counts what the buffer holds
+    r.seek(offset: 0, from: SeekFrom.START)
+    word2: &[Byte] <- r.read_word(manager)
+    pos2: U64 = r.seek(offset: 0, from: SeekFrom.CURRENT)
+    Console.show("after the first word: {pos2}")
+    drop word2
+    r.seek(offset: 1, from: SeekFrom.CURRENT)
+    line2: &[Byte] <- r.read_line(manager)
+    show_bytes(what: "after seeking one on: ", bytes: line2.getslice())
+    drop line2
+
+    # the raw reads take the buffered bytes first
+    r.seek(offset: 0, from: SeekFrom.START)
+    head: &[Byte] <- r.read_line(manager)
+    five: &[Byte] <- r.read_bytes(count: 5, manager)
+    show_bytes(what: "read_bytes(5) after read_line: ", bytes: five.getslice())
+    tiny: &Items[Byte, 4]
+    got: U64 = r.read_bytes(buffer: tiny.getview().to[@Byte](), count: 4)
+    show_bytes(what: "read_bytes(buffer) next: ",
+        bytes: @[Byte].construct(data: tiny.getview().to[@Byte](), count: got))
+    drop head
+    drop five
+    r.close()
+    r.close()
+
+    # an empty file, and a file with one word and no line end
+    blank_file: &File <- root.file(name: "blank.txt", manager)
+    OsFileManager.make_file(at: blank_file, replacing: false)
+    e: &FileHandle <- OsFileManager.open_read(at: blank_file)
+    from_blank: &[Byte] <- line_or_name(e, manager)
+    show_bytes(what: "empty file, read_line: ", bytes: from_blank.getslice())
+    drop from_blank
+    e.close()
+
+    # a line and a word longer than the buffer
+    long_file: &File <- root.file(name: "long.txt", manager)
+    OsFileManager.make_file(at: long_file, replacing: false)
+    lw: &FileHandle <- OsFileManager.open_write(at: long_file)
+    loop with i: U64 = 0
+        if i == 3000
+            break
+        lw.write("abc", end: "")
+        continue with i: i + 1
+    lw.write("", end: "\n")
+    lw.write("short", end: "\n")
+    loop with j: U64 = 0
+        if j == 5000
+            break
+        lw.write("xy", end: "")
+        continue with j: j + 1
+    lw.write(" 9")
+    lw.close()
+    lr: &FileHandle <- OsFileManager.open_read(at: long_file)
+    long_line: &[Byte] <- lr.read_line(manager)
+    Console.show("long line: {long_line.count()} bytes, ends {long_line.getslice().slice(start: 8997, end: 9000)}")
+    drop long_line
+    short: &[Byte] <- lr.read_line(manager)
+    show_bytes(what: "line after it: ", bytes: short.getslice())
+    drop short
+    long_word: &[Byte] <- lr.read_word(manager)
+    Console.show("long word: {long_word.count()} bytes")
+    drop long_word
+    nine: S32 = lr.read[S32]()
+    Console.show("then: {nine}")
+    lr.close()
+
+    # a write after a read lands where the program has read to
+    both_file: &File <- root.file(name: "both.txt", manager)
+    OsFileManager.make_file(at: both_file, replacing: false)
+    OsFileManager.write_all(at: both_file, data: "one\ntwo\nthree\n")
+    both: &FileHandle <- OsFileManager.open_read_write(at: both_file)
+    one: &[Byte] <- both.read_line(manager)
+    both.write("TWO")
+    both.close()
+    drop one
+    changed: &[Byte] <- OsFileManager.read_all(at: both_file, manager)
+    show_bytes(what: "after a write: ", bytes: changed.getslice())
+    drop changed
+
+    try OsFileManager.delete_all(at: root, manager)
+    drop both_file
+    drop long_file
+    drop blank_file
+    drop notes
+    drop root
+    drop tmp
+    return

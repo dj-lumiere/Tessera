@@ -61,33 +61,65 @@ protocol Reader[T]
     ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
     routine @Me.read_bytes(buffer: @Byte, count: U64) -> U64
 
+### What an InputBuffer is filled from: one read from the operating system, with no buffering of its own. Standard input
+### ({StdinSource}) and an open file ({FileHandle}) are filled alike, so the code that finds lines and words is one.
+secret protocol RawReader[T]
+    ### Reads up to `count` bytes into `buffer` with one read.
+    ### :param buffer: Where the bytes go.
+    ### :param count: The most bytes to read.
+    ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
+    routine @Me.read_some(buffer: @Byte, count: U64) -> U64
+
 # -- Standard input --------------------------------------------------------------------------------
 
 ### The one buffer over standard input that the whole process shares.
 global STDIN_BUFFER: &InputBuffer
+### The value the input buffer of standard input is filled from.
+global STDIN_SOURCE: &StdinSource
 
 ### The size in bytes of standard input's buffer, and the read size at or above which a read skips the buffer.
 preset IN_BUFFER: U64 = 8192
 
-### Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
+### Standard input as what an InputBuffer is filled from. It holds nothing, so one serves every caller.
+secret record StdinSource
+obeys RawReader[StdinSource]
+    nothing
+
+### An input buffer: bytes read from the OS and not handed out yet, in bytes[start, end). Standard input has one for the
+### whole process, and an open file gets one when it is first read by line, word, or value.
 secret record InputBuffer
-    ### The byte whose exclusive access guards the buffer.
+    ### The byte whose exclusive access guards the buffer (standard input's; a file's is not shared).
     guard: U8
     bytes: Items[Byte, IN_BUFFER]
     start: U64
     end: U64
+    ### Set when a read from the source failed. The failure reads as the end of the input, and a file reports it.
+    failed: Bool
 
 ### The input ended before a read found anything to read.
 crashable EndOfInputError
     reader: @[Byte]
 
+### One read of standard input.
+### :param buffer: Where the bytes go.
+### :param count: The most bytes to read.
+### :returns: How many bytes were read, 0 at the end.
+### :throws: Throws the {IoError} of a failed read.
+routine @StdinSource.read_some(buffer: @Byte, count: U64) -> U64
+    when check stdin_read(buffer, count)
+        is U64 as returned => return returned
+
 ### Fills the empty buffer from the OS with one read.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-secret routine @InputBuffer.fill() -> Bool
-    got: Check[U64] = check stdin_read(buffer: me.bytes.getview().to[@Byte](), count: IN_BUFFER)
+secret routine @InputBuffer.fill[TSource](source: @TSource) -> Bool
+needs TSource obeys RawReader
+    got: Check[U64] = check source.read_some(buffer: me.bytes.getview().to[@Byte](),
+        count: IN_BUFFER)
     n: U64 = when got
         is U64 as n => n
-        is FsError => 0
+        is FsError =>
+            me.failed.poke(true)
+            becomes 0
     me.start.poke(0)
     me.end.poke(n)
     return n > 0
@@ -95,8 +127,9 @@ secret routine @InputBuffer.fill() -> Bool
 ### The next byte, filling the buffer when it is empty. The lock is held.
 ### :returns: The byte.
 ### :throws: Throws `AbsentValueError` at the end of the input.
-secret routine @InputBuffer.emit() -> Byte
-    if me.start.peek() < me.end.peek() or me.fill()
+secret routine @InputBuffer.emit[TSource](source: @TSource) -> Byte
+needs TSource obeys RawReader
+    if me.start.peek() < me.end.peek() or me.fill(source)
         at: U64 = me.start.peek()
         me.start.poke(at + 1)
         buffered: @Byte = me.bytes.getview().to[@Byte]()
@@ -112,16 +145,19 @@ secret routine @InputBuffer.unread() -> None
 ### Reads more input after what the buffer holds, into its free end. The buffer must have room after what it holds.
 ### The lock is held.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-secret routine @InputBuffer.fill_more() -> Bool
+secret routine @InputBuffer.fill_more[TSource](source: @TSource) -> Bool
+needs TSource obeys RawReader
     end: U64 = me.end.peek()
 
     free: @Byte = me.bytes.getview().to[@Byte]().stride(end)
-    got: Check[U64] = check stdin_read(buffer: free, count: IN_BUFFER.sub(end))
+    got: Check[U64] = check source.read_some(buffer: free, count: IN_BUFFER.sub(end))
     when got
         is U64 as n =>
             me.end.poke(end + n)
             return n > 0
-        is FsError => return false
+        is FsError =>
+            me.failed.poke(true)
+            return false
 
 ### Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 ### held.
@@ -148,10 +184,12 @@ secret routine @InputBuffer.compact() -> None
 ### :returns: The word.
 ### :absent: At the end of the input.
 ### :throws: Crashes with `OutOfMemoryError` when a word longer than the buffer can't be copied.
-secret routine @InputBuffer.word(spill: @BorrowedSlice[Byte]) -> Optional[@[Byte]]
+secret routine @InputBuffer.word[TSource](spill: @BorrowedSlice[Byte],
+    source: @TSource) -> Optional[@[Byte]]
+needs TSource obeys RawReader
     # White space up to the word's first byte, which is put back.
     loop
-        c: Optional[Byte] = try me.emit()
+        c: Optional[Byte] = try me.emit(source)
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -172,8 +210,8 @@ secret routine @InputBuffer.word(spill: @BorrowedSlice[Byte]) -> Optional[@[Byte
         me.compact()
         if me.end.peek() >= IN_BUFFER
             # The whole buffer is one word so far: it goes on in memory from the default heap.
-            return me.spill_word(length, spill)
-        if me.fill_more()
+            return me.spill_word(length, spill, source)
+        if me.fill_more(source)
             continue with length: length
         return me.take_word(length)
 
@@ -194,13 +232,15 @@ secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
 ### :param spill: Where the word is kept, hollow before.
 ### :returns: The word, a view of `spill`.
 ### :throws: Throws `OutOfMemoryError` when the word can't be copied.
-secret routine @InputBuffer.spill_word(length: U64, spill: @BorrowedSlice[Byte]) -> @[Byte]
+secret routine @InputBuffer.spill_word[TSource](length: U64, spill: @BorrowedSlice[Byte],
+    source: @TSource) -> @[Byte]
+needs TSource obeys RawReader
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
     text.append(chunk: me.bytes.getview().to[@Byte](), n: length, manager: HEAP)
     me.start.poke(length)
     loop
-        c: Optional[Byte] = try me.emit()
+        c: Optional[Byte] = try me.emit(source)
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -237,7 +277,7 @@ routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
             drop held
             return when read
                 is U64 as n => n
-        elseif not b.fill()
+        elseif not b.fill(STDIN_SOURCE)
             drop held
             return 0
     available: U64 = b.end.peek() - b.start.peek()
@@ -261,7 +301,7 @@ needs T obeys Parsable
     lateinit spill: &[Byte]
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
-    word: Optional[@[Byte]] = b.word(spill)
+    word: Optional[@[Byte]] = b.word(spill, STDIN_SOURCE)
     when word
         is @[Byte] as text =>
             # The word may be a view of the buffer, so it's converted before the access is given back.
@@ -351,7 +391,7 @@ common routine Console.ask_line(manager: @MemoryManager) -> BorrowedSlice[Byte]
     b: @InputBuffer = STDIN_BUFFER
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
-    line: &Optional[BorrowedSlice[Byte]] <- b.line(manager)
+    line: &Optional[BorrowedSlice[Byte]] <- b.line(manager, STDIN_SOURCE)
     drop held
     when steal line
         is BorrowedSlice[Byte] as text => return text
@@ -362,11 +402,13 @@ common routine Console.ask_line(manager: @MemoryManager) -> BorrowedSlice[Byte]
 ### :param manager: The memory manager for the line.
 ### :returns: The line.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.line(manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
+secret routine @InputBuffer.line[TSource](manager: @MemoryManager,
+    source: @TSource) -> Optional[BorrowedSlice[Byte]]
+needs TSource obeys RawReader
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
     loop with any: Bool = false
-        if me.start.peek() == me.end.peek() and not me.fill()
+        if me.start.peek() == me.end.peek() and not me.fill(source)
             rest: &[Byte] <- text.take_all()
             drop text
             if any
@@ -443,7 +485,7 @@ common routine Console.ask_word(manager: @MemoryManager) -> BorrowedSlice[Byte]
     b: @InputBuffer = STDIN_BUFFER
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
-    word: &Optional[BorrowedSlice[Byte]] <- b.take_word(manager)
+    word: &Optional[BorrowedSlice[Byte]] <- b.take_word(manager, STDIN_SOURCE)
     drop held
     when steal word
         is BorrowedSlice[Byte] as text => return text
@@ -453,13 +495,15 @@ common routine Console.ask_word(manager: @MemoryManager) -> BorrowedSlice[Byte]
 ### :param manager: The memory manager for the word.
 ### :returns: The word.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Optional[BorrowedSlice[Byte]]
+secret routine @InputBuffer.take_word[TSource](manager: @MemoryManager,
+    source: @TSource) -> Optional[BorrowedSlice[Byte]]
+needs TSource obeys RawReader
     text: &CaptureBuffer <- CaptureBuffer.empty()
     single: &Byte
 
     # White space up to the word's first byte.
     loop
-        c: Optional[Byte] = try me.emit()
+        c: Optional[Byte] = try me.emit(source)
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -473,7 +517,7 @@ secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Optional[Borro
 
     # The rest of the word, up to the next white space (put back) or the end of the input.
     loop
-        c2: Optional[Byte] = try me.emit()
+        c2: Optional[Byte] = try me.emit(source)
         when c2
             is Byte as byte2 =>
                 if is_space(byte2)
