@@ -131,13 +131,157 @@ public sealed partial class FunctionGen
             _ => throw Err(w.Routine.Pos, $"'{w.Routine.Name}' has more than one overload: a piece of work names one routine, so give the one you mean a name of its own"),
         };
 
-    /// `Work[T]`, T the routine's result (`None` for none).
+    /// `Work[T]`, T the routine's result (`None` for none), carrying what the routine can throw.
     private DType? WorkType(WorkExpr w)
     {
         if (Infer(w.Routine) is not CallableType ct) return null;
+        var plain = PlainWorkType(w, ct);
+        var routine = WorkRoutine(w);
+        return plain is RecordType work ? work.WithFails(EntryFails(routine, w.Routine.TypeArgs, w.Pos, out _), $"'{routine.DisplayName}'") : plain;
+    }
+
+    private DType PlainWorkType(WorkExpr w, CallableType ct)
+    {
         DType result = ct.Ret is VoidType ? Resolve(TypeRef.Simple("None", w.Pos)) : ct.Ret;
         return Resolve(new TypeRef("Work", [new TypeArgType(new TypeRef(result.Name, [], w.Pos) { Known = result })], w.Pos));
     }
+
+    /// What a routine put on a ticket can throw: the list of its recovering form, the one a ticket's work runs when it can
+    /// fail, so the failure goes to the ticket's retrieve() (`recovering`, null when it fails nothing). An infallible
+    /// routine and a generic body being checked fail nothing here.
+    private List<DType> EntryFails(RoutineDecl routine, List<TypeRef> typeArgs, Pos pos, out Instance? recovering)
+    {
+        recovering = null;
+        if (!Emitting || !_c.CanRecover(routine)) return [];
+        var form = _c.RecoveringOf(routine);
+        var env = new Compiler.TypeEnv(form.File);
+        if (typeArgs.Count > 0) BindExplicit(form, env, typeArgs, pos);
+        var inst = _c.RequireInstance(form, env);
+        _c.EnsureThrowsKnown(inst);
+        var list = _c.ThrowsOf(inst, _inst);
+        if (list.Count == 0) return [];
+        recovering = inst;
+        return list;
+    }
+
+    // ── A ticket's list ─────────────────────────────────────────────────────
+
+    /// The `<-` bindings of tickets (by their LLVM name) no work was put on yet: the first `put_work` or `put_callable`
+    /// on one gives its type the list of that work's routine (a later use of any other kind leaves it failing nothing).
+    private readonly HashSet<string> _openTickets = [];
+
+    /// The ticket bindings whose first work can fail, with the type that carries its list.
+    private readonly Dictionary<string, DType> _ticketTypes = [];
+
+    /// The routine of the first work put on each ticket binding, for messages.
+    private readonly Dictionary<string, string> _ticketFirst = [];
+
+    /// Notes a `<-` binding of a ticket made by a call: it is open until work is put on it.
+    private void NoteOpenTicket(BindStmt b, string op, DType t)
+    {
+        if (b.Value is ClaimExpr { Contents: not StealExpr and not null } && t is PtrType { Pointee: RecordType { IsTicket: true, Fails.Count: 0 } })
+            _openTickets.Add(op);
+    }
+
+    /// The type a ticket binding has now: the one its first work gave it.
+    private Val TicketTyped(Val v) => _ticketTypes.TryGetValue(v.Op, out var t) ? v with { Type = t } : v;
+
+    /// A call of a ticket's routine. The first `put_work` / `put_callable` on a ticket bound to a name gives the ticket's
+    /// type the list of crashables of its routine, and a later one's routine must throw only what is in that list. A
+    /// ticket anywhere else (a field, an element of a list, a parameter) fails nothing, so its work's routine must fail
+    /// nothing. A ticket whose list isn't empty has routines of its own, built for the list: its retrieve() throws it.
+    private void BindTicketWork(CallPlan plan)
+    {
+        if (!IsTicketRoutine(plan.Decl) || plan.Receiver is null) return;
+        string? open = plan.Receiver is ValueRef named && _values.TryGetValue(named.Name, out var bound) && _openTickets.Contains(bound.Op)
+            ? bound.Op : null;
+        if (plan.Decl.Name is not ("put_work" or "put_callable"))
+        {
+            if (open is not null) _openTickets.Remove(open);
+            return;
+        }
+        if ((InferQuiet(plan.Receiver) is PtrType { Pointee: RecordType pointed } ? pointed : InferQuiet(plan.Receiver) as RecordType)
+            is not { IsTicket: true } ticket || plan.Args.Count == 0) return;
+        var (fails, entry) = TicketEntry(plan);
+        string spelled = Spelled(plan.Receiver);
+        string? first = plan.Receiver is ValueRef firstOf && _values.TryGetValue(firstOf.Name, out var firstBound)
+            && _ticketFirst.TryGetValue(firstBound.Op, out var firstName) ? firstName : null;
+        if (open is not null)
+        {
+            _openTickets.Remove(open);
+            _ticketFirst[open] = entry;
+            if (fails.Count > 0)
+            {
+                ticket = ticket.WithFails(fails, entry);
+                _ticketTypes[open] = new PtrType(ticket);
+            }
+        }
+        else if (fails.FirstOrDefault(f => !ticket.Fails.Contains(f)) is not null)
+        {
+            string throws = string.Join(", ", fails.Where(f => !ticket.Fails.Contains(f)).Select(f => f.Name));
+            string fix = $"receive them inside {entry} with try or check, or put it on a ticket of its own";
+            if (ticket.Fails.Count > 0)
+                throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, which the ticket '{spelled}' can't: its type took the list "
+                    + $"of its first work's routine, {ticket.FailsFrom} ({string.Join(", ", ticket.Fails.Select(f => f.Name))}). {Capitalized(fix)}");
+            if (first is not null)
+                throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and the ticket '{spelled}' fails nothing: its type took the "
+                    + $"list of its first work's routine, {first}, which fails nothing. {Capitalized(fix)}");
+            throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and this {ticket.Name} fails nothing: a field, an element of a "
+                + "list and a parameter can't say what a ticket's work throws. Receive the failures inside "
+                + $"{entry} with try or check (or make it infallible), or put it on a ticket bound to a name of its own, whose "
+                + "retrieve() throws them");
+        }
+        var entryParam = plan.Decl.Name == "put_callable" ? plan.Decl.Params.FirstOrDefault(p => p.Name == "entry") : null;
+        if (ticket.Fails.Count == 0)
+        {
+            // The entry goes in as the plain routine value: the ticket keeps no failure.
+            if (entryParam is not null && plan.Env.Get(Compiler.FailingParamKey("entry")) is CallableType { Failable: true } given)
+                plan.Env.Bind(Compiler.FailingParamKey("entry"), given.Plain);
+            return;
+        }
+        plan.Env.Bind(Compiler.FailsKey, Crashing.Union(ticket.Fails));
+        plan.Env.Bind("Me", ticket);
+        if (entryParam is not null && _c.ResolveType(entryParam.Type, plan.Env) is CallableType declared)
+            plan.Env.Bind(Compiler.FailingParamKey("entry"),
+                new CallableType(declared.CallConv, declared.Params, declared.Ret, failable: true, ticket.Fails));
+    }
+
+    private static string Capitalized(string text) => text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
+
+    /// What the routine of the work a `put_work` / `put_callable` hands its ticket can throw, and how a message names it.
+    private (List<DType> Fails, string Name) TicketEntry(CallPlan plan)
+    {
+        var arg = plan.Args[0];
+        if (plan.Decl.Name == "put_work")
+        {
+            var given = InferQuiet(arg is StealExpr st ? st.Value : arg);
+            var work = given is PtrType { Pointee: RecordType inner } ? inner : given as RecordType;
+            if (work is null) return ([], "the work");
+            string name = work.FailsFrom is { } from ? from
+                : arg is WorkExpr made ? $"'{made.Routine.Name}'"
+                : arg is ValueRef or StealExpr { Value: ValueRef } && _madeWork.TryGetValue(((ValueRef)(arg is StealExpr s2 ? s2.Value : arg)).Name, out var madeWork)
+                    ? $"'{madeWork.Routine.Name}'" : "the work's routine";
+            return (work.Fails, name);
+        }
+        if (plan.Env.Get(Compiler.FailingParamKey("entry")) is CallableType { Failable: true } bound)
+            return (bound.Throws, EntryName(arg));
+        switch (arg)
+        {
+            case RoutineRef r when _c.FreeCandidates(r.Name, _env.File, r.Pos, r.Path) is [var only]:
+                return (EntryFails(only, r.TypeArgs, r.Pos, out _), $"'{r.Name}'");
+            case LambdaExpr lambda when Emitting && InferQuiet(lambda) is CallableType plain:
+                return (FailableLambdaType(lambda, new CallableType(plain.CallConv, plain.Params, plain.Ret, failable: true)).Throws, "the lambda");
+            default:
+                return (InferQuiet(arg) is CallableType { Failable: true } value ? value.Throws : [], EntryName(arg));
+        }
+    }
+
+    private static string EntryName(Expr e) => e switch
+    {
+        RoutineRef r => $"'{r.Name}'",
+        LambdaExpr => "the lambda",
+        _ => $"the routine value '{Spelled(e)}'",
+    };
 
     /// The arguments of `f.to[Work](...)` in the routine's parameters' order, each named once.
     private List<Expr> WorkArgs(WorkExpr w, RoutineDecl routine)
@@ -186,7 +330,16 @@ public sealed partial class FunctionGen
             ctorArgs.Add(new ImplicitCallExpr("hollow", [], [], w.Pos));
             ctorNames.Add("result");
         }
-        ctorArgs.Add(w.Routine);
+        // A routine that can fail goes in as its recovering form: the runner keeps its failure for the ticket's retrieve().
+        var fails = EntryFails(routine, w.Routine.TypeArgs, w.Pos, out var recovering);
+        string entryName = $"$work entry {_works}";
+        if (recovering is not null)
+        {
+            _values[entryName] = new Val($"@{Compiler.Quote(recovering.Symbol)}", new CallableType(ct.CallConv, ct.Params, ct.Ret));
+            _routineValueSymbols.TryAdd(w.Routine.Pos, recovering.Symbol);
+            ctorArgs.Add(new ValueRef(entryName, w.Pos));
+        }
+        else ctorArgs.Add(w.Routine);
         ctorNames.Add("entry");
         // An access borrowed right in the arguments would have no name to give it back by: the work would hold it
         // past its ticket's retrieve, and no line ends it.
@@ -214,9 +367,11 @@ public sealed partial class FunctionGen
         var result = none ? Known(Resolve(TypeRef.Simple("None", w.Pos))) : Known(ct.Ret);
         var call = new CallExpr("work_from", [result, new TypeRef(blockRef.Name, blockArgs, w.Pos) { Known = blockType }],
             [new ValueRef(slot, w.Pos),
-             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs },
+             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs, Fails = fails.Count > 0 ? Crashing.Union(fails) : null },
              new RoutineRef($"discard_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs }], w.Pos)
             { ArgNames = ["made", "runner", "discard"] };
-        return Eval(call, expected ?? WorkType(w)!);
+        var made = Eval(call, PlainWorkType(w, ct));
+        _values.Remove(entryName);
+        return made.Type is RecordType work && fails.Count > 0 ? made with { Type = work.WithFails(fails, $"'{routine.DisplayName}'") } : made;
     }
 }

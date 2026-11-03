@@ -363,6 +363,11 @@ public sealed partial class Compiler
     /// routine is built for that Callable, what it can throw included.
     public static string FailingParamKey(string param) => "$failing " + param;
 
+    /// The name under which an instance keeps the crashables of the ticket or the piece of work it is built for (a
+    /// `Crashables` of them): a ticket's routines, the work blocks and their runners, for a ticket whose entry can fail.
+    /// Inside such an instance a written ticket, `Work[T]` or work block carries the list.
+    public const string FailsKey = "$fails";
+
     /// An ABI tag for an instance built for the routine values given to `failable Callable` parameters, so an instance
     /// for failable ones doesn't share its symbol with the one for plain ones.
     private string FailingCallableTag(RoutineDecl r, TypeEnv env)
@@ -370,6 +375,7 @@ public sealed partial class Compiler
         // The recovering form of a routine is a function of its own beside the plain one.
         string recovering = r.IsRecovering ? "B" + Source("recover") : "";
         var given = r.Params.Select(p => env.Get(FailingParamKey(p.Name))).OfType<DType>().ToList();
+        if (env.Get(FailsKey) is { } fails) given.Add(fails);
         if (given.Count == 0) return recovering;
         uint h = 2166136261;
         foreach (char c in string.Join(";", given.Select(g => g.Key)))
@@ -501,9 +507,16 @@ public sealed partial class Compiler
         return made;
     }
 
-    /// Whether a routine only calls its parameter `name` (`f.call(x)`) or hands it to another call, never keeps it.
-    internal static bool OnlyCalled(RoutineDecl r, string name)
+    /// Whether a routine only calls its parameter `name` (`f.call(x)`) or hands it to another call that only calls it,
+    /// never keeps it. A routine the value is handed to by name (a free routine) is judged the same way, and one that keeps
+    /// it (a work block's maker) makes the value kept here too. Written into memory (`poke`, `store`), into a record made
+    /// with it, or onto a ticket (`put_callable` keeps its entry for the work the ticket runs later), the value is kept.
+    internal bool OnlyCalled(RoutineDecl r, string name) => OnlyCalled(r, name, []);
+
+    private bool OnlyCalled(RoutineDecl r, string name, HashSet<(RoutineDecl, string)> judging)
     {
+        // A routine that reaches itself is judged by its other uses.
+        if (!judging.Add((r, name))) return true;
         int uses = 0, calls = 0;
         foreach (var b in r.Blocks ?? [])
             foreach (var st in Bodies.All(b.Stmts))
@@ -513,10 +526,40 @@ public sealed partial class Compiler
                         if (e is ValueRef v && v.Name == name) uses++;
                         if (e is MethodCallExpr { Name: "call", Receiver: ValueRef called } && called.Name == name) calls++;
                         // Handed on to another call, the value goes to that routine's parameter, which is judged the same way.
-                        var args = e switch { CallExpr c => c.Args, MethodCallExpr m => m.Args, _ => [] };
-                        calls += args.Count(a => a is ValueRef handed && handed.Name == name);
+                        var (args, names) = e switch
+                        {
+                            CallExpr c => (c.Args, c.ArgNames),
+                            MethodCallExpr m => (m.Args, m.ArgNames),
+                            _ => ([], null),
+                        };
+                        for (int i = 0; i < args.Count; i++)
+                        {
+                            if (args[i] is not ValueRef handed || handed.Name != name) continue;
+                            // Written into memory (a block's field) or onto a ticket, the value is kept.
+                            if (e is MethodCallExpr { Name: "put_callable" or "poke" or "poke_unbroken" or "store" }) return false;
+                            if (e is CallExpr free && !HandedOnlyCalled(free, i, names?.ElementAtOrDefault(i), r, judging)) return false;
+                            calls++;
+                        }
                     }
         return uses > 0 && uses == calls;
+    }
+
+    /// Whether every routine a free call may name only calls the value handed to it as argument `i` (named `label`).
+    private bool HandedOnlyCalled(CallExpr call, int i, string? label, RoutineDecl from, HashSet<(RoutineDecl, string)> judging)
+    {
+        List<RoutineDecl> candidates;
+        try { candidates = FreeCandidates(call.Name, from.File, call.Pos, call.Path); }
+        catch (CompileError) { return false; }
+        // No routine of the name: a record made with the value (`Me(entry, ...)`) keeps it.
+        if (candidates.Count == 0) return false;
+        foreach (var callee in candidates)
+        {
+            if (callee.Blocks is null) continue;
+            var param = label is not null ? callee.Params.FirstOrDefault(p => p.Name == label) : callee.Params.ElementAtOrDefault(i);
+            if (param is null || param.Type is not { Name: "Callable" }) continue;
+            if (!OnlyCalled(callee, param.Name, judging)) return false;
+        }
+        return true;
     }
 
     /// Where a failable routine meets C, which has no failure to receive: an `@export` routine is called from C, and an

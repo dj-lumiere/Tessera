@@ -522,8 +522,8 @@ routine @Fiber[T].work_slot() -> @WorkSlot
 ### :param work: Its block.
 @target(os: not "none")
 @track_caller
-secret routine @Fiber[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
-    work: Addr) -> None
+secret routine @Fiber[T].start(runner: Callable[(Addr, @WorkSlot), None],
+    discard: Callable[(Addr,), None], work: Addr) -> None
     fiber: @FiberState = me.fiber.peek().unwrap()
     manager: @CoroutineManager = fiber.manager.peek().unwrap()
     me.work_slot().put(runner, discard, work)
@@ -752,8 +752,9 @@ secret routine @Fiber[T].wait_finished() -> None
 ### that fiber waits. Outside one, on the thread that drives the manager, the manager runs its fibers until the work is
 ### done. On another thread, that thread sleeps.
 ### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
-###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
-###     work that waits to stop while it waits.
+###     passed first, `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the work
+###     that waits to stop while it waits, and the failure of the work's routine, one of the crashables the ticket's type
+###     carries.
 @target(os: not "none")
 @track_caller
 routine @Fiber[None].retrieve() -> None
@@ -766,6 +767,8 @@ routine @Fiber[None].retrieve() -> None
     slot.result_place[Byte]()
     if slot.is_cancelled()
         throw CancelRequested()
+    if slot.has_failure()
+        throw_failure_from(room: slot.failure.peek())
     return
 
 ### Waits until the work has finished, and gives its result. Inside a fiber only that fiber waits. Outside one, on the
@@ -773,8 +776,9 @@ routine @Fiber[None].retrieve() -> None
 ### sleeps.
 ### :returns: The result.
 ### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
-###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
-###     work that waits to stop while it waits.
+###     passed first, `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the work
+###     that waits to stop while it waits, and the failure of the work's routine, one of the crashables the ticket's type
+###     carries.
 @target(os: not "none")
 @track_caller
 routine @Fiber[T].retrieve() -> T
@@ -787,6 +791,8 @@ routine @Fiber[T].retrieve() -> T
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
         throw CancelRequested()
+    if slot.has_failure()
+        throw_failure_from(room: slot.failure.peek())
     taken: &T <- steal place.stride(0)
     slot.result_taken[T]()
     return taken
@@ -899,8 +905,8 @@ secret routine fiber_start() -> None
     RUNNING_MOLD.store(mold)
     loop
         slot: @WorkSlot = fiber.work.peek().to[@WorkSlot]()
-        runner: Callable[(Addr,), None] = slot.runner.peek()
-        runner.call(slot.work.peek())
+        runner: Callable[(Addr, @WorkSlot), None] = slot.runner.peek()
+        runner.call(slot.work.peek(), slot)
         slot.complete()
         if slot !== fiber.slot
             # A passable fiber's slot: the fiber's own work is over too.

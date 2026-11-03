@@ -19,6 +19,12 @@
 # `CancelRequested`, and so does one whose own work was cancelled. The same ticket takes more work after a
 # `retrieve()`, one piece after another.
 #
+# The work's routine may fail. Its failure doesn't stop the program on the thread that runs it: the ticket keeps it, and
+# `retrieve()` throws it, so `try t.retrieve()` or `check t.retrieve()` receives it, and without either the program
+# stops on the line of the `retrieve()` with the failure's message. The ticket's type carries what its entry routine can
+# throw: the builder takes the list from the routine of the first work put on a ticket bound to a name, and every later
+# piece of work on that ticket throws only what is in that list.
+#
 # `drop t` is the ticket's destruct. The result `retrieve()` moves out leaves its place hollow, and a result nobody
 # retrieved (the work was cancelled, the ticket is dropped first, or more work is put on it) is destructed through the
 # block's destruct before the block goes back. The arguments went to the work's routine when it ran, and the routine
@@ -62,8 +68,9 @@ preset WAITED_CANCELLED: U32 = 2
 entity WorkSlot
     ### `TICKET_EMPTY`, `TICKET_RUNNING`, `TICKET_DONE`, `TICKET_IDLE` or `TICKET_QUIT`. A thread waits on it.
     state: U32
-    ### Runs the work in `work`: calls its routine with its arguments and stores the result in front.
-    runner: Callable[(Addr,), None]
+    ### Runs the work in `work`: calls its routine with its arguments and stores the result in front, or keeps the
+    ### routine's failure in the slot.
+    runner: Callable[(Addr, @WorkSlot), None]
     ### Ends what the block in `work` still holds (a result nobody retrieved) through the block's destruct.
     discard: Callable[(Addr,), None]
     ### The block of the work, from `manager`, or null.
@@ -82,6 +89,11 @@ entity WorkSlot
     issued: U64
     ### When the next `retrieve()` stops waiting (in `Clock.monotonic()` time), set by `waitfor`, or `Duration.MAX`.
     deadline: Duration
+    ### Room for the failure of the work's routine, laid out like a flow's mold, from `manager` once a routine first
+    ### fails, or null.
+    failure: Addr
+    ### 1 when the last work's routine failed: `failure` holds its failure, which `retrieve()` throws.
+    failed: U32
 
 ### What `retrieve` throws for work that was asked to stop with `cancel()` before it finished, and in work that is
 ### asked to stop while it waits.
@@ -112,19 +124,49 @@ needs TWriter obeys Writer
 ### :param manager: Where the work's blocks come from.
 ### :returns: The slot.
 common routine WorkSlot.construct(manager: @MemoryManager) -> Me
-    return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), discard: no_work.to[Callable](),
+    return Me(state: TICKET_EMPTY, runner: no_run.to[Callable](), discard: no_work.to[Callable](),
         work: Addr.zero(), manager, cancel: 0, guard: 0, waiter: Waiter.none(),
-        blocked: Waiter.none(), issued: 0, deadline: Duration.MAX)
+        blocked: Waiter.none(), issued: 0, deadline: Duration.MAX, failure: Addr.zero(), failed: 0)
 
-### Ends what the last work's block still holds and gives the block back.
+### Ends what the last work's block still holds and gives the block back, and the room of a failure.
 routine @WorkSlot.destruct() -> None
     me.free_work()
+    room: Addr = me.failure.peek()
+    if not room.is_hollow()
+        deallocate(data: room.to[@Byte](), manager: me.manager.peek())
     return
 
 ### The work of a slot that has none.
 ### :param work: Ignored.
 secret routine no_work(work: Addr) -> None
     return
+
+### The runner of a slot that has no work.
+### :param work: Ignored.
+### :param slot: Ignored.
+secret routine no_run(work: Addr, slot: @WorkSlot) -> None
+    return
+
+### Keeps the failure of the work's routine in the slot, for `retrieve()` to throw: the routine's runner calls it on the
+### thread that ran the work.
+### :typeparam E: The failure, a crashable or the Crashables a check caught.
+### :param failure: The failure.
+### :throws: Crashes with `OutOfMemoryError` when the manager has no memory for the room of the first failure.
+infallible routine @WorkSlot.keep_failure[E](failure: E) -> None
+needs AnyType E
+    if me.failure.peek().is_hollow()
+        room: Addr = me.manager.peek().borrow(size: failure_room_size(), align: 16)
+        if room.is_hollow()
+            throw OutOfMemoryError()
+        me.failure.poke(room)
+    put_failure(failure, room: me.failure.peek())
+    me.failed.poke(1)
+    return
+
+### Whether the last work's routine failed: its failure waits in the slot for `retrieve()`.
+### :returns: True when it failed.
+routine @WorkSlot.has_failure() -> Bool
+    return me.failed.peek() == 1
 
 ### Whether the running work was asked to stop with `cancel()`. The work looks at it where stopping is safe, cleans up
 ### what it holds, and returns. False outside a ticket's work.
@@ -159,10 +201,11 @@ routine @WorkSlot.check_free() -> None
 ### :param work: Its block, from the slot's memory manager.
 ### :throws: Crashes with `TicketBusyError` while the last work runs.
 @track_caller
-routine @WorkSlot.put(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
+routine @WorkSlot.put(runner: Callable[(Addr, @Me), None], discard: Callable[(Addr,), None],
     work: Addr) -> None
     me.check_free()
     me.free_work()
+    me.failed.poke(0)
     me.runner.poke(runner)
     me.discard.poke(discard)
     me.work.poke(work)
@@ -448,14 +491,19 @@ routine discard_work0[T](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `Work0`, and stores its result there.
+### Runs the work in the block at `raw`, a `Work0`, and stores its result there, or keeps the
+### routine's failure in `slot` for `retrieve()` to throw.
 ### :param raw: The block.
-routine run_work0[T](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_work0[T](raw: Addr, slot: @WorkSlot) -> None
     work: @Work0[T] = raw.to[@Work0[T]]()
     entry: Callable[(), T] = work.entry.peek()
-    value: &T <- entry.call()
-    result: @T = work.result
-    result.poke(steal value)
+    when check entry.call()
+        is T as value =>
+            result: @T = work.result
+            result.poke(steal value)
+        is Crashables as failure =>
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -466,14 +514,14 @@ routine run_work0[T](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_work0[T](entry: Callable[(), T],
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[Work0[T]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
     work: @Work0[T] = work_at.to[@Work0[T]]()
     work.result.zeroinit(1)
     work.entry.poke(entry)
-    runner: Callable[(Addr,), None] = run_work0[T].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_work0[T].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_work0[T].to[Callable]()
     return (runner, discard, place)
@@ -503,17 +551,23 @@ routine discard_work1[T, A](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `Work1`, and stores its result there.
+### Runs the work in the block at `raw`, a `Work1`, and stores its result there, or keeps the
+### routine's failure in `slot` for `retrieve()` to throw.
 ### :param raw: The block.
-routine run_work1[T, A](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_work1[T, A](raw: Addr, slot: @WorkSlot) -> None
     work: @Work1[T, A] = raw.to[@Work1[T, A]]()
     entry: Callable[(A,), T] = work.entry.peek()
     first: @A = work.first
-    value: &T <- entry.call(steal first.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    result: @T = work.result
-    result.poke(steal value)
+    when check entry.call(steal first.stride(0))
+        is T as value =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            result: @T = work.result
+            result.poke(steal value)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -525,7 +579,7 @@ routine run_work1[T, A](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_work1[T, A](entry: Callable[(A,), T], args: A,
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[Work1[T, A]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -533,7 +587,7 @@ routine make_work1[T, A](entry: Callable[(A,), T], args: A,
     work.result.zeroinit(1)
     work.entry.poke(entry)
     work.first.poke(args)
-    runner: Callable[(Addr,), None] = run_work1[T, A].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_work1[T, A].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_work1[T, A].to[Callable]()
     return (runner, discard, place)
@@ -567,19 +621,26 @@ routine discard_work2[T, A, B](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `Work2`, and stores its result there.
+### Runs the work in the block at `raw`, a `Work2`, and stores its result there, or keeps the
+### routine's failure in `slot` for `retrieve()` to throw.
 ### :param raw: The block.
-routine run_work2[T, A, B](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_work2[T, A, B](raw: Addr, slot: @WorkSlot) -> None
     work: @Work2[T, A, B] = raw.to[@Work2[T, A, B]]()
     entry: Callable[(A, B), T] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
-    value: &T <- entry.call(steal first.stride(0), steal second.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
-    result: @T = work.result
-    result.poke(steal value)
+    when check entry.call(steal first.stride(0), steal second.stride(0))
+        is T as value =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+            result: @T = work.result
+            result.poke(steal value)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -591,7 +652,7 @@ routine run_work2[T, A, B](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_work2[T, A, B](entry: Callable[(A, B), T], args: (A, B),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[Work2[T, A, B]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -600,7 +661,7 @@ routine make_work2[T, A, B](entry: Callable[(A, B), T], args: (A, B),
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
-    runner: Callable[(Addr,), None] = run_work2[T, A, B].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_work2[T, A, B].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_work2[T, A, B].to[Callable]()
     return (runner, discard, place)
@@ -638,21 +699,29 @@ routine discard_work3[T, A, B, C](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `Work3`, and stores its result there.
+### Runs the work in the block at `raw`, a `Work3`, and stores its result there, or keeps the
+### routine's failure in `slot` for `retrieve()` to throw.
 ### :param raw: The block.
-routine run_work3[T, A, B, C](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_work3[T, A, B, C](raw: Addr, slot: @WorkSlot) -> None
     work: @Work3[T, A, B, C] = raw.to[@Work3[T, A, B, C]]()
     entry: Callable[(A, B, C), T] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
     third: @C = work.third
-    value: &T <- entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
-    third.zeroinit(1)
-    result: @T = work.result
-    result.poke(steal value)
+    when check entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
+        is T as value =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            result: @T = work.result
+            result.poke(steal value)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -664,7 +733,7 @@ routine run_work3[T, A, B, C](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_work3[T, A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[Work3[T, A, B, C]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -674,7 +743,7 @@ routine make_work3[T, A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C),
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     work.third.poke(args.item2)
-    runner: Callable[(Addr,), None] = run_work3[T, A, B, C].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_work3[T, A, B, C].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_work3[T, A, B, C].to[Callable]()
     return (runner, discard, place)
@@ -715,24 +784,33 @@ routine discard_work4[T, A, B, C, D](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `Work4`, and stores its result there.
+### Runs the work in the block at `raw`, a `Work4`, and stores its result there, or keeps the
+### routine's failure in `slot` for `retrieve()` to throw.
 ### :param raw: The block.
-routine run_work4[T, A, B, C, D](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_work4[T, A, B, C, D](raw: Addr, slot: @WorkSlot) -> None
     work: @Work4[T, A, B, C, D] = raw.to[@Work4[T, A, B, C, D]]()
     entry: Callable[(A, B, C, D), T] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
     third: @C = work.third
     fourth: @D = work.fourth
-    value: &T <- entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
+    when check entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
         steal fourth.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
-    third.zeroinit(1)
-    fourth.zeroinit(1)
-    result: @T = work.result
-    result.poke(steal value)
+        is T as value =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            fourth.zeroinit(1)
+            result: @T = work.result
+            result.poke(steal value)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            fourth.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -744,7 +822,7 @@ routine run_work4[T, A, B, C, D](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_work4[T, A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[Work4[T, A, B, C, D]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -755,7 +833,7 @@ routine make_work4[T, A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B,
     work.second.poke(args.item1)
     work.third.poke(args.item2)
     work.fourth.poke(args.item3)
-    runner: Callable[(Addr,), None] = run_work4[T, A, B, C, D].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_work4[T, A, B, C, D].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_work4[T, A, B, C, D].to[Callable]()
     return (runner, discard, place)
@@ -768,12 +846,17 @@ routine discard_voidwork0(raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `VoidWork0`.
+### Runs the work in the block at `raw`, a `VoidWork0`, or keeps its routine's failure in `slot` for `retrieve()` to
+### throw.
 ### :param raw: The block.
-routine run_voidwork0(raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_voidwork0(raw: Addr, slot: @WorkSlot) -> None
     work: @VoidWork0 = raw.to[@VoidWork0]()
     entry: Callable[(), None] = work.entry.peek()
-    entry.call()
+    when check entry.call()
+        is None => nothing
+        is Crashables as failure =>
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -784,13 +867,13 @@ routine run_voidwork0(raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork0(entry: Callable[(), None],
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[VoidWork0](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
     work: @VoidWork0 = work_at.to[@VoidWork0]()
     work.entry.poke(entry)
-    runner: Callable[(Addr,), None] = run_voidwork0.to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_voidwork0.to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_voidwork0.to[Callable]()
     return (runner, discard, place)
@@ -823,15 +906,21 @@ routine discard_voidwork1[A](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `VoidWork1`.
+### Runs the work in the block at `raw`, a `VoidWork1`, or keeps its routine's failure in `slot` for `retrieve()` to
+### throw.
 ### :param raw: The block.
-routine run_voidwork1[A](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_voidwork1[A](raw: Addr, slot: @WorkSlot) -> None
     work: @VoidWork1[A] = raw.to[@VoidWork1[A]]()
     entry: Callable[(A,), None] = work.entry.peek()
     first: @A = work.first
-    entry.call(steal first.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
+    when check entry.call(steal first.stride(0))
+        is None =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -843,14 +932,14 @@ routine run_voidwork1[A](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork1[A](entry: Callable[(A,), None], args: A,
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[VoidWork1[A]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
     work: @VoidWork1[A] = work_at.to[@VoidWork1[A]]()
     work.entry.poke(entry)
     work.first.poke(args)
-    runner: Callable[(Addr,), None] = run_voidwork1[A].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_voidwork1[A].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_voidwork1[A].to[Callable]()
     return (runner, discard, place)
@@ -880,17 +969,24 @@ routine discard_voidwork2[A, B](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `VoidWork2`.
+### Runs the work in the block at `raw`, a `VoidWork2`, or keeps its routine's failure in `slot` for `retrieve()` to
+### throw.
 ### :param raw: The block.
-routine run_voidwork2[A, B](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_voidwork2[A, B](raw: Addr, slot: @WorkSlot) -> None
     work: @VoidWork2[A, B] = raw.to[@VoidWork2[A, B]]()
     entry: Callable[(A, B), None] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
-    entry.call(steal first.stride(0), steal second.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
+    when check entry.call(steal first.stride(0), steal second.stride(0))
+        is None =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -902,7 +998,7 @@ routine run_voidwork2[A, B](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork2[A, B](entry: Callable[(A, B), None], args: (A, B),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[VoidWork2[A, B]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -910,7 +1006,7 @@ routine make_voidwork2[A, B](entry: Callable[(A, B), None], args: (A, B),
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
-    runner: Callable[(Addr,), None] = run_voidwork2[A, B].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_voidwork2[A, B].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_voidwork2[A, B].to[Callable]()
     return (runner, discard, place)
@@ -944,19 +1040,27 @@ routine discard_voidwork3[A, B, C](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `VoidWork3`.
+### Runs the work in the block at `raw`, a `VoidWork3`, or keeps its routine's failure in `slot` for `retrieve()` to
+### throw.
 ### :param raw: The block.
-routine run_voidwork3[A, B, C](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_voidwork3[A, B, C](raw: Addr, slot: @WorkSlot) -> None
     work: @VoidWork3[A, B, C] = raw.to[@VoidWork3[A, B, C]]()
     entry: Callable[(A, B, C), None] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
     third: @C = work.third
-    entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
-    third.zeroinit(1)
+    when check entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
+        is None =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -968,7 +1072,7 @@ routine run_voidwork3[A, B, C](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[VoidWork3[A, B, C]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -977,7 +1081,7 @@ routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     work.third.poke(args.item2)
-    runner: Callable[(Addr,), None] = run_voidwork3[A, B, C].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_voidwork3[A, B, C].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_voidwork3[A, B, C].to[Callable]()
     return (runner, discard, place)
@@ -1015,22 +1119,31 @@ routine discard_voidwork4[A, B, C, D](raw: Addr) -> None
     drop work.stride(0)
     return
 
-### Runs the work in the block at `raw`, a `VoidWork4`.
+### Runs the work in the block at `raw`, a `VoidWork4`, or keeps its routine's failure in `slot` for `retrieve()` to
+### throw.
 ### :param raw: The block.
-routine run_voidwork4[A, B, C, D](raw: Addr) -> None
+### :param slot: The ticket's slot.
+infallible routine run_voidwork4[A, B, C, D](raw: Addr, slot: @WorkSlot) -> None
     work: @VoidWork4[A, B, C, D] = raw.to[@VoidWork4[A, B, C, D]]()
     entry: Callable[(A, B, C, D), None] = work.entry.peek()
     first: @A = work.first
     second: @B = work.second
     third: @C = work.third
     fourth: @D = work.fourth
-    entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
+    when check entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
         steal fourth.stride(0))
-    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
-    first.zeroinit(1)
-    second.zeroinit(1)
-    third.zeroinit(1)
-    fourth.zeroinit(1)
+        is None =>
+            # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            fourth.zeroinit(1)
+        is Crashables as failure =>
+            first.zeroinit(1)
+            second.zeroinit(1)
+            third.zeroinit(1)
+            fourth.zeroinit(1)
+            slot.keep_failure(failure)
     return
 
 ### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
@@ -1042,7 +1155,7 @@ routine run_voidwork4[A, B, C, D](raw: Addr) -> None
 ### :throws: Throws `OutOfMemoryError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A, B, C, D),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr, @WorkSlot), None], Callable[(Addr,), None], Addr)
     work_at: Addr = allocate[VoidWork4[A, B, C, D]](count: 1, manager)
     if work_at.is_hollow()
         throw OutOfMemoryError()
@@ -1052,7 +1165,7 @@ routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A
     work.second.poke(args.item1)
     work.third.poke(args.item2)
     work.fourth.poke(args.item3)
-    runner: Callable[(Addr,), None] = run_voidwork4[A, B, C, D].to[Callable]()
+    runner: Callable[(Addr, @WorkSlot), None] = run_voidwork4[A, B, C, D].to[Callable]()
     place: Addr = work
     discard: Callable[(Addr,), None] = discard_voidwork4[A, B, C, D].to[Callable]()
     return (runner, discard, place)
@@ -1067,8 +1180,9 @@ routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A
 ### `t.put_work(steal work)` on every path.
 ### :typeparam T: The type of the work's result, `None` for none.
 record Work[T]
-    ### Runs a block: calls the routine with the arguments and stores the result in front.
-    runner: Callable[(Addr,), None]
+    ### Runs a block: calls the routine with the arguments and stores the result in front, or keeps its failure in the
+    ### ticket's slot.
+    runner: Callable[(Addr, @WorkSlot), None]
     ### Destructs a block: what a ticket calls for a result nobody retrieved, before the block goes back.
     discard: Callable[(Addr,), None]
     ### The block the work was made in: the routine, its arguments and room for its result.
@@ -1101,7 +1215,7 @@ crashable NoWorkError
 ### :param runner: Runs a block of this type.
 ### :param discard: Destructs a block of this type.
 ### :returns: The work, not started.
-routine work_from[T, B](made: @B, runner: Callable[(Addr,), None],
+routine work_from[T, B](made: @B, runner: Callable[(Addr, @WorkSlot), None],
     discard: Callable[(Addr,), None]) -> Work[T]
     return Work[T](runner, discard, block: made.to[@Byte](), size: sizeof[B](), align: alignof[B]())
 

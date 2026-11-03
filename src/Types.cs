@@ -255,17 +255,48 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
 
 /// A user or library record, instantiated with concrete arguments. A record with exactly one field is transparent:
 /// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `@aggregate`.
-public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField) : DType
+/// A ticket (`Thread[T]`, `Fiber[T]`, `PassableFiber[T]`), a piece of work (`Work[T]`) and the block a ticket's work lives
+/// in (`Work1[T, A]`, ...) carry the crashables of their entry routine as a hidden part of their type, `Fails`: a written
+/// `Thread[S64]` fails nothing, and a ticket whose entry can fail is a type of its own, whose `retrieve()` throws that
+/// list. `FailsFrom` names the routine the list came from, for messages.
+public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField,
+    List<DType>? fails = null, string? failsFrom = null) : DType
 {
     public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
+
+    /// The crashables the entry routine of a ticket, a piece of work or a work block can give, in the order of their
+    /// keys: empty for a type written in the program and for every other record.
+    public List<DType> Fails { get; } = fails is { Count: > 0 } && FailureCarrier(decl) ? Crashing.Ordered(fails) : [];
+
+    /// The routine whose list `Fails` is, or null.
+    public string? FailsFrom { get; } = fails is { Count: > 0 } ? failsFrom : null;
+
+    /// The same type without the hidden list: what a written `Thread[S64]` is.
+    public RecordType Plain => Fails.Count == 0 ? this : new RecordType(Decl, Args, transparentField);
+
+    /// The same type carrying `list` (the routine `from` gave it), or the plain one for an empty list.
+    public RecordType WithFails(List<DType> list, string? from) =>
+        list.Count == 0 ? Plain : new RecordType(Decl, Args, transparentField, list, from);
+
+    /// Whether values of a record declaration carry their entry routine's crashables: the standard library's tickets,
+    /// `Work[T]`, and the blocks of work its tickets run.
+    public static bool FailureCarrier(RecordDecl d) =>
+        d.IsLibrary && d.Name is "Thread" or "Fiber" or "PassableFiber" or "Work" or "Work0" or "Work1" or "Work2" or "Work3"
+            or "Work4" or "VoidWork0" or "VoidWork1" or "VoidWork2" or "VoidWork3" or "VoidWork4";
+
+    /// Whether this is a ticket of the standard library: `Thread[T]`, `Fiber[T]` or `PassableFiber[T]`.
+    public bool IsTicket => Decl.IsLibrary && Decl.Name is "Thread" or "Fiber" or "PassableFiber";
     public override string Name =>
         IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
         : Decl is { Name: "PointedSlice", Module: Compiler.SystemModule } && Args is [var elem] ? $"@[{elem.Name}]"
         : Decl is { Name: "BorrowedSlice", Module: Compiler.SystemModule } && Args is [var elems] ? $"&[{elems.Name}]"
         : Decl is { Name: "BorrowedCell", Module: Compiler.SystemModule } && Args is [var cell] ? $"&{cell.Name}"
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
-    public override string Key => DeclKey(Decl, Decl.Name, Args);
+    public override string Key => Fails.Count == 0 ? PlainKey : $"{PlainKey} throws({string.Join(" | ", Fails.Select(t => t.Key))})";
+
+    /// The key without the hidden list: the LLVM struct a ticket or a block is, whatever its entry can throw.
+    public string PlainKey => DeclKey(Decl, Decl.Name, Args);
 
     /// A tuple, `(A, B)`: the stdlib's `Tuple2` to `Tuple4`.
     public bool IsTuple => IsTupleDecl(Decl);
@@ -277,7 +308,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public DType? TransparentField => transparentField(this);
 
     public override DType Repr => TransparentField?.Repr ?? this;
-    public override string Llvm => TransparentField?.Llvm ?? $"%\"{Key}\"";
+    public override string Llvm => TransparentField?.Llvm ?? $"%\"{PlainKey}\"";
     public override string OwnerName => Decl.Name;
 }
 

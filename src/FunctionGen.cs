@@ -2235,6 +2235,15 @@ public sealed partial class FunctionGen
                 else if (t is CallableType { Failable: true } open && b.Value is not LambdaExpr
                          && InferQuiet(b.Value) is CallableType given && given.Plain.Equals(open.Plain))
                     t = given;
+                // A ticket or a piece of work written as the type takes the list of the value's entry routine.
+                if (t is RecordType { Fails.Count: 0 } carrier && RecordType.FailureCarrier(carrier.Decl)
+                    && InferQuiet(b.Value) is RecordType { Fails.Count: > 0 } carrying && carrying.PlainKey == carrier.PlainKey)
+                    t = carrying;
+                if (b.Value is ClaimExpr { Contents: { } moved } && t is PtrType { Pointee: RecordType { Fails.Count: 0 } placedCarrier }
+                    && RecordType.FailureCarrier(placedCarrier.Decl)
+                    && (InferQuiet(moved) is PtrType { Pointee: RecordType inner } ? inner : InferQuiet(moved) as RecordType) is { Fails.Count: > 0 } movedCarrier
+                    && movedCarrier.PlainKey == placedCarrier.PlainKey)
+                    t = new PtrType(movedCarrier);
                 // A place of a `Check[T]` (`m: &Check[T] <- check ...`) holds the Check the check makes, with its list.
                 if (b.Value is ClaimExpr { Contents: { } filled } && t is PtrType { Pointee: { } placed } && Crashing.IsCheck(placed)
                     && InferQuiet(filled) is { } filledType && Crashing.IsCheck(filledType))
@@ -2255,6 +2264,7 @@ public sealed partial class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 CheckViewedCopy(b.Value, t, b.Pos, b.Name);
                 Define(b.Name, new Val(op, t), b.Pos);
+                NoteOpenTicket(b, op, t);
                 NoteReadOnlyView(b.Name, b.Value, t);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 NoteWorkName(b.Name, t, b.Value, b.Pos);
@@ -2358,6 +2368,11 @@ public sealed partial class FunctionGen
             }
             case ExprStmt { Value: CallExpr { Name: "build_error", TypeArgs.Count: 0 } stop } when _c.FindFree("build_error", _env.File, stop.Pos) is null:
                 EmitBuildError(stop);
+                break;
+            case ExprStmt { Value: CallExpr { Name: "put_failure" or "throw_failure_from", TypeArgs.Count: 0 } kept }
+                when _decl.IsLibrary && _c.FindFree(kept.Name, _env.File, kept.Pos) is null:
+                if (kept.Name == "put_failure") EmitPutFailure(kept);
+                else EmitThrowFailureFrom(kept);
                 break;
             case ExprStmt e:
             {
@@ -2730,6 +2745,7 @@ public sealed partial class FunctionGen
     {
         if (_values.TryGetValue(r.Name, out var v))
         {
+            v = TicketTyped(v);
             RecordValue(r.Pos, v.Type);
             return v;
         }
@@ -3029,7 +3045,44 @@ public sealed partial class FunctionGen
         || (Crashing.IsCheck(actual) && expected is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open)
             && Crashing.ValueOf((VariantType)actual).Equals(open.Args[0]))
         // PointedCell<T> converts to Addr (the C `void*` of FFI signatures); the other way takes a cast.
-        || (actual is PtrType && expected is PtrType { Pointee: null });
+        || (actual is PtrType && expected is PtrType { Pointee: null })
+        || FitsFailures(actual, expected);
+
+    /// Whether a value whose type carries a list of crashables (a ticket, a piece of work, a work block, a Callable that
+    /// may fail) goes where the same type with a list that holds all of it is expected: what the value can throw, the
+    /// place says it may. A plain value goes where a ticket or a piece of work that may fail is expected, and a plain
+    /// Callable never where one that may fail is (a call of it returns no carrier).
+    internal static bool FitsFailures(DType actual, DType expected)
+    {
+        if (actual is PtrType { Pointee: RecordType pointedActual } && expected is PtrType { Pointee: RecordType pointedExpected })
+            return FitsFailures(pointedActual, pointedExpected);
+        return (actual, expected) switch
+        {
+            (RecordType a, RecordType e) => a.PlainKey == e.PlainKey && a.Fails.All(f => e.Fails.Contains(f)),
+            (CallableType a, CallableType e) => a.Failable && e.Failable && a.Plain.Equals(e.Plain) && a.Throws.All(f => e.Throws.Contains(f)),
+            _ => false,
+        };
+    }
+
+    /// Why a ticket or a piece of work whose entry can fail doesn't go where its type is written without that list (or
+    /// with a list that lacks some of it): null when that isn't what differs.
+    internal static string? FailuresMisfit(DType actual, DType expected)
+    {
+        var a = actual is PtrType { Pointee: RecordType pa } ? pa : actual as RecordType;
+        var e = expected is PtrType { Pointee: RecordType pe } ? pe : expected as RecordType;
+        if (a is null || e is null || a.PlainKey != e.PlainKey || a.Fails.Count == 0) return null;
+        string what = a.IsTicket ? $"a {a.Name} ticket" : $"a {a.Name}";
+        string entry = a.FailsFrom ?? "its entry routine";
+        string throws = string.Join(", ", a.Fails.Select(t => t.Name));
+        if (e.Fails.Count == 0)
+            return $"this is {what} whose work's routine {entry} can throw {throws}, and the {e.Name} here fails nothing: a field, "
+                + $"an element of a list and a parameter can't say what a ticket's work throws. Receive the failures inside {entry} "
+                + $"with try or check (or make it infallible), or keep the {(a.IsTicket ? "ticket" : "work")} in a name of its own"
+                + (a.IsTicket ? ", whose retrieve() throws them" : "");
+        var missing = a.Fails.Where(f => !e.Fails.Contains(f)).Select(f => f.Name);
+        return $"this is {what} whose work's routine {entry} can throw {throws}, and the {e.Name} here holds only "
+            + $"{string.Join(", ", e.Fails.Select(t => t.Name))}, not {string.Join(", ", missing)}";
+    }
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
 
@@ -3041,7 +3094,9 @@ public sealed partial class FunctionGen
     /// The same wording for types in hand. Two Callable types that differ only in whether a call through them can fail
     /// (or in what it can throw) print alike, so the message says which may fail.
     internal static string ArgumentMismatch(int argument, DType actual, DType parameter) =>
-        actual is CallableType given && parameter is CallableType wanted
+        FailuresMisfit(actual, parameter) is { } failing
+            ? $"argument {argument}: {failing}"
+            : actual is CallableType given && parameter is CallableType wanted
         && given.Plain.Equals(wanted.Plain) && !given.Equals(wanted)
             ? $"argument {argument} is {given}, and the parameter is {wanted}: they are the same Callable except that {FailingNote(given, wanted)}"
             : ArgumentMismatch(argument, actual.ToString() ?? "", parameter);
@@ -3143,7 +3198,9 @@ public sealed partial class FunctionGen
         // A call that returns nothing, where the None record goes (a `T` bound to None), gives its one value.
         if (v.Type is VoidType && Compiler.IsNoneRecord(expected)) v = new Val("zeroinitializer", expected);
         if (!Compatible(v.Type, expected))
-            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
+            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected))
+                : FailuresMisfit(v.Type, expected) is { } failing ? Err(e.Pos, failing)
+                : Mismatch(e.Pos, expected, v.Type.ToString());
         return v;
     }
 
@@ -5201,6 +5258,10 @@ public sealed partial class FunctionGen
         {
             var env = new Compiler.TypeEnv(o.File);
             BindExplicit(o, env, r.TypeArgs, r.Pos);
+            // The runner of a block of work that may fail (and, inside the routines of such a ticket, the runner and the
+            // destruct the standard library names) is built for the list of the work it runs.
+            if (r.Fails is { } fails) env.Bind(Compiler.FailsKey, fails);
+            else if (_decl.IsLibrary && o.IsLibrary && _inst.Env.Get(Compiler.FailsKey) is { } inherited) env.Bind(Compiler.FailsKey, inherited);
             var inst = _c.RequireInstance(o, env);
             if (fitting.Count > 1 && want is CallableType wanted && !new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(wanted.Plain))
                 continue;
@@ -5590,7 +5651,8 @@ public sealed partial class FunctionGen
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt) || PresetViews(args[i], at, pt)) preferred = false;
                     else if (FailingCallable(r, i + first, at, pt, args[i].Pos) is { } failing)
                         env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
-                    else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)))
+                    else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)) && !FitsFailures(at, pt)
+                             && !(IsTicketRoutine(r) && at is RecordType { Fails.Count: > 0 } work && pt is RecordType written && work.PlainKey == written.PlainKey))
                         return No(ArgumentMismatch(i + 1, at, pt));
                     continue;
                 }
@@ -6169,6 +6231,7 @@ public sealed partial class FunctionGen
         {
             if (!PrimitiveOrRecordName(o.Name)) env.Bind(o.Name, owner); // blanket `T.m`
             env.Bind("Me", owner);
+            BindOwnerFails(env, owner);
             return env;
         }
 
@@ -6188,7 +6251,16 @@ public sealed partial class FunctionGen
                 env.Bind(ta.Type.Name, actual[i]);
         _c.BindNestedOwnerArgs(r, actual, env);
         env.Bind("Me", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
+        BindOwnerFails(env, owner);
         return env;
+    }
+
+    /// A routine of a ticket (or of a piece of work) whose entry can fail is built for that list: the ticket's types it
+    /// writes carry it, and its retrieve throws it.
+    private static void BindOwnerFails(Compiler.TypeEnv env, DType owner)
+    {
+        if ((owner is PtrType { Pointee: RecordType pointed } ? pointed : owner) is RecordType { Fails.Count: > 0 } carrier)
+            env.Bind(Compiler.FailsKey, Crashing.Union(carrier.Fails));
     }
 
     private bool PrimitiveOrRecordName(string name) =>
@@ -6534,6 +6606,7 @@ public sealed partial class FunctionGen
         }
         plan = Recovering(plan);
         BindFailingCallables(plan);
+        BindTicketWork(plan);
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);

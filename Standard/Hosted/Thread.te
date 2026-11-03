@@ -7,6 +7,10 @@
 # asleep for the next ticket instead of ending it. Until then the same ticket takes more work, one piece after
 # another.
 #
+# The work's routine may fail: `retrieve` throws its failure (Work.te). A ticket bound to a name takes the crashables of
+# its first work's routine into its type, and later work on it throws only what that list holds. A ticket in a field, an
+# element of a list or a parameter fails nothing.
+#
 # A ticket given back with its work still running crashes: no work runs on that nobody looks at, and nothing it uses
 # goes away under it. Work with no result is a `Thread[None]`, waited for
 # and given back the same way. Before each piece of work the thread puts every `@threadlocal` global back to its
@@ -201,8 +205,8 @@ secret routine worker_main(raw: Addr) -> None
             # Every piece of work starts from the thread-local values a new thread has.
             ThreadLocalManager.reset()
             RUNNING_WORK.store(worker.slot.to[Addr]())
-            runner: Callable[(Addr,), None] = worker.slot.runner.peek()
-            runner.call(worker.slot.work.peek())
+            runner: Callable[(Addr, @WorkSlot), None] = worker.slot.runner.peek()
+            runner.call(worker.slot.work.peek(), worker.slot)
             when THREAD_CLEANUP.load()
                 is Callable[(), None] as cleanup => cleanup.call()
                 is None => nothing
@@ -232,8 +236,8 @@ routine @Thread[T].work_slot() -> @WorkSlot
 ### :param discard: Destructs the block, for a result nobody retrieves.
 ### :param work: Its block.
 @track_caller
-secret routine @Thread[T].start(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
-    work: Addr) -> None
+secret routine @Thread[T].start(runner: Callable[(Addr, @WorkSlot), None],
+    discard: Callable[(Addr,), None], work: Addr) -> None
     me.work_slot().put(runner, discard, work)
     return
 
@@ -409,8 +413,9 @@ routine @Thread[T].waitfor(timeout: Duration) -> @Me
 ### Waits until the work has finished, and checks that it wasn't cancelled: work with no result. Inside a fiber only
 ### the fiber waits: its thread goes on with the other fibers, and the thread that finishes the work wakes it.
 ### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
-###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
-###     work that waits to stop while it waits.
+###     passed first, `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the work
+###     that waits to stop while it waits, and the failure of the work's routine, one of the crashables the ticket's type
+###     carries.
 @target(os: not "none")
 @track_caller
 routine @Thread[None].retrieve() -> None
@@ -423,14 +428,17 @@ routine @Thread[None].retrieve() -> None
     slot.result_place[Byte]()
     if slot.is_cancelled()
         throw CancelRequested()
+    if slot.has_failure()
+        throw_failure_from(room: slot.failure.peek())
     return
 
 ### Waits until the work has finished, and gives its result. Inside a fiber only the fiber waits: its thread goes on
 ### with the other fibers, and the thread that finishes the work wakes it.
 ### :returns: The result.
 ### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
-###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
-###     work that waits to stop while it waits.
+###     passed first, `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the work
+###     that waits to stop while it waits, and the failure of the work's routine, one of the crashables the ticket's type
+###     carries.
 @target(os: not "none")
 @track_caller
 routine @Thread[T].retrieve() -> T
@@ -443,6 +451,8 @@ routine @Thread[T].retrieve() -> T
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
         throw CancelRequested()
+    if slot.has_failure()
+        throw_failure_from(room: slot.failure.peek())
     taken: &T <- steal place.stride(0)
     slot.result_taken[T]()
     return taken

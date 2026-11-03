@@ -457,9 +457,14 @@ public sealed partial class FunctionGen
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
             throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is the value of a routine that can fail, whose "
                 + "failure C has no way to receive: hand it a routine that receives the failure itself (with check or try)");
+        // A ticket keeps its entry's failure for its retrieve(), and the ticket's type says what it can be (BindTicketWork).
+        if (IsTicketRoutine(r) && r.Params[param].Name == "entry") return value;
+        // Inside the routines of a ticket whose entry can fail, the entry goes on to the block that keeps it, built for
+        // the ticket's list.
+        if (r.IsLibrary && _decl.IsLibrary && _inst.Env.Has(Compiler.FailsKey)) return value;
         // A routine that only calls the value is built for it: a failure through it stops the program on the line of
         // that call, or passes on from the routine's recovering form.
-        if (Compiler.OnlyCalled(r, r.Params[param].Name)) return value;
+        if (_c.OnlyCalled(r, r.Params[param].Name)) return value;
         throw Err(at, $"you hand a routine value that may fail to '{r.Params[param].Name}' of '{r.DisplayName}', which keeps it "
             + "or hands it on, so its failure would have no caller to go to: hand it an infallible routine, or one that "
             + "receives its failures itself (with check or try)");
@@ -487,6 +492,10 @@ public sealed partial class FunctionGen
             else if (InferQuiet(plan.Args[i]) is { } given && FailingCallable(r, i + offset, given, declared, plan.Args[i].Pos) is { } failing)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), failing);
         }
+        // A library routine that takes the entry of a ticket whose entry can fail is built for the ticket's list too.
+        if (r.IsLibrary && _decl.IsLibrary && _inst.Env.Get(Compiler.FailsKey) is { } inherited && !plan.Env.Has(Compiler.FailsKey)
+            && r.Params.Any(p => plan.Env.Get(Compiler.FailingParamKey(p.Name)) is CallableType { Failable: true }))
+            plan.Env.Bind(Compiler.FailsKey, inherited);
     }
 
     // ── try and check ───────────────────────────────────────────────────────
@@ -758,6 +767,52 @@ public sealed partial class FunctionGen
             return;
         }
         throw Err(r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
+    }
+
+    // ── A ticket's kept failure ─────────────────────────────────────────────
+
+    /// `put_failure(failure, room: at)` (the standard library's own): the failure a `check` caught (a crashable, or the
+    /// Crashables of the arms that name none) goes into the memory at `at`, laid out like a flow's mold, its tag first.
+    /// A ticket's runner keeps the failure of the work's routine this way, for the ticket's `retrieve()`.
+    private void EmitPutFailure(CallExpr c)
+    {
+        if (c.Args.Count != 2)
+            throw Err(c.Pos, "put_failure takes the failure and the room: put_failure(failure, room: at)");
+        var failure = EvalAny(c.Args[0]);
+        var room = Eval(c.Args[1], new PtrType(null));
+        if (!Emitting || _cur.Terminated) return;
+        if (Crashing.IsCrashable(failure.Type))
+        {
+            StoreValue(room.Op, Compiler.MoldLlvm, failure, FailureTagOp(failure.Type, c.Pos));
+            return;
+        }
+        if (failure.Type is not VariantType union || !union.Leaves.All(Crashing.IsCrashable))
+            throw Err(c.Args[0].Pos, $"put_failure keeps a failure (a crashable, or the Crashables a check caught), not {failure.Type}");
+        string llvm = TaggedLlvm(union);
+        string from = NewSlot(union);
+        Line($"store {llvm} {failure.Op}, ptr {from}");
+        CopyTagged(from, llvm, room.Op, Compiler.MoldLlvm);
+    }
+
+    /// The name the failure `throw_failure_from` reads is bound to while it is thrown.
+    private const string KeptFailureName = "kept failure";
+
+    /// `throw_failure_from(room: at)` (the standard library's own, in a ticket's `retrieve()`): throws the failure
+    /// `put_failure` kept at `at`, as a value of the crashables of the ticket's entry routine (the list the instance is
+    /// built for, Compiler.FailsKey). A ticket that fails nothing never keeps one, so there it throws nothing.
+    private void EmitThrowFailureFrom(CallExpr c)
+    {
+        if (c.Args.Count != 1)
+            throw Err(c.Pos, "throw_failure_from takes the room: throw_failure_from(room: at)");
+        var room = Eval(c.Args[0], new PtrType(null));
+        if (!Emitting || _cur.Terminated || _inst.Env.Get(Compiler.FailsKey) is not VariantType union) return;
+        string llvm = TaggedLlvm(union);
+        string slot = NewSlot(union);
+        CopyTagged(room.Op, Compiler.MoldLlvm, slot, llvm);
+        var outer = _values;
+        _values = new Dictionary<string, Val>(_values) { [KeptFailureName] = new Val(EmitTmp($"load {llvm}, ptr {slot}"), union) };
+        try { EmitThrow(new ReturnStmt(new ValueRef(KeptFailureName, c.Pos), c.Pos) { IsThrow = true }); }
+        finally { _values = outer; }
     }
 
     /// `throw e` in a routine that isn't failable, and `todo`: the program stops here through `Crash` with the

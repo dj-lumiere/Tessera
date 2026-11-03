@@ -1,0 +1,77 @@
+# The routine of a ticket's work may fail: the ticket keeps its failure, and retrieve() throws it, so a check or a try
+# around the retrieve receives it. The same for a thread, a fiber and a passable fiber, for work put with put_work and
+# put_callable, with a result and without.
+
+import Fiber
+import Hosted
+
+crashable BadWorkError
+    code: S64
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine BadWorkError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("bad work {me.code}")
+    return
+
+### Twice n, failing for a negative n.
+### :param n: The number.
+### :returns: Twice n.
+routine twice(n: S64) -> S64
+    if n < 0
+        throw BadWorkError(code: n)
+    return n * 2
+
+### Fails for a negative n, and gives nothing.
+### :param n: The number.
+routine check_sign(n: S64) -> None
+    if n < 0
+        throw BadWorkError(code: n)
+    return
+
+### Shows what a retrieve gave.
+### :param got: The value or the failure.
+routine show_result(got: Check[S64]) -> None
+    when got
+        is S64 as v => Console.show("got {v}")
+        is BadWorkError as e => Console.show("failed with {e.code}")
+        is Crashables as e => Console.show("failed with {e.name()}")
+    return
+
+### Runs the example.
+routine start() -> None
+    t: Thread[S64] <- get_thread[S64]()
+    t.put_callable(entry: twice.to[Callable](), args: 4)
+    show_result(check t.retrieve())
+    t.put_callable(entry: twice.to[Callable](), args: -3)
+    show_result(check t.retrieve())
+    work: Work[S64] = twice.to[Work](n: -5)
+    t.put_work(work)
+    r: S64? = try t.retrieve()
+    Console.show("try gives none: {r.is_absent()}")
+    drop t
+
+    v: Thread[None] <- get_thread[None]()
+    v.put_work(check_sign.to[Work](n: -7))
+    when check v.retrieve()
+        is None => Console.show("no failure")
+        is BadWorkError as e => Console.show("thread without a result: {e.code}")
+        else as e => Console.show("other")
+    drop v
+
+    f: Fiber[S64] <- FIBERS.get_fiber[S64]()
+    f.put_callable(entry: twice.to[Callable](), args: -9)
+    show_result(check f.retrieve())
+    f.put_work(twice.to[Work](n: 10))
+    show_result(check f.retrieve())
+    drop f
+
+    pool: &ThreadPoolManager <- .construct(threads: 2)
+    p: PassableFiber[None] <- pool.get_passable_fiber[None]()
+    p.put_callable(entry: check_sign.to[Callable](), args: -11)
+    Console.show("passable fiber: {try p.retrieve()}")
+    drop p
+    drop pool
+    return

@@ -512,6 +512,10 @@ public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(
 
     /// The module of a qualified routine: `Hosted` in `Hosted/wake_one.to[Callable]()`.
     public string? Path { get; init; }
+
+    /// The crashables (a `Crashables` of them) of the work a block's runner the builder names runs: the runner is built
+    /// to keep that routine's failure for the ticket's `retrieve()`. Null for every routine the program names.
+    public DType? Fails { get; init; }
 }
 
 /// `name(args)` or `name[T](args)` — a free routine call.

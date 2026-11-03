@@ -1613,7 +1613,12 @@ public sealed partial class Compiler
                 throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
             CheckResultCode(s, args, t.Pos);
-            return new RecordType(s, args, TransparentField);
+            var record = new RecordType(s, args, TransparentField);
+            // Inside the routines of a ticket whose entry can fail, a ticket, a piece of work and a work block written in
+            // the routine carry that list (FailsKey).
+            if (RecordType.FailureCarrier(s) && env.Get(FailsKey) is VariantType fails)
+                return record.WithFails(Crashing.FailuresOf(fails), null);
+            return record;
         }
 
         if (FindVariant(t.Name, env.File, t.Pos, t.Path) is { } v)
@@ -2095,6 +2100,9 @@ public sealed partial class Compiler
             if (fields.Any(x => x.Item1 == f.Name))
                 throw new CompileError(f.Pos, $"field '{f.Name}' is declared twice");
             var ft = HeldOptional(ResolveType(f.Type, env), f.Pos, env);
+            // The routine a work block holds is its entry, which can fail the way the block's list says.
+            if (s.Fails.Count > 0 && f.Name == "entry" && s.Decl.Name != "Work" && ft is CallableType entry)
+                ft = new CallableType(entry.CallConv, entry.Params, entry.Ret, failable: true, s.Fails);
             // A record is copied with `=`, and so would everything in it be: an entity goes in an entity.
             if (!s.Decl.IsEntity && Entities.Holds(ft))
                 throw new CompileError(f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
@@ -2319,6 +2327,10 @@ public sealed partial class Compiler
         {
             case RecordType { TransparentField: { } field }:
                 EnsureTypeDefined(field);
+                break;
+            // A ticket or a block whose entry can fail is the same struct as the plain one.
+            case RecordType { Fails.Count: > 0 } failing:
+                EnsureTypeDefined(failing.Plain);
                 break;
             case VariantType { IsAddressed: true } optional:
                 // An Optional is an address: the E it points at is defined where its place is.

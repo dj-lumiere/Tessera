@@ -1339,8 +1339,9 @@ routine start() -> None
   the call that hands it a value that may fail fails the way the value does. A lambda handed to a call a `try` or
   `check` reaches passes its failure on: `try apply(f: (x) => 10 // x, x: 0)` gives `None`, and with no keyword above
   the lambda's failure stops the program on the line it fails. A routine that keeps a routine value to call later (a
-  fiber's or a thread's work, a reporting routine, an event handler) takes one that receives its own failures: a
-  value that may fail handed to it is a build error.
+  reporting routine, an event handler) takes one that receives its own failures: a value that may fail handed to it
+  is a build error. A value written into memory, into a record, or onto a ticket is kept, and so is one handed to a
+  routine that keeps it. A ticket's work is the exception: its failure goes to the ticket's `retrieve()` (Tickets, below).
 - **`try` or `check` in front of an expression with nothing that can fail gives the value.**
 - **`@throws([NotFoundError, EmptyTextError])`** above a routine fixes its list (an exported routine, whose
   callers shouldn't see it change when its body does): what the routine can throw must be in it (a build error that
@@ -1973,7 +1974,7 @@ block's destruct only ends what is still in it.
 bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from the call that borrows it, `=` is a build
 error: "a Thread[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: t:
 Thread[S64] <- ..."), `t.put_work(steal work)` (a `Work[T]`, it runs from here on), `t.check_finished()` to look without
-waiting, `r: S64 = t.retrieve()` (failable), which waits until the work has finished and gives its result, then more
+waiting, `r: S64 = t.retrieve()`, which waits until the work has finished and gives its result, then more
 work on the same ticket or `drop t`, which gives the ticket back. `t.waitfor(5s).retrieve()` waits at most that long
 (`waitfor(timeout)` takes a `Duration` and holds for the next `retrieve`) and throws `TaskTimeoutError` when the time
 runs out first (`try` gives `None`, or `false` for a `Thread[None]`). Every ticket bound with `<-` is given back with
@@ -1997,6 +1998,23 @@ and `check t.retrieve()` tells them apart. Before each piece of work a thread pu
 its starting value. The same flow on all three ticket kinds: `Thread[T]`, `Fiber[T]` (`FIBERS.get_fiber[T]()`),
 `PassableFiber[T]` (`pool.get_passable_fiber[T]()`). `work_slot()` gives the ticket's `@WorkSlot`, for code waiting on
 several tickets at once.
+- **The work's failure goes to `retrieve()`.** The routine of a ticket's work may fail. The work runs the routine's
+  recovering form, the thread or fiber that runs it keeps the failure in the ticket's slot, and `retrieve()` throws it:
+  `check t.retrieve()` gives `Check[T]` with the routine's crashables, `try t.retrieve()` gives `None`, and a bare
+  `retrieve()` stops the program on its own line with the failure's name and message (the trace notes it was made on
+  another thread). The ticket's type carries the routine's list as a hidden part of it: the program still writes
+  `Thread[S64]`, and each `retrieve()` throws only its own ticket's list (besides `TaskTimeoutError`,
+  `CancelRequested`). A ticket bound to a name with `<-` takes the list of its first `put_work` / `put_callable`
+  (another call on it first, such as `retrieve`, leaves it failing nothing). Later work on that ticket must throw
+  only what the list holds, else a build error names both routines ("'small' can throw TooLargeError, which the
+  ticket 't' can't: its type took the list of its first work's routine, 'checked' (BadInputError). Receive them inside
+  'small' with try or check, or put it on a ticket of its own"). A ticket where the list can't be written (a field, an
+  element of a `List[Thread[S64]]`, a parameter) fails nothing: putting work that can fail on one, or a ticket whose
+  work can fail there, is a build error that says to receive the failures inside the routine with `try` / `check`
+  (or make the routine `infallible`, whose failure stops the program where it happens). A `Work[T]` carries the list
+  the same way (`w: Work[S64] = f.to[Work](...)` takes it, a `List[Work[S64]]` holds work that fails nothing). Every
+  checked `+`, index, or library call can fail, so the routine of work kept in lists of tickets is usually
+  `infallible` or receives its failures itself (tests/thread_entry_*).
 - **What work changes.** The build checks what thread work changes (What thread work changes, above). It doesn't
   know whether two pieces of work reach the same memory (under another name, through an `Addr`): the data race check
   (below) finds such races at run time, and a debug build on Linux and macOS on x86_64 and aarch64 runs it. Work

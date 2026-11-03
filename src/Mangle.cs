@@ -194,8 +194,22 @@ public sealed partial class Compiler
         private List<Step> Declared(Decl d, string name, List<DType> args, DType t)
         {
             var steps = ModuleSteps(d.Module);
-            steps.Add(Named(c.UnqualifiedName(name, d), DType.DeclKey(d, name, []), args, t));
+            // A ticket or a work block whose entry can fail is a type of its own: an ABI tag of its list keeps the
+            // routines built for it apart from the plain type's.
+            string tag = t is RecordType { Fails.Count: > 0 } failing ? "B" + Source($"fails_{FailsHash(failing)}") : "";
+            steps.Add(Named(c.UnqualifiedName(name, d) + tag, DType.DeclKey(d, name, []) + tag, args, t));
             return steps;
+        }
+
+        private static string FailsHash(RecordType t)
+        {
+            uint h = 2166136261;
+            foreach (char ch in string.Join(";", t.Fails.Select(f => f.Key)))
+            {
+                h ^= ch;
+                h *= 16777619;
+            }
+            return h.ToString("x8", CultureInfo.InvariantCulture);
         }
 
         private Step Named(string text, string qualified, List<DType> args, DType t) =>
