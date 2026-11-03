@@ -1347,8 +1347,10 @@ routine start() -> None
   routine value that may fail (or one that never does) goes there as it is, and a call through the stored value passes any
   failure to its caller. `try c.call(x)` gives `None` on a failure, `check` needs an `else` arm, and a bare call that
   fails stops the program with the failure's message. The value is made where it is stored (`Handler(action: f.to[Callable]())`,
-  `steps.add_last(f.to[Callable]())`, a lambda) or is a name bound to a routine value in the same routine; a plain
-  Callable that arrives some other way (a parameter, a call's result) doesn't go there (the mismatch error). A routine that
+  `steps.add_last(f.to[Callable]())`, a lambda) or is a name bound to a routine value in the same routine. A `Callable`
+  parameter of the program's routine that the routine writes into such a place (`return Me(action)`) is open too, so the
+  caller makes the value for it; a plain Callable that arrives some other way (a call's result, a parameter the routine only
+  calls) doesn't go there (the mismatch error). A routine that
   never fails is stored as a routine of its own that calls it. The standard library keeps its plain Callables (its
   fields, the hooks C calls), and a Callable with a `@callconv` stays plain (tests/callable_open_set_*).
 - **`try` or `check` in front of an expression with nothing that can fail gives the value.**
