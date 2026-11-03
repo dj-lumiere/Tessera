@@ -1342,6 +1342,15 @@ routine start() -> None
   reporting routine, an event handler) takes one that receives its own failures: a value that may fail handed to it
   is a build error. A value written into memory, into a record, or onto a ticket is kept, and so is one handed to a
   routine that keeps it. A ticket's work is the exception: its failure goes to the ticket's `retrieve()` (Tickets, below).
+  A `Callable` written as the type of a field of a program's record or entity, or as the argument of a collection or a
+  `&` place (`List[Callable[(S64,), S64]]`), is OPEN: the build types it with every failure the program throws, so a
+  routine value that may fail (or one that never does) goes there as it is, and a call through the stored value passes any
+  failure to its caller. `try c.call(x)` gives `None` on a failure, `check` needs an `else` arm, and a bare call that
+  fails stops the program with the failure's message. The value is made where it is stored (`Handler(action: f.to[Callable]())`,
+  `steps.add_last(f.to[Callable]())`, a lambda) or is a name bound to a routine value in the same routine; a plain
+  Callable that arrives some other way (a parameter, a call's result) doesn't go there (the mismatch error). A routine that
+  never fails is stored as a routine of its own that calls it. The standard library keeps its plain Callables (its
+  fields, the hooks C calls), and a Callable with a `@callconv` stays plain (tests/callable_open_set_*).
 - **`try` or `check` in front of an expression with nothing that can fail gives the value.**
 - **`@throws([NotFoundError, EmptyTextError])`** above a routine fixes its list (an exported routine, whose
   callers shouldn't see it change when its body does): what the routine can throw must be in it (a build error that

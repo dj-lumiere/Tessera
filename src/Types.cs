@@ -248,8 +248,12 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
         $"Callable[{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}]";
     public override string Key =>
         $"Callable[{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]"
-        + (Failable ? $" throws({string.Join(" | ", Throws.Select(t => t.Key))})" : "");
+        + (Failable ? IsOpen ? " throws(*)" : $" throws({string.Join(" | ", Throws.Select(t => t.Key))})" : "");
     public override string Llvm => "ptr";
+
+    /// Whether a call through it may give any failure the program throws (a Callable kept in a field or a collection): its
+    /// list holds `OpenFailure` (Crashing.IsOpenMarker), which nothing throws.
+    public bool IsOpen => Failable && Throws.Any(Crashing.IsOpenMarker);
     public override string OwnerName => "Callable";
 }
 

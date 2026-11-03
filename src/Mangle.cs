@@ -270,7 +270,7 @@ public sealed partial class Compiler
             if (f.Failable)
             {
                 Out("U8failableI");
-                foreach (var thrown in f.Throws) Type(thrown);
+                if (f.IsOpen) Out(Source("open")); else foreach (var thrown in f.Throws) Type(thrown);
                 Out("E");
             }
             if (Index("F:" + f.Key) is { } fn)

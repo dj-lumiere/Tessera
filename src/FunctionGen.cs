@@ -45,6 +45,10 @@ public sealed partial class FunctionGen
     /// The routine's parameters and the values its head shares: what every block sees from its first line.
     private Dictionary<string, Val> _routineValues = [];
 
+    /// The routine each local bound to a routine value (`c: Callable[...] = f.to[Callable]()`) holds, so storing the name where a
+    /// Callable open to failures goes makes the value there.
+    private readonly Dictionary<string, RoutineRef> _routineBindings = [];
+
     /// The LLVM block the head is emitted into, the function's `start`, or null for a routine without shared lines.
     private LBlock? _head;
     private Dictionary<string, Val> _values = [];
@@ -2229,7 +2233,8 @@ public sealed partial class FunctionGen
                 // A routine value bound to a name points at the routine's recovering form when the routine can throw: the name
                 // takes the routine's list (a plain call through it passes the failure on, and put_callable hands it to the
                 // ticket's retrieve()).
-                if (t is CallableType { Failable: false } written && b.Value is RoutineRef named && Emitting && !_decl.IsLibrary
+                if (b.Value is RoutineRef boundRoutine) _routineBindings[b.Name] = boundRoutine;
+                if (t is CallableType { Failable: false } written && b.Value is RoutineRef named && Emitting
                     && RoutineValueFailing(named, written) is { } recoveringType)
                     t = recoveringType;
                 // A Callable written as the type takes the failure of the routine value that fills it: what it can
@@ -3065,7 +3070,7 @@ public sealed partial class FunctionGen
         return (actual, expected) switch
         {
             (RecordType a, RecordType e) => a.PlainKey == e.PlainKey && (e.IsOpen || a.Fails.All(f => e.Fails.Contains(f))),
-            (CallableType a, CallableType e) => a.Failable && e.Failable && a.Plain.Equals(e.Plain) && a.Throws.All(f => e.Throws.Contains(f)),
+            (CallableType a, CallableType e) => a.Failable && e.Failable && a.Plain.Equals(e.Plain) && (e.IsOpen || a.Throws.All(f => e.Throws.Contains(f))),
             _ => false,
         };
     }
@@ -3122,6 +3127,9 @@ public sealed partial class FunctionGen
         if (FlagsOf(expected) is { } flagsExpected && e is BinaryExpr { Op: "|" or "&" or "^" } bitwise)
             throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
+        if (e is ValueRef boundName && expected is CallableType { IsOpen: true } && _routineBindings.TryGetValue(boundName.Name, out var boundTo)
+            && InferQuiet(e) is CallableType { Failable: false })
+            return RoutineValue(boundTo, expected);
         if (e is FieldExpr narrowedField && NarrowedType(narrowedField) is { } narrowedType)
         {
             var narrowedVal = EvalNarrowed(narrowedField, narrowedType);
@@ -5240,6 +5248,7 @@ public sealed partial class FunctionGen
         if (expected is CallableType { Failable: true } && _c.CanRecover(routine)) routine = _c.RecoveringOf(routine);
         var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
         if (_reportingArgument) _c.NoteReportingRoutine(inst, r.Pos);
+        if (expected is CallableType { IsOpen: true } && !inst.IsFailable && r.Callable is null) return OpenThunk(r, inst);
         var own = OwnCallable(inst);
         if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
@@ -5254,6 +5263,16 @@ public sealed partial class FunctionGen
     }
 
 
+
+    /// A routine that gives no failure back (an `infallible` one, a C routine) where a Callable open to failures is expected: the
+    /// value is a routine of its own that calls it and gives its result in the carrier every failable Callable returns.
+    private Val OpenThunk(RoutineRef r, Instance inst)
+    {
+        var names = Enumerable.Range(0, inst.Params.Count).Select(i => new ValueRef($"p{i}", r.Pos)).ToList();
+        var call = new CallExpr(r.Name, r.TypeArgs, names.Cast<Expr>().ToList(), r.Pos) { Path = r.Path };
+        return EvalLambda(new LambdaExpr(names, call, r.Pos),
+            new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true));
+    }
 
     /// The Callable a routine value bound to a name has when the routine can throw: its recovering form's, carrying the list.
     /// Null when the routine throws nothing (the plain routine is the value then), or isn't one routine.
@@ -5299,6 +5318,7 @@ public sealed partial class FunctionGen
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
         if (c.Decl.AnnotationNamed("inline") is not null)
             throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
+        if (expected is CallableType { IsOpen: true } && !c.Inst.IsFailable && r.Callable is null) return OpenThunk(r, c.Inst);
         var own = OwnCallable(c.Inst);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");

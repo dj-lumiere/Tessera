@@ -1585,12 +1585,28 @@ public sealed partial class Compiler
 
     private List<DType>? _openFailures;
 
+    /// A Callable of the default calling convention written in a program's own file where it is kept (a field, an argument of a
+    /// collection or a pointer) is open: any failure the program throws may come out of a call through it. Library code keeps
+    /// its plain Callables, which C and the runtime call.
+    public DType OpenCallable(DType t, bool library)
+    {
+        if (library) return t;
+        if (t is VariantType { IsOptional: true, Args: [CallableType inner] } optional && OpenCallable(inner, false) is var opened && !ReferenceEquals(opened, inner))
+            return new VariantType(optional.Decl, [opened], VariantBranches);
+        return t is CallableType { Failable: false, CallConv: "default" } plain
+            ? new CallableType(plain.CallConv, plain.Params, plain.Ret, failable: true, OpenFailures())
+            : t;
+    }
+
     /// The open list of failures: every crashable the program declares, and `OpenFailure` (Crashing.IsOpenMarker). A ticket
     /// or a piece of work written where its work's routine can't be named carries it.
     public List<DType> OpenFailures() =>
         _openFailures ??= Crashing.Ordered(_records.Values.SelectMany(g => g)
             .Where(d => d.IsCrashable && d.TypeParams.Count == 0 && Selected(d))
             .Select(d => (DType)new RecordType(d, [], TransparentField)));
+
+    /// Whether a file is the program's own, not the standard library's.
+    public bool UserFile(string file) => _fileModule.TryGetValue(file, out var m) && !_libraryModules.Contains(m);
 
     /// Whether a record, variant or choice of the name `t` names is declared where `t` is written.
     private bool DeclaresType(TypeRef t, TypeEnv env)
@@ -1615,6 +1631,7 @@ public sealed partial class Compiler
             // place of the E from a manager, as an entity's field does: `List[Counter?]` holds `&Counter` elements.
             if (!(s is { Name: "BorrowedCell", Module: SystemModule }))
                 args = args.Select(a => HeldOptional(a, t.Pos, env)).ToList();
+            if (UserFile(env.File)) args = args.Select(a => OpenCallable(a, false)).ToList();
             // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
             // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
@@ -2115,6 +2132,9 @@ public sealed partial class Compiler
             // The routine a work block holds is its entry, which can fail the way the block's list says.
             if (s.Fails.Count > 0 && f.Name == "entry" && s.Decl.Name != "Work" && ft is CallableType entry)
                 ft = new CallableType(entry.CallConv, entry.Params, entry.Ret, failable: true, s.Fails);
+            // A Callable a program's record keeps in a field is open to any failure: the value put there may throw, and a call
+            // through it passes the failure to its caller.
+            ft = OpenCallable(ft, s.Decl.IsLibrary);
             // A record is copied with `=`, and so would everything in it be: an entity goes in an entity.
             if (!s.Decl.IsEntity && Entities.Holds(ft))
                 throw new CompileError(f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
@@ -2735,8 +2755,31 @@ public sealed partial class Compiler
     {
         var set = FreeCandidates(r.Name, env.File, r.Pos, r.Path);
         if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
-        if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want))
+        if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want) && !named.Equals(want.Plain))
             throw new CompileError(r.Pos, $"expected {want}, found {named}");
+        // Memory that holds a Callable open to failures holds the routine's recovering form (a routine that never fails
+        // gets a routine of its own that calls it).
+        bool failing = want.Failable;
+        var plainWant = want.Plain;
+        // The address of `routine` (or of its recovering form) once its signature is the one wanted.
+        string Address(RoutineDecl routine, TypeEnv routineEnv)
+        {
+            if (routine.AnnotationNamed("inline") is not null)
+                throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
+            var used = failing && CanRecover(routine) ? RecoveringOf(routine) : routine;
+            var inst = RequireInstance(used, routineEnv);
+            if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, Target))
+                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
+            if (failing && !inst.IsFailable)
+            {
+                var names = Enumerable.Range(0, inst.Params.Count).Select(i => new ValueRef($"p{i}", r.Pos)).ToList();
+                var call = new CallExpr(r.Name, r.TypeArgs, names.Cast<Expr>().ToList(), r.Pos) { Path = r.Path };
+                var thunk = LambdaRoutine(new LambdaExpr(names, call, r.Pos), new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true),
+                    routine, routineEnv, []);
+                inst = RequireInstance(thunk, routineEnv.Clone(thunk.File));
+            }
+            return $"@{Quote(inst.Symbol)}";
+        }
         // A generic routine's instance, `f[S64].to[Callable]()`: its type arguments bound in order.
         if (r.TypeArgs.Count > 0)
         {
@@ -2746,10 +2789,8 @@ public sealed partial class Compiler
                 var routineEnv = new TypeEnv(routine.File);
                 for (int i = 0; i < args.Count; i++) routineEnv.Bind(routine.TypeParams[i], args[i]);
                 var inst = RequireInstance(routine, routineEnv);
-                if (!new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(want)) continue;
-                if (routine.AnnotationNamed("inline") is not null)
-                    throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
-                return $"@{Quote(inst.Symbol)}";
+                if (!new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(plainWant)) continue;
+                return Address(routine, routineEnv);
             }
             throw new CompileError(r.Pos, $"no overload of '{r.Name}' with {args.Count} type argument(s) is {want}");
         }
@@ -2758,13 +2799,8 @@ public sealed partial class Compiler
             Instance sig;
             try { sig = Signature(routine, new TypeEnv(routine.File)); }
             catch (CompileError) { continue; }
-            if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(want)) continue;
-            if (routine.AnnotationNamed("inline") is not null)
-                throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
-            if (!sig.PassesBf16AsBits && Instance.HasBitsCarrier(sig.Params, sig.Ret, Target))
-                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
-            var inst = RequireInstance(routine, new TypeEnv(routine.File));
-            return $"@{Quote(inst.Symbol)}";
+            if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(plainWant)) continue;
+            return Address(routine, new TypeEnv(routine.File));
         }
         string list = string.Concat(set.Select(o => $"\n    {ShowSignature(o)} at {o.Pos}"));
         throw new CompileError(r.Pos, $"no routine '{r.Name}' is {want}; the routines of that name are:{list}");
