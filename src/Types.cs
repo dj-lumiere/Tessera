@@ -249,7 +249,13 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
     public override string Key =>
         $"Callable[{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]"
         + (Failable ? IsOpen ? " throws(*)" : $" throws({string.Join(" | ", Throws.Select(t => t.Key))})" : "");
-    public override string Llvm => "ptr";
+    public override string Llvm => IsOpen ? OpenLlvm : "ptr";
+
+    /// What a Callable open to any failure holds: the routine's address and its kind, 0 for a plain routine (it gives its
+    /// value directly, as every C routine does) and 1 for one that gives the carrier of a failable call.
+    public const string OpenLlvm = "{ ptr, i8 }";
+    public const int KindPlain = 0;
+    public const int KindFailing = 1;
 
     /// Whether a call through it may give any failure the program throws (a Callable kept in a field or a collection): its
     /// list holds `OpenFailure` (Crashing.IsOpenMarker), which nothing throws.
@@ -360,7 +366,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
 
     /// Whether this is an Optional of an address that is never null itself, `@T?` or `Callable[...]?`: the address alone,
     /// `ptr`, null for None. A value of it is the T's own pointer, so it costs nothing over the T and passes to C as one.
-    public bool IsNullable => IsFlagged && !IsAddressed && Leaves[0].Repr is PtrType { Pointee: not null } or CallableType;
+    public bool IsNullable => IsFlagged && !IsAddressed && Leaves[0].Repr is PtrType { Pointee: not null } or CallableType { IsOpen: false };
 
     /// The tag's LLVM type: `i1` for a flagged Optional, else `i64`.
     public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;

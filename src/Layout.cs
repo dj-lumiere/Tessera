@@ -133,6 +133,12 @@ public sealed partial class Compiler
             case ChoiceType e: return Layout(pos).Int(e.Underlying.Bits);
             case FloatType f: return Layout(pos).Float(f.Bits);
             // A type parameter while its generic body is checked: any one size serves the throwaway lowering.
+            // A Callable open to any failure is its address and a kind byte, as { ptr, i8 }.
+            case CallableType { IsOpen: true }:
+            {
+                var (size, align) = Layout(pos).Pointer;
+                return (RoundUp(size + 1, align), align);
+            }
             case PtrType or CallableType or ArchetypeType: return Layout(pos).Pointer;
             case ArrayType a:
             {

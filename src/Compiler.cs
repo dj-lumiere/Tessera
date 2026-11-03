@@ -2762,8 +2762,7 @@ public sealed partial class Compiler
         if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want) && !named.Equals(want.Plain))
             throw new CompileError(r.Pos, $"expected {want}, found {named}");
-        // Memory that holds a Callable open to failures holds the routine's recovering form (a routine that never fails
-        // gets a routine of its own that calls it).
+        // Memory that holds a Callable open to failures holds the routine's recovering form, or the plain routine.
         bool failing = want.Failable;
         var plainWant = want.Plain;
         // The address of `routine` (or of its recovering form) once its signature is the one wanted.
@@ -2775,15 +2774,10 @@ public sealed partial class Compiler
             var inst = RequireInstance(used, routineEnv);
             if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, Target))
                 throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
-            if (failing && !inst.IsFailable)
-            {
-                var names = Enumerable.Range(0, inst.Params.Count).Select(i => new ValueRef($"p{i}", r.Pos)).ToList();
-                var call = new CallExpr(r.Name, r.TypeArgs, names.Cast<Expr>().ToList(), r.Pos) { Path = r.Path };
-                var thunk = LambdaRoutine(new LambdaExpr(names, call, r.Pos), new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true),
-                    routine, routineEnv, []);
-                inst = RequireInstance(thunk, routineEnv.Clone(thunk.File));
-            }
-            return $"@{Quote(inst.Symbol)}";
+            // Memory open to any failure holds the address with its kind beside it.
+            return want.IsOpen
+                ? $"{{ ptr @{Quote(inst.Symbol)}, i8 {(inst.IsFailable ? CallableType.KindFailing : CallableType.KindPlain)} }}"
+                : $"@{Quote(inst.Symbol)}";
         }
         // A generic routine's instance, `f[S64].to[Callable]()`: its type arguments bound in order.
         if (r.TypeArgs.Count > 0)

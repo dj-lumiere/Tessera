@@ -45,10 +45,6 @@ public sealed partial class FunctionGen
     /// The routine's parameters and the values its head shares: what every block sees from its first line.
     private Dictionary<string, Val> _routineValues = [];
 
-    /// The routine each local bound to a routine value (`c: Callable[...] = f.to[Callable]()`) holds, so storing the name where a
-    /// Callable open to failures goes makes the value there.
-    private readonly Dictionary<string, RoutineRef> _routineBindings = [];
-
     /// The LLVM block the head is emitted into, the function's `start`, or null for a routine without shared lines.
     private LBlock? _head;
     private Dictionary<string, Val> _values = [];
@@ -2233,7 +2229,6 @@ public sealed partial class FunctionGen
                 // A routine value bound to a name points at the routine's recovering form when the routine can throw: the name
                 // takes the routine's list (a plain call through it passes the failure on, and put_callable hands it to the
                 // ticket's retrieve()).
-                if (b.Value is RoutineRef boundRoutine) _routineBindings[b.Name] = boundRoutine;
                 if (t is CallableType { Failable: false } written && b.Value is RoutineRef named && Emitting
                     && RoutineValueFailing(named, written) is { } recoveringType)
                     t = recoveringType;
@@ -2580,6 +2575,7 @@ public sealed partial class FunctionGen
     /// LLVM has no plain copy instruction; a named binding of an existing value is an identity op.
     private string Copy(Val v, DType t) => t.Repr switch
     {
+        CallableType { IsOpen: true } => $"select i1 true, {t.Llvm} {v.Op}, {t.Llvm} poison",
         PtrType or CallableType => $"getelementptr i8, ptr {v.Op}, i64 0",
         BoolType => $"or i1 {v.Op}, false",
         IntType or ChoiceType => $"or {t.Llvm} {v.Op}, 0",
@@ -3070,16 +3066,10 @@ public sealed partial class FunctionGen
         return (actual, expected) switch
         {
             (RecordType a, RecordType e) => a.PlainKey == e.PlainKey && (e.IsOpen || a.Fails.All(f => e.Fails.Contains(f))),
-            (CallableType a, CallableType e) => a.Failable && e.Failable && a.Plain.Equals(e.Plain) && (e.IsOpen || a.Throws.All(f => e.Throws.Contains(f))),
+            (CallableType a, CallableType e) => e.IsOpen ? a.Plain.Equals(e.Plain) : a.Failable && e.Failable && a.Plain.Equals(e.Plain) && a.Throws.All(f => e.Throws.Contains(f)),
             _ => false,
         };
     }
-
-    /// Whether the routine value `arg` (a routine named there, or a name bound to one) goes where a Callable open to failures is
-    /// expected: the value there is made in the form that place holds.
-    private bool OpenFits(Expr arg, DType actual, DType expected) =>
-        expected is CallableType { IsOpen: true } open && actual is CallableType given && given.Plain.Equals(open.Plain)
-        && (given.Failable || arg is RoutineRef || arg is ValueRef { Name: var name } && _routineBindings.ContainsKey(name));
 
     /// Why a ticket or a piece of work whose entry can fail doesn't go where its type is written without that list (or
     /// with a list that lacks some of it): null when that isn't what differs.
@@ -3118,10 +3108,7 @@ public sealed partial class FunctionGen
             : ArgumentMismatch(argument, actual.ToString() ?? "", parameter);
 
     private static string FailingNote(CallableType given, CallableType wanted) =>
-        wanted.IsOpen && !given.Failable
-            ? "the place keeps a Callable open to any failure, and this one is a plain Callable that arrives from elsewhere: "
-                + "make the routine value where it is kept (f.to[Callable]()), or in a name bound to it in the same routine"
-            : given.Failable != wanted.Failable
+        given.Failable != wanted.Failable
             ? (given.Failable
                 ? "the argument may fail (it can throw " + string.Join(", ", given.Throws.Select(t => t.Name)) + ") and the parameter's type does not allow a failure"
                 : "the parameter's type allows a failure and the argument does not fail")
@@ -3136,9 +3123,6 @@ public sealed partial class FunctionGen
         if (FlagsOf(expected) is { } flagsExpected && e is BinaryExpr { Op: "|" or "&" or "^" } bitwise)
             throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
-        if (e is ValueRef boundName && expected is CallableType { IsOpen: true } && _routineBindings.TryGetValue(boundName.Name, out var boundTo)
-            && InferQuiet(e) is CallableType { Failable: false })
-            return RoutineValue(boundTo, expected);
         if (e is FieldExpr narrowedField && NarrowedType(narrowedField) is { } narrowedType)
         {
             var narrowedVal = EvalNarrowed(narrowedField, narrowedType);
@@ -3223,7 +3207,17 @@ public sealed partial class FunctionGen
             throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected))
                 : FailuresMisfit(v.Type, expected) is { } failing ? Err(e.Pos, failing)
                 : Mismatch(e.Pos, expected, v.Type.ToString());
+        // A routine value that is not open goes into a place open to any failure with its kind beside its address.
+        if (expected is CallableType { IsOpen: true } && v.Type is CallableType { IsOpen: false } given) return PackOpen(v, given, expected);
         return v;
+    }
+
+    /// A Callable that is not open as the pair an open one holds: its address and its kind, plain or failing.
+    private Val PackOpen(Val v, CallableType given, DType expected)
+    {
+        int kind = given.Failable ? CallableType.KindFailing : CallableType.KindPlain;
+        string withAddress = EmitTmp($"insertvalue {CallableType.OpenLlvm} zeroinitializer, ptr {v.Op}, 0");
+        return new Val(EmitTmp($"insertvalue {CallableType.OpenLlvm} {withAddress}, i8 {kind}, 1"), expected);
     }
 
     /// A float literal as the binary float it goes into. A hex float (`0x1p-25`) spells a value exactly, so it goes
@@ -5257,7 +5251,6 @@ public sealed partial class FunctionGen
         if (expected is CallableType { Failable: true } && _c.CanRecover(routine)) routine = _c.RecoveringOf(routine);
         var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
         if (_reportingArgument) _c.NoteReportingRoutine(inst, r.Pos);
-        if (expected is CallableType { IsOpen: true } && !inst.IsFailable && r.Callable is null) return OpenThunk(r, inst);
         var own = OwnCallable(inst);
         if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
@@ -5272,16 +5265,6 @@ public sealed partial class FunctionGen
     }
 
 
-
-    /// A routine that gives no failure back (an `infallible` one, a C routine) where a Callable open to failures is expected: the
-    /// value is a routine of its own that calls it and gives its result in the carrier every failable Callable returns.
-    private Val OpenThunk(RoutineRef r, Instance inst)
-    {
-        var names = Enumerable.Range(0, inst.Params.Count).Select(i => new ValueRef($"p{i}", r.Pos)).ToList();
-        var call = new CallExpr(r.Name, r.TypeArgs, names.Cast<Expr>().ToList(), r.Pos) { Path = r.Path };
-        return EvalLambda(new LambdaExpr(names, call, r.Pos),
-            new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true));
-    }
 
     /// The Callable a routine value bound to a name has when the routine can throw: its recovering form's, carrying the list.
     /// Null when the routine throws nothing (the plain routine is the value then), or isn't one routine.
@@ -5327,7 +5310,6 @@ public sealed partial class FunctionGen
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
         if (c.Decl.AnnotationNamed("inline") is not null)
             throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
-        if (expected is CallableType { IsOpen: true } && !c.Inst.IsFailable && r.Callable is null) return OpenThunk(r, c.Inst);
         var own = OwnCallable(c.Inst);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
@@ -5700,7 +5682,6 @@ public sealed partial class FunctionGen
                 var pt = _c.ResolveParam(r, r.Params[i + first], env);
                 if (InferQuiet(args[i]) is { } at)
                 {
-                    if (OpenFits(args[i], at, pt)) continue;
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt) || PresetViews(args[i], at, pt)) preferred = false;
@@ -6949,30 +6930,73 @@ public sealed partial class FunctionGen
         Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i], i + 1)).ToList();
         RecordIndirectCall(callee, ct, argExprs, pos);
-        string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
-        const bool bits = true;
-        bool c = ct.CallConv != "fast";
+        if (ct.IsOpen) return EmitOpenIndirect(fp, ct, args, pos);
         if (ct.Failable)
         {
-            // A failable routine's carrier comes back as the LLVM value it is, the same struct its definition returns.
-            string carrier = _c.CarrierFor(Crashing.Check(_c.ValueTypeOf(ct.Ret, pos), ct.Throws));
-            var plainSig = _c.LowerSignature(ct.Params, VoidType.Instance, ct.CallConv, pos);
-            var failingSig = new AbiSig(AbiValue.Direct(new CarrierRef(carrier)), plainSig.Params);
-            TraceAt(pos);
-            var returned = EmitAbiCall($"{cc}{carrier} {fp.Op}", failingSig, args, ct.Params, new CarrierRef(carrier), bits,
-                i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
+            var (returned, carrier) = EmitFailingIndirect(fp.Op, ct, args, pos);
             return ReceiveFailable(returned, carrier, ct.Ret, ct.Throws, pos);
         }
         // A call through a parameter written `failable Callable` is one that can fail, though this instance was given
         // a plain value: a try or check around it counts it.
         if (_recover.Count > 0 && callee is ValueRef named && _decl.Params.Any(p => p.Name == named.Name && p.Type.Failable))
             _recover.Peek().Calls++;
+        return EmitPlainIndirect(fp.Op, ct, args, pos);
+    }
+
+    /// A call through the address of a routine that gives the carrier of a failable call.
+    private (Val Returned, string Carrier) EmitFailingIndirect(string fp, CallableType ct, List<Val> args, Pos pos)
+    {
+        string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
+        bool c = ct.CallConv != "fast";
+        // A failable routine's carrier comes back as the LLVM value it is, the same struct its definition returns.
+        string carrier = _c.CarrierFor(Crashing.Check(_c.ValueTypeOf(ct.Ret, pos), ct.Throws));
+        var plainSig = _c.LowerSignature(ct.Params, VoidType.Instance, ct.CallConv, pos);
+        var failingSig = new AbiSig(AbiValue.Direct(new CarrierRef(carrier)), plainSig.Params);
+        TraceAt(pos);
+        var returned = EmitAbiCall($"{cc}{carrier} {fp}", failingSig, args, ct.Params, new CarrierRef(carrier), true,
+            i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
+        return (returned, carrier);
+    }
+
+    /// A call through the address of a routine that gives its value directly.
+    private Val EmitPlainIndirect(string fp, CallableType ct, List<Val> args, Pos pos)
+    {
+        string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
+        bool c = ct.CallConv != "fast";
         var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);
         string ret = Compiler.AbiRetType(sig, Instance.BitsCarrier(ct.Ret, isReturn: true, _c.Target) ?? ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
-        string head = $"{cc}{RetExtOf(sig, retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}";
+        string head = $"{cc}{RetExtOf(sig, retExt.Length > 0 ? retExt + " " : "")}{ret} {fp}";
         TraceAt(pos);
-        return EmitAbiCall(head, sig, args, ct.Params, ct.Ret, bits, i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
+        return EmitAbiCall(head, sig, args, ct.Params, ct.Ret, true, i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
+    }
+
+    /// A call through a Callable open to any failure: the kind beside the address says which routine it is. A failing one
+    /// gives its carrier, and a plain one its value, which goes into a carrier as a success, so both reach the same
+    /// receiving of the failure.
+    private Val EmitOpenIndirect(Val pair, CallableType ct, List<Val> args, Pos pos)
+    {
+        string address = EmitTmp($"extractvalue {CallableType.OpenLlvm} {pair.Op}, 0");
+        string kind = EmitTmp($"extractvalue {CallableType.OpenLlvm} {pair.Op}, 1");
+        string isFailing = EmitTmp($"icmp ne i8 {kind}, {CallableType.KindPlain}");
+        var valueType = _c.ValueTypeOf(ct.Ret, pos);
+        string carrier = _c.CarrierFor(Crashing.Check(valueType, ct.Throws));
+        string slot = NewCarrierSlot(carrier);
+        var failing = NewLBlock("callable.failing");
+        var plain = NewLBlock("callable.plain");
+        var joined = NewLBlock("callable.joined");
+        Terminate($"br i1 {isFailing}, label %{failing.Label}, label %{plain.Label}");
+        _cur = failing;
+        var (returned, _) = EmitFailingIndirect(address, ct, args, pos);
+        Line($"store {carrier} {returned.Op}, ptr {slot}");
+        Terminate($"br label %{joined.Label}");
+        _cur = plain;
+        var plainCt = ct.Plain;
+        var given = EmitPlainIndirect(address, plainCt, args, pos);
+        StoreValue(slot, carrier, ct.Ret is VoidType ? new Val("zeroinitializer", valueType) : given);
+        Terminate($"br label %{joined.Label}");
+        _cur = joined;
+        return ReceiveFailable(new Val(EmitTmp($"load {carrier}, ptr {slot}"), valueType), carrier, ct.Ret, ct.Throws, pos);
     }
 
     /// A call argument as the callee's ABI wants it: a BF16 goes to a Tessera routine as its i16 bits.

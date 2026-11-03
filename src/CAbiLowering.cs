@@ -131,6 +131,10 @@ public sealed partial class Compiler
             case IntType i: acc.Add(new Leaf(at, SizeAlign(i, pos).Size, 'i', i.Llvm)); break;
             case ChoiceType c: AddLeaves(c.Underlying, at, acc, pos); break;
             case FloatType f: acc.Add(new Leaf(at, SizeAlign(f, pos).Size, 'f', f.Llvm)); break;
+            case CallableType { IsOpen: true }:
+                acc.Add(new Leaf(at, SizeAlign(new PtrType(null), pos).Size, 'p', "ptr"));
+                acc.Add(new Leaf(at + SizeAlign(new PtrType(null), pos).Size, 1, 'i', "i8"));
+                break;
             case PtrType or CallableType: acc.Add(new Leaf(at, SizeAlign(t, pos).Size, 'p', "ptr")); break;
             case ArrayType a:
             {
