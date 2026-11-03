@@ -204,7 +204,7 @@ public sealed partial class Compiler
         private static string FailsHash(RecordType t)
         {
             uint h = 2166136261;
-            foreach (char ch in string.Join(";", t.Fails.Select(f => f.Key)))
+            foreach (char ch in t.IsOpen ? "*" : string.Join(";", t.Fails.Select(f => f.Key)))
             {
                 h ^= ch;
                 h *= 16777619;

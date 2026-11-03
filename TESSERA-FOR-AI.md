@@ -1333,8 +1333,8 @@ routine start() -> None
   stops through `Crash`, which reads the crashable from the mold. One failure is in flight per flow at a time: a
   failure's crashable never holds another failure in flight.
 - **Routine values carry their list.** `f.to[Callable]()` of a routine that throws is a Callable whose list is a
-  hidden part of its type. A call through it fails like a call of `f`. A binding with a written `Callable[...]` type
-  takes the value's list.
+  hidden part of its type: it points at the routine's recovering form. A call through it fails like a call of `f`. A
+  binding with a written `Callable[...]` type takes the value's list (also for a generic `f[S64].to[Callable]()`).
 - **A routine that only calls its Callable parameter is built for the value it is given** (a symbol of its own), and
   the call that hands it a value that may fail fails the way the value does. A lambda handed to a call a `try` or
   `check` reaches passes its failure on: `try apply(f: (x) => 10 // x, x: 0)` gives `None`, and with no keyword above
@@ -2013,16 +2013,19 @@ several tickets at once.
   another thread). The ticket's type carries the routine's list as a hidden part of it: the program still writes
   `Thread[S64]`, and each `retrieve()` throws only its own ticket's list (besides `TaskTimeoutError`,
   `CancelRequested`). A ticket bound to a name with `<-` takes the list of its first `put_work` / `put_callable`
-  (another call on it first, such as `retrieve`, leaves it failing nothing). Later work on that ticket must throw
+  (another call on it first, such as `retrieve`, leaves its set open). Later work on that ticket must throw
   only what the list holds, else a build error names both routines ("'small' can throw TooLargeError, which the
   ticket 't' can't: its type took the list of its first work's routine, 'checked' (BadInputError). Receive them inside
   'small' with try or check, or put it on a ticket of its own"). A ticket where the list can't be written (a field, an
-  element of a `List[Thread[S64]]`, a parameter) fails nothing: putting work that can fail on one, or a ticket whose
-  work can fail there, is a build error that says to receive the failures inside the routine with `try` / `check`
-  (or make the routine `infallible`, whose failure stops the program where it happens). A `Work[T]` carries the list
-  the same way (`w: Work[S64] = f.to[Work](...)` takes it, a `List[Work[S64]]` holds work that fails nothing). Every
-  checked `+`, index, or library call can fail, so the routine of work kept in lists of tickets is usually
-  `infallible` or receives its failures itself (tests/thread_entry_*).
+  element of a `List[Thread[S64]]`, a parameter) has an OPEN set: any failure the program throws, so putting failing
+  work on one is not an error. `try t.retrieve()` gives `None` on a failure, `check t.retrieve()` needs an arm for each
+  failure handled (`is NotFoundError as e`) and an `else` arm (a `when` without it is a build error), and a `retrieve()`
+  nothing receives stops the program with the failure's name and message. The room for the kept failure is the size of
+  the largest failure the program throws (no heap). A `Work[T]` carries the list the same way (`w: Work[S64] =
+  f.to[Work](...)` takes it, a `List[Work[S64]]` holds an open set). A routine value bound to a name (`c: Callable[...] =
+  f.to[Callable]()`) is the routine's recovering form and takes its list, so `put_callable(entry: c, ...)` sends the failure
+  to `retrieve()` and a plain `c.call(x)` passes it on. A routine that only calls its Callable parameter, or puts it on a
+  ticket, is built for the value it is given (tests/thread_entry_*, tests/routine_value_*).
 - **What work changes.** The build checks what thread work changes (What thread work changes, above). It doesn't
   know whether two pieces of work reach the same memory (under another name, through an `Addr`): the data race check
   (below) finds such races at run time, and a debug build on Linux and macOS on x86_64 and aarch64 runs it. Work

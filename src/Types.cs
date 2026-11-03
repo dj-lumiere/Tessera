@@ -293,7 +293,12 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
         : Decl is { Name: "BorrowedSlice", Module: Compiler.SystemModule } && Args is [var elems] ? $"&[{elems.Name}]"
         : Decl is { Name: "BorrowedCell", Module: Compiler.SystemModule } && Args is [var cell] ? $"&{cell.Name}"
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
-    public override string Key => Fails.Count == 0 ? PlainKey : $"{PlainKey} throws({string.Join(" | ", Fails.Select(t => t.Key))})";
+    public override string Key => Fails.Count == 0 ? PlainKey : IsOpen ? $"{PlainKey} throws(*)" : $"{PlainKey} throws({string.Join(" | ", Fails.Select(t => t.Key))})";
+
+    /// Whether the list is open: a ticket or a piece of work written where its entry's failures can't be named (a field, an
+    /// element of a list, a parameter) can hold any failure the program throws. Its list is every crashable of the program
+    /// and `OpenFailure`, which nothing throws and which tells an open list from a closed one that happens to hold them all.
+    public bool IsOpen => Fails.Any(Crashing.IsOpenMarker);
 
     /// The key without the hidden list: the LLVM struct a ticket or a block is, whatever its entry can throw.
     public string PlainKey => DeclKey(Decl, Decl.Name, Args);
@@ -395,6 +400,9 @@ public static class Crashing
         { Module = Compiler.SystemModule };
     public static readonly VariantDecl CrashablesDecl = new("<builder>", [new Annotation("union", [], default)], "Crashables", [], [], [], default)
         { Module = Compiler.SystemModule };
+
+    /// The crashable that marks an open list of failures (Crash.te's `OpenFailure`).
+    public static bool IsOpenMarker(DType? t) => t is RecordType { Decl: { IsCrashable: true, IsLibrary: true, Name: "OpenFailure" } };
 
     /// A crashable record: one a `throw` gives.
     public static bool IsCrashable(DType? t) => t is RecordType { Decl.IsCrashable: true };

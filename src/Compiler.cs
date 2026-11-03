@@ -1583,6 +1583,15 @@ public sealed partial class Compiler
         return ResolveDeclaredType(t, env);
     }
 
+    private List<DType>? _openFailures;
+
+    /// The open list of failures: every crashable the program declares, and `OpenFailure` (Crashing.IsOpenMarker). A ticket
+    /// or a piece of work written where its work's routine can't be named carries it.
+    public List<DType> OpenFailures() =>
+        _openFailures ??= Crashing.Ordered(_records.Values.SelectMany(g => g)
+            .Where(d => d.IsCrashable && d.TypeParams.Count == 0 && Selected(d))
+            .Select(d => (DType)new RecordType(d, [], TransparentField)));
+
     /// Whether a record, variant or choice of the name `t` names is declared where `t` is written.
     private bool DeclaresType(TypeRef t, TypeEnv env)
     {
@@ -1616,8 +1625,11 @@ public sealed partial class Compiler
             var record = new RecordType(s, args, TransparentField);
             // Inside the routines of a ticket whose entry can fail, a ticket, a piece of work and a work block written in
             // the routine carry that list (FailsKey).
-            if (RecordType.FailureCarrier(s) && env.Get(FailsKey) is VariantType fails)
-                return record.WithFails(Crashing.FailuresOf(fails), null);
+            // Anywhere else its work's failures can't be named, so the list is open: any failure the program throws.
+            if (RecordType.FailureCarrier(s))
+                return env.Get(FailsKey) is VariantType fails
+                    ? record.WithFails(Crashing.FailuresOf(fails), null)
+                    : record.WithFails(OpenFailures(), null);
             return record;
         }
 

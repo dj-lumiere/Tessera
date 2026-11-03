@@ -1,0 +1,85 @@
+# A routine value points at the routine's recovering form: a Callable bound to a name takes the routine's list, a plain
+# call through it passes the failure on, and put_callable hands it to the ticket's retrieve(). A generic routine's
+# instance (f[S64].to[Callable]()) does the same, and a routine that puts its Callable parameter on a ticket takes a
+# value that may fail.
+
+import Hosted
+
+crashable BadWorkError
+    code: S64
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine BadWorkError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("bad work {me.code}")
+    return
+
+### Twice n, failing for a negative n.
+### :param n: The number.
+### :returns: Twice n.
+routine twice(n: S64) -> S64
+    if n < 0
+        throw BadWorkError(code: n)
+    return n * 2
+
+### The value, failing for a negative code.
+### :typeparam T: The value's type.
+### :param code: The code.
+### :param value: The value.
+### :returns: The value.
+routine pick[T](code: S64, value: T) -> T
+    if code < 0
+        throw BadWorkError(code: code)
+    return value
+
+### Calls a routine value in a routine that passes its failure on.
+### :param f: The routine value.
+### :param n: The argument.
+### :returns: The result.
+routine call_twice(f: Callable[(S64,), S64], n: S64) -> S64
+    return f.call(n)
+
+### Puts a routine value on a ticket.
+### :param t: The ticket.
+### :param entry: The routine.
+### :param n: Its argument.
+routine launch(t: @Thread[S64], entry: Callable[(S64,), S64], n: S64) -> None
+    t.put_callable(entry: entry, args: n)
+    return
+
+### Shows what a retrieve gave.
+### :param got: The value or the failure.
+routine show_result(got: Check[S64]) -> None
+    when got
+        is S64 as v => Console.show("got {v}")
+        is BadWorkError as e => Console.show("failed with {e.code}")
+        is Crashables as e => Console.show("failed with {e.name()}")
+    return
+
+### Runs the example.
+routine start() -> None
+    c: Callable[(S64,), S64] = twice.to[Callable]()
+    show_result(check c.call(4))
+    show_result(check c.call(-1))
+    show_result(check call_twice(f: c, n: -9))
+
+    t: Thread[S64] <- get_thread[S64]()
+    t.put_callable(entry: c, args: -2)
+    show_result(check t.retrieve())
+    drop t
+
+    g: Callable[(S64, S64), S64] = pick[S64].to[Callable]()
+    u: Thread[S64] <- get_thread[S64]()
+    u.put_callable(entry: g, args: (-3, 9))
+    show_result(check u.retrieve())
+    u.put_callable(entry: pick[S64].to[Callable](), args: (1, 9))
+    show_result(check u.retrieve())
+    drop u
+
+    v: Thread[S64] <- get_thread[S64]()
+    launch(v, entry: twice.to[Callable](), n: -4)
+    show_result(check v.retrieve())
+    drop v
+    return

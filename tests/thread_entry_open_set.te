@@ -1,0 +1,84 @@
+# A ticket kept where its work's routine can't be named (a field, an element of a list, a parameter) holds an open set
+# of failures: any failure the program throws. try gives None when the work failed, and a check needs an arm for each
+# failure it handles and an else arm for the rest.
+
+import Hosted
+
+crashable BadInputError
+    value: S64
+
+crashable TooBigError
+    value: S64
+
+### A worker and the ticket it runs on.
+entity Worker
+    ### The ticket.
+    ticket: Thread[S64]
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine BadInputError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("bad input {me.value}")
+    return
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine TooBigError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("too big {me.value}")
+    return
+
+### n, failing for a negative n.
+### :param n: The number.
+### :returns: It.
+routine checked(n: S64) -> S64
+    if n < 0
+        throw BadInputError(value: n)
+    if n > 100
+        throw TooBigError(value: n)
+    return n
+
+### Makes a worker from its ticket.
+### :param ticket: Its ticket.
+### :returns: The worker.
+common routine Worker.construct(ticket: Thread[S64]) -> Me
+    return Me(ticket: steal ticket)
+
+### Gives the ticket back.
+routine @Worker.destruct() -> None
+    drop me.ticket
+    return
+
+### Says what the ticket's work gave.
+### :param t: The ticket.
+routine receive(t: @Thread[S64]) -> None
+    when check t.retrieve()
+        is S64 as v => Console.show("got {v}")
+        is BadInputError as e => Console.show("bad input {e.value}")
+        else as other => Console.show("another failure: {other.name()}")
+    return
+
+### Runs the example.
+routine start() -> None
+    t: Thread[S64] <- get_thread[S64]()
+    t.put_work(checked.to[Work](n: -1))
+    worker: &Worker <- Worker.construct(ticket: steal t)
+    Console.show("field: {try worker.ticket.retrieve()}")
+    drop worker
+
+    a: Thread[S64] <- get_thread[S64]()
+    a.put_work(checked.to[Work](n: 500))
+    receive(a)
+    b: Thread[S64] <- get_thread[S64]()
+    b.put_work(checked.to[Work](n: -2))
+    receive(b)
+    c: Thread[S64] <- get_thread[S64]()
+    c.put_work(checked.to[Work](n: 7))
+    receive(c)
+    drop a
+    drop b
+    drop c
+    return

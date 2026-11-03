@@ -2226,9 +2226,15 @@ public sealed partial class FunctionGen
                 if (Entities.Holds(t))
                     throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
                         + $"{b.Name}: &{b.Type} <- ...");
+                // A routine value bound to a name points at the routine's recovering form when the routine can throw: the name
+                // takes the routine's list (a plain call through it passes the failure on, and put_callable hands it to the
+                // ticket's retrieve()).
+                if (t is CallableType { Failable: false } written && b.Value is RoutineRef named && Emitting && !_decl.IsLibrary
+                    && RoutineValueFailing(named, written) is { } recoveringType)
+                    t = recoveringType;
                 // A Callable written as the type takes the failure of the routine value that fills it: what it can
                 // throw goes along with the value.
-                if (t is CallableType { Failable: false } plain && InferQuiet(b.Value) is CallableType { Failable: true } failing
+                else if (t is CallableType { Failable: false } plain && InferQuiet(b.Value) is CallableType { Failable: true } failing
                     && failing.Plain.Equals(plain))
                     t = failing;
                 // A `failable Callable` written as the type takes the value's list, or none for a plain value.
@@ -2236,12 +2242,12 @@ public sealed partial class FunctionGen
                          && InferQuiet(b.Value) is CallableType given && given.Plain.Equals(open.Plain))
                     t = given;
                 // A ticket or a piece of work written as the type takes the list of the value's entry routine.
-                if (t is RecordType { Fails.Count: 0 } carrier && RecordType.FailureCarrier(carrier.Decl)
-                    && InferQuiet(b.Value) is RecordType { Fails.Count: > 0 } carrying && carrying.PlainKey == carrier.PlainKey)
+                if (t is RecordType { IsOpen: true } carrier && RecordType.FailureCarrier(carrier.Decl)
+                    && InferQuiet(b.Value) is RecordType { IsOpen: false } carrying && carrying.PlainKey == carrier.PlainKey)
                     t = carrying;
-                if (b.Value is ClaimExpr { Contents: { } moved } && t is PtrType { Pointee: RecordType { Fails.Count: 0 } placedCarrier }
+                if (b.Value is ClaimExpr { Contents: { } moved } && t is PtrType { Pointee: RecordType { IsOpen: true } placedCarrier }
                     && RecordType.FailureCarrier(placedCarrier.Decl)
-                    && (InferQuiet(moved) is PtrType { Pointee: RecordType inner } ? inner : InferQuiet(moved) as RecordType) is { Fails.Count: > 0 } movedCarrier
+                    && (InferQuiet(moved) is PtrType { Pointee: RecordType inner } ? inner : InferQuiet(moved) as RecordType) is { IsOpen: false } movedCarrier
                     && movedCarrier.PlainKey == placedCarrier.PlainKey)
                     t = new PtrType(movedCarrier);
                 // A place of a `Check[T]` (`m: &Check[T] <- check ...`) holds the Check the check makes, with its list.
@@ -3058,7 +3064,7 @@ public sealed partial class FunctionGen
             return FitsFailures(pointedActual, pointedExpected);
         return (actual, expected) switch
         {
-            (RecordType a, RecordType e) => a.PlainKey == e.PlainKey && a.Fails.All(f => e.Fails.Contains(f)),
+            (RecordType a, RecordType e) => a.PlainKey == e.PlainKey && (e.IsOpen || a.Fails.All(f => e.Fails.Contains(f))),
             (CallableType a, CallableType e) => a.Failable && e.Failable && a.Plain.Equals(e.Plain) && a.Throws.All(f => e.Throws.Contains(f)),
             _ => false,
         };
@@ -3073,15 +3079,14 @@ public sealed partial class FunctionGen
         if (a is null || e is null || a.PlainKey != e.PlainKey || a.Fails.Count == 0) return null;
         string what = a.IsTicket ? $"a {a.Name} ticket" : $"a {a.Name}";
         string entry = a.FailsFrom ?? "its entry routine";
-        string throws = string.Join(", ", a.Fails.Select(t => t.Name));
-        if (e.Fails.Count == 0)
-            return $"this is {what} whose work's routine {entry} can throw {throws}, and the {e.Name} here fails nothing: a field, "
-                + $"an element of a list and a parameter can't say what a ticket's work throws. Receive the failures inside {entry} "
-                + $"with try or check (or make it infallible), or keep the {(a.IsTicket ? "ticket" : "work")} in a name of its own"
-                + (a.IsTicket ? ", whose retrieve() throws them" : "");
+        string throws = a.IsOpen ? "any failure" : string.Join(", ", a.Fails.Select(t => t.Name));
+        if (a.IsOpen)
+            return $"this is {what} whose work can throw any failure of the program, and the {e.Name} here holds only "
+                + (e.Fails.Count == 0 ? "no failure" : string.Join(", ", e.Fails.Select(t => t.Name)))
+                + ": where its failures are received, receive them with try or check";
         var missing = a.Fails.Where(f => !e.Fails.Contains(f)).Select(f => f.Name);
         return $"this is {what} whose work's routine {entry} can throw {throws}, and the {e.Name} here holds only "
-            + $"{string.Join(", ", e.Fails.Select(t => t.Name))}, not {string.Join(", ", missing)}";
+            + (e.Fails.Count == 0 ? "no failure" : string.Join(", ", e.Fails.Select(t => t.Name))) + $", not {string.Join(", ", missing)}";
     }
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
@@ -4215,6 +4220,11 @@ public sealed partial class FunctionGen
         // A `when` on a `Check` observes the value with an arm of its own.
         if (Crashing.IsCheck(vt) && missing.FirstOrDefault(m => !Crashing.IsCrashable(m)) is { } unobserved)
             throw Err(w.Pos, $"a when on {vt} observes its value: is {unobserved} as value");
+        // An open set of failures (a ticket in a field, a list or a parameter) can hold failures no arm names: an else arm takes
+        // them, so they don't go on to the caller as one failure per crashable of the program.
+        if (elseArm is null && (Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && missing.Any(Crashing.IsOpenMarker))
+            throw Err(w.Pos, "this when receives the failures of a ticket that can hold any failure the program throws: add an arm "
+                + "for each failure you handle (is NotFoundError as e) and an else arm for the rest (else as e)");
         if (elseArm is not null)
         {
             if (missing.Count == 0) throw Err(elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
@@ -5245,6 +5255,18 @@ public sealed partial class FunctionGen
 
 
 
+    /// The Callable a routine value bound to a name has when the routine can throw: its recovering form's, carrying the list.
+    /// Null when the routine throws nothing (the plain routine is the value then), or isn't one routine.
+    private CallableType? RoutineValueFailing(RoutineRef named, CallableType written)
+    {
+        try
+        {
+            var open = new CallableType(written.CallConv, written.Params, written.Ret, failable: true);
+            return RoutineValue(named, open).Type is CallableType { Failable: true, Throws.Count: > 0 } found ? found : null;
+        }
+        catch (CompileError) { return null; }
+    }
+
     /// `name[T, U].to[Callable]()`: the instance of a generic routine for the type arguments written, the one overload
     /// with that many type parameters (or, among several, the one whose instance is the Callable expected).
     private Val GenericRoutineValue(RoutineRef r, List<RoutineDecl> set, DType? expected)
@@ -5254,8 +5276,11 @@ public sealed partial class FunctionGen
             throw Err(r.Pos, $"no overload of '{r.Name}' takes {r.TypeArgs.Count} type argument(s)");
         var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
         (RoutineDecl Decl, Instance Inst)? chosen = null;
-        foreach (var o in fitting)
+        foreach (var plainDecl in fitting)
         {
+            // Handed where a routine value's failure passes on (a Callable that may fail), the value is the routine's recovering
+            // form, as a routine that isn't generic is.
+            var o = expected is CallableType { Failable: true } && _c.CanRecover(plainDecl) ? _c.RecoveringOf(plainDecl) : plainDecl;
             var env = new Compiler.TypeEnv(o.File);
             BindExplicit(o, env, r.TypeArgs, r.Pos);
             // The runner of a block of work that may fail (and, inside the routines of such a ticket, the runner and the
@@ -6259,7 +6284,7 @@ public sealed partial class FunctionGen
     /// writes carry it, and its retrieve throws it.
     private static void BindOwnerFails(Compiler.TypeEnv env, DType owner)
     {
-        if ((owner is PtrType { Pointee: RecordType pointed } ? pointed : owner) is RecordType { Fails.Count: > 0 } carrier)
+        if ((owner is PtrType { Pointee: RecordType pointed } ? pointed : owner) is RecordType carrier && RecordType.FailureCarrier(carrier.Decl))
             env.Bind(Compiler.FailsKey, Crashing.Union(carrier.Fails));
     }
 

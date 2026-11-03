@@ -179,7 +179,7 @@ public sealed partial class FunctionGen
     /// Notes a `<-` binding of a ticket made by a call: it is open until work is put on it.
     private void NoteOpenTicket(BindStmt b, string op, DType t)
     {
-        if (b.Value is ClaimExpr { Contents: not StealExpr and not null } && t is PtrType { Pointee: RecordType { IsTicket: true, Fails.Count: 0 } })
+        if (b.Value is ClaimExpr { Contents: not StealExpr and not null } && t is PtrType { Pointee: RecordType { IsTicket: true, IsOpen: true } })
             _openTickets.Add(op);
     }
 
@@ -197,6 +197,7 @@ public sealed partial class FunctionGen
             ? bound.Op : null;
         if (plan.Decl.Name is not ("put_work" or "put_callable"))
         {
+            // Any other call first leaves the binding open: it can hold any failure.
             if (open is not null) _openTickets.Remove(open);
             return;
         }
@@ -208,42 +209,38 @@ public sealed partial class FunctionGen
             && _ticketFirst.TryGetValue(firstBound.Op, out var firstName) ? firstName : null;
         if (open is not null)
         {
+            // The first work gives the binding its list, an empty one included: the binding fails what that work's routine can.
             _openTickets.Remove(open);
             _ticketFirst[open] = entry;
-            if (fails.Count > 0)
-            {
-                ticket = ticket.WithFails(fails, entry);
-                _ticketTypes[open] = new PtrType(ticket);
-            }
+            ticket = ticket.WithFails(fails, entry);
+            _ticketTypes[open] = new PtrType(ticket);
         }
-        else if (fails.FirstOrDefault(f => !ticket.Fails.Contains(f)) is not null)
+        else if (!ticket.IsOpen && fails.FirstOrDefault(f => !ticket.Fails.Contains(f)) is not null)
         {
             string throws = string.Join(", ", fails.Where(f => !ticket.Fails.Contains(f)).Select(f => f.Name));
             string fix = $"receive them inside {entry} with try or check, or put it on a ticket of its own";
             if (ticket.Fails.Count > 0)
                 throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, which the ticket '{spelled}' can't: its type took the list "
                     + $"of its first work's routine, {ticket.FailsFrom} ({string.Join(", ", ticket.Fails.Select(f => f.Name))}). {Capitalized(fix)}");
-            if (first is not null)
-                throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and the ticket '{spelled}' fails nothing: its type took the "
-                    + $"list of its first work's routine, {first}, which fails nothing. {Capitalized(fix)}");
-            throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and this {ticket.Name} fails nothing: a field, an element of a "
-                + "list and a parameter can't say what a ticket's work throws. Receive the failures inside "
-                + $"{entry} with try or check (or make it infallible), or put it on a ticket bound to a name of its own, whose "
-                + "retrieve() throws them");
+            throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and the ticket '{spelled}' fails nothing: its type took the "
+                + $"list of its first work's routine, {first ?? "which"}{(first is null ? "" : ",")} which fails nothing. {Capitalized(fix)}");
         }
+        // The routines of the put are built for the list of the work it puts: the ticket's own, or the work's when the
+        // ticket's list is open.
+        var list = ticket.IsOpen ? fails : ticket.Fails;
         var entryParam = plan.Decl.Name == "put_callable" ? plan.Decl.Params.FirstOrDefault(p => p.Name == "entry") : null;
-        if (ticket.Fails.Count == 0)
+        plan.Env.Bind(Compiler.FailsKey, Crashing.Union(list));
+        plan.Env.Bind("Me", ticket);
+        if (list.Count == 0)
         {
             // The entry goes in as the plain routine value: the ticket keeps no failure.
             if (entryParam is not null && plan.Env.Get(Compiler.FailingParamKey("entry")) is CallableType { Failable: true } given)
                 plan.Env.Bind(Compiler.FailingParamKey("entry"), given.Plain);
             return;
         }
-        plan.Env.Bind(Compiler.FailsKey, Crashing.Union(ticket.Fails));
-        plan.Env.Bind("Me", ticket);
         if (entryParam is not null && _c.ResolveType(entryParam.Type, plan.Env) is CallableType declared)
             plan.Env.Bind(Compiler.FailingParamKey("entry"),
-                new CallableType(declared.CallConv, declared.Params, declared.Ret, failable: true, ticket.Fails));
+                new CallableType(declared.CallConv, declared.Params, declared.Ret, failable: true, list));
     }
 
     private static string Capitalized(string text) => text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
@@ -321,7 +318,8 @@ public sealed partial class FunctionGen
         var blockArgs = (none ? argTypes : [Known(ct.Ret), .. argTypes]).Select(t => (TypeArg)new TypeArgType(t)).ToList();
         string kind = none ? "VoidWork" : "Work";
         var blockRef = new TypeRef($"{kind}{n}", blockArgs, w.Pos);
-        var blockType = Resolve(blockRef);
+        // The block the user's frame holds is the plain struct whatever its routine can throw: the runner is built for the list.
+        var blockType = Resolve(blockRef) is RecordType { } resolvedBlock ? resolvedBlock.Plain : Resolve(blockRef);
         string[] fields = ["first", "second", "third", "fourth"];
         var ctorArgs = new List<Expr>();
         var ctorNames = new List<string?>();
@@ -367,11 +365,12 @@ public sealed partial class FunctionGen
         var result = none ? Known(Resolve(TypeRef.Simple("None", w.Pos))) : Known(ct.Ret);
         var call = new CallExpr("work_from", [result, new TypeRef(blockRef.Name, blockArgs, w.Pos) { Known = blockType }],
             [new ValueRef(slot, w.Pos),
-             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs, Fails = fails.Count > 0 ? Crashing.Union(fails) : null },
-             new RoutineRef($"discard_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs }], w.Pos)
+             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs, Fails = Crashing.Union(fails) },
+             new RoutineRef($"discard_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs, Fails = Crashing.Union(fails) }], w.Pos)
             { ArgNames = ["made", "runner", "discard"] };
         var made = Eval(call, PlainWorkType(w, ct));
         _values.Remove(entryName);
-        return made.Type is RecordType work && fails.Count > 0 ? made with { Type = work.WithFails(fails, $"'{routine.DisplayName}'") } : made;
+        // The piece of work made here fails what its routine does: nothing when it fails nothing.
+        return made.Type is RecordType work ? made with { Type = work.WithFails(fails, $"'{routine.DisplayName}'") } : made;
     }
 }

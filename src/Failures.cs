@@ -513,6 +513,17 @@ public sealed partial class Compiler
     /// with it, or onto a ticket (`put_callable` keeps its entry for the work the ticket runs later), the value is kept.
     internal bool OnlyCalled(RoutineDecl r, string name) => OnlyCalled(r, name, []);
 
+    /// Whether a routine only calls its parameter, or puts it on a ticket (`put_callable`), which keeps the value for the
+    /// work it runs later and receives its failure for `retrieve()`.
+    internal bool OnlyCalledOrTicketed(RoutineDecl r, string name)
+    {
+        _ticketsKeep = true;
+        try { return OnlyCalled(r, name, []); }
+        finally { _ticketsKeep = false; }
+    }
+
+    private bool _ticketsKeep;
+
     private bool OnlyCalled(RoutineDecl r, string name, HashSet<(RoutineDecl, string)> judging)
     {
         // A routine that reaches itself is judged by its other uses.
@@ -536,6 +547,7 @@ public sealed partial class Compiler
                         {
                             if (args[i] is not ValueRef handed || handed.Name != name) continue;
                             // Written into memory (a block's field) or onto a ticket, the value is kept.
+                            if (e is MethodCallExpr { Name: "put_callable" } && _ticketsKeep) { calls++; continue; }
                             if (e is MethodCallExpr { Name: "put_callable" or "poke" or "poke_unbroken" or "store" }) return false;
                             if (e is CallExpr free && !HandedOnlyCalled(free, i, names?.ElementAtOrDefault(i), r, judging)) return false;
                             calls++;

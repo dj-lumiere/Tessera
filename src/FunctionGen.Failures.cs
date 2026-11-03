@@ -465,6 +465,9 @@ public sealed partial class FunctionGen
         // A routine that only calls the value is built for it: a failure through it stops the program on the line of
         // that call, or passes on from the routine's recovering form.
         if (_c.OnlyCalled(r, r.Params[param].Name)) return value;
+        // A routine that only calls the value or puts it on a ticket is built for the value: what the ticket's work throws is
+        // received by its retrieve().
+        if (_c.OnlyCalledOrTicketed(r, r.Params[param].Name)) return value;
         throw Err(at, $"you hand a routine value that may fail to '{r.Params[param].Name}' of '{r.DisplayName}', which keeps it "
             + "or hands it on, so its failure would have no caller to go to: hand it an infallible routine, or one that "
             + "receives its failures itself (with check or try)");
@@ -489,12 +492,16 @@ public sealed partial class FunctionGen
             else if (plan.Args[i] is RoutineRef named && declared is CallableType { Failable: true } wantsFailing
                      && RoutineValue(named, wantsFailing).Type is CallableType { Failable: true } recovering)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), recovering);
+            else if (plan.Args[i] is RoutineRef ticketed && declared is CallableType { Failable: false } plainDeclared
+                     && !_c.OnlyCalled(r, param.Name) && _c.OnlyCalledOrTicketed(r, param.Name)
+                     && RoutineValueFailing(ticketed, plainDeclared) is { } listed)
+                plan.Env.Bind(Compiler.FailingParamKey(param.Name), listed);
             else if (InferQuiet(plan.Args[i]) is { } given && FailingCallable(r, i + offset, given, declared, plan.Args[i].Pos) is { } failing)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), failing);
         }
         // A library routine that takes the entry of a ticket whose entry can fail is built for the ticket's list too.
         if (r.IsLibrary && _decl.IsLibrary && _inst.Env.Get(Compiler.FailsKey) is { } inherited && !plan.Env.Has(Compiler.FailsKey)
-            && r.Params.Any(p => plan.Env.Get(Compiler.FailingParamKey(p.Name)) is CallableType { Failable: true }))
+            && r.Params.Any(p => p.Type.Name == "Callable" || plan.Env.Get(Compiler.FailingParamKey(p.Name)) is CallableType { Failable: true }))
             plan.Env.Bind(Compiler.FailsKey, inherited);
     }
 
@@ -566,6 +573,7 @@ public sealed partial class FunctionGen
                             if (PlanCall(x, null) is { } found0 && Recovering(found0, underKeyword: true) is var plan && (plan.Decl.IsFailable || plan.Decl.Params.Any(p => p.Type.Failable)))
                             {
                                 BindFailingCallables(plan);
+                                BindTicketWork(plan);
                                 var inst = _c.RequireInstance(plan.Decl, plan.Env);
                                 if (inst.IsFailable)
                                 {
@@ -592,6 +600,12 @@ public sealed partial class FunctionGen
             || !_c.CanRecover(plan.Decl))
             return plan;
         var recovering = plan with { Decl = _c.RecoveringOf(plan.Decl) };
+        // The put of work on a ticket is built once the ticket's list is bound to the call (BindTicketWork), so what it gives
+        // isn't read off an instance built without it.
+        if (IsTicketRoutine(plan.Decl) && plan.Decl.Name is "put_work" or "put_callable") return recovering;
+        // Inside the routines of a ticket with a list the library routines they call are built for it too (BindFailingCallables),
+        // after this: a recovering form that is built to learn its list here would be built without it.
+        if (_decl.IsLibrary && plan.Decl.IsLibrary && _inst.Env.Has(Compiler.FailsKey)) return recovering;
         return _c.RecoversNothing(recovering.Decl, plan.Decl, plan.Env, _inst) ? plan : recovering;
     }
 
@@ -805,7 +819,7 @@ public sealed partial class FunctionGen
         if (c.Args.Count != 1)
             throw Err(c.Pos, "throw_failure_from takes the room: throw_failure_from(room: at)");
         var room = Eval(c.Args[0], new PtrType(null));
-        if (!Emitting || _cur.Terminated || _inst.Env.Get(Compiler.FailsKey) is not VariantType union) return;
+        if (!Emitting || _cur.Terminated || _inst.Env.Get(Compiler.FailsKey) is not VariantType { Leaves.Count: > 0 } union) return;
         string llvm = TaggedLlvm(union);
         string slot = NewSlot(union);
         CopyTagged(room.Op, Compiler.MoldLlvm, slot, llvm);
