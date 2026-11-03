@@ -2133,8 +2133,9 @@ public sealed partial class Compiler
             if (fields.Any(x => x.Item1 == f.Name))
                 throw new CompileError(f.Pos, $"field '{f.Name}' is declared twice");
             var ft = HeldOptional(ResolveType(f.Type, env), f.Pos, env);
-            // The routine a work block holds is its entry, which can fail the way the block's list says.
-            if (s.Fails.Count > 0 && f.Name == "entry" && s.Decl.Name != "Work" && ft is CallableType entry)
+            // The routine a work block holds is its entry, which can fail the way the block's list says (a block written without a list, as
+            // in the generic routines the standard library checks on their own, holds a plain one).
+            if (s.Fails.Count > 0 && !s.IsOpen && f.Name == "entry" && s.Decl.Name != "Work" && ft is CallableType entry)
                 ft = new CallableType(entry.CallConv, entry.Params, entry.Ret, failable: true, s.Fails);
             // A Callable a program's record keeps in a field is open to any failure: the value put there may throw, and a call
             // through it passes the failure to its caller.
