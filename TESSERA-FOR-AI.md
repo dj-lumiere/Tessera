@@ -1532,13 +1532,14 @@ routine start() -> None
   naming the new name).
 - Every manager is an `entity` (`MemoryManager`, `StackManager`, `HeapManagerByC`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
-  HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
+  HEAP`, never `HEAP.peek()`). Every stateless service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
   is a `record` with no member variables (body `nothing`): its state is a `secret` global or the OS's, and its
   routines are `common`, called on the type. The builder does not check this by name: the stdlib follows it.
   Kinds of type (a way to read a type, nothing is marked): a **data type** is its fields and each routine answers from
-  them alone. A service (Tessera's sense above) answers from state you do not hold as a value (the OS or a `secret`
-  global). A type with member variables that keeps its state itself is not a service: a manager hands out a resource,
-  takes it back and answers for its end, and an emitter (a record) reads a source and gives the next value each time.
+  them alone. A service (Tessera's sense above) answers from state you do not hold as a value. A *stateless* service
+  answers only from state outside the value (the OS or a `secret` global) and is a record with no member variables. A
+  *stateful* service keeps part of its state itself, in member variables: a manager hands out a resource, takes it
+  back and answers for its end, and an emitter (a record) reads a source and gives the next value each time.
   `Channel[T]` mixes (it keeps waiting values, `receive` waits for another thread). No `Service` suffix; `Manager`
   stays; no annotation, no builder check.
 - Handing over is written with `steal`. `steal a as b` hands what the place `a` holds over to a new place `b`, and an
