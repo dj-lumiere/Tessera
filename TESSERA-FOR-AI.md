@@ -1716,6 +1716,14 @@ routine sum_to(n: U64) -> U64
         return total
 ```
 
+Recursion hides how far it got and what to do next in the call stack. Where that state should be visible, write a stack loop. Recursion is for walking a branching structure where each call only returns a result (we recommend it, the build does not enforce it). The
+stack is a `List` (`remove_last` takes the next step) and `stack.add_next([a, b, c])` adds steps given in the order they run, so they come back in that order
+(an `Items` of records, or a `Slots` of entities, which are taken over). On a target without an OS, a `PartialItems[T, COUNT]` (a record) or
+`PartialSlots[T, COUNT]` (an entity) sized to the greatest depth is the stack: the room is in the value, nothing is allocated, `add_last` and `add_next`
+throw `FullCollectionError` when it is full (`check` receives it), `remove_last` throws `AbsentValueError` when empty, and a `PartialSlots` ends only the
+elements in use. `getitem`, `setitem`, `count`, `capacity`, `is_full`, `clear` and `emitter()` work as on a `List`; `PartialSlots` reaches an element
+through `getslot`.
+
 Walking a collection: `for x in xs.emitter()` for the whole walk, and an emitter in a named place when the items are
 read by hand (`xs.emitter()` makes the emitter, `emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
 there and `for x in iter` stops there; an emitter over elements in memory, `ListEmitter`, `ItemsEmitter`, `SlotsEmitter`, `RotatableListEmitter`,
