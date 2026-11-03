@@ -148,6 +148,45 @@ routine @List[T].add_last(value: T) -> None
     me.count.poke(wanted)
     return
 
+### Adds the steps that run next, given in the order they run, so that `remove_last` gives them back in that order:
+### `stack.add_next([a, b, c])` leaves `a` at the back, then `b`, then `c`.
+### :typeparam N: The number of steps.
+### :param steps: The steps, in the order they should come back out.
+### :throws: Throws `OutOfMemoryError` when the buffer must grow and the memory manager fails.
+@track_caller
+routine @List[T].add_next[N](steps: Items[T, N]) -> None
+needs RecordType T, U64 N
+    for i in 0 til N
+        me.add_last(steps.getitem(N - 1 - i))
+    return
+
+### Adds the steps that run next, given in the order they run, so that `remove_last` gives them back in that order. The
+### steps are taken over, entity steps too.
+### :typeparam N: The number of steps.
+### :param steps: The steps, in the order they should come back out, taken over.
+### :throws: Throws `OutOfMemoryError` when the buffer must grow and the memory manager fails; the steps end.
+@track_caller
+routine @List[T].add_next[N](steps: Slots[T, N]) -> None
+needs U64 N
+    count: U64 = me.count.peek()
+    if N == 0
+        drop steps
+        return
+    if not me.make_room(count + N)
+        # nothing took the steps: they end here
+        drop steps
+        throw OutOfMemoryError()
+    # The steps go in as they are, then the N places are reversed so the first step is the last place.
+    base: @T = me.storage.data.peek().stride(count)
+    base.to[@Slots[T, N]]().poke(steal steps)
+    window: @[T] = @[T].construct(data: base, count: N)
+    for i in 0 til N
+        j: U64 = N - 1 - i
+        if i < j
+            window.swap(i, j)
+    me.count.poke(count + N)
+    return
+
 ### Removes the last element and returns it.
 ### :returns: The removed element.
 ### :throws: Throws `AbsentValueError` when the list is empty.

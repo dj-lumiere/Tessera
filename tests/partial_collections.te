@@ -1,0 +1,81 @@
+# PartialItems[T, COUNT] holds up to COUNT values in place and PartialSlots[T, COUNT] up to COUNT elements of any
+# type: the room is fixed at build time, the count changes while the program runs, and adding to a full one is a
+# failure `check` and `try` receive. add_next takes the steps in the order they run, and remove_last gives them back
+# in that order. Ending a PartialSlots ends only the elements in use.
+import Collections
+import Hosted
+
+### A counter that says when it ends.
+entity Counter
+    n: S64
+
+### Makes one.
+### :param n: The count.
+### :returns: The new value.
+common routine Counter.construct(n: S64) -> Me
+    return Me(n: n)
+
+### Says it ends.
+routine @Counter.destruct() -> None
+    Console.show("end {me.n.peek()}")
+    return
+
+routine start() -> None
+    items: &PartialItems[S64, 4] <- PartialItems[S64, 4].construct()
+    Console.show("empty {items.is_empty()} count {items.count()} capacity {items.capacity()} full {items.is_full()}")
+    items.add_last(10)
+    items.add_last(20)
+    items.setitem(0, 7)
+    Console.show("{items} first {items.getitem(0)} count {items.count()}")
+    e: &PartialItemsEmitter[S64, 4] <- items.emitter()
+    for x in e
+        Console.show("walk {x}")
+    Console.show("removed {items.remove_last()}")
+
+    # the steps come back out in the order they were written
+    items.add_next([1, 2, 3])
+    Console.show("{items} full {items.is_full()}")
+    when check items.add_last(99)
+        is None => Console.show("added")
+        is FullCollectionError as full => Console.show("full at {full.capacity}")
+    when check items.add_next([4])
+        is None => Console.show("added")
+        is FullCollectionError as full => Console.show("no room for 1 more at {full.capacity}")
+    until items.is_empty()
+        Console.show("run {items.remove_last()}")
+    when check items.remove_last()
+        is S64 as value => Console.show("got {value}")
+        is AbsentValueError => Console.show("empty")
+    when check items.getitem(2)
+        is S64 as value => Console.show("got {value}")
+        is IndexOutOfBoundsError as bad => Console.show("index {bad.index} of {bad.count}")
+
+    # a PartialSlots holds entities, and ends only the ones in use
+    tasks: &PartialSlots[Counter, 4] <- PartialSlots[Counter, 4].construct()
+    tasks.add_last(Counter.construct(1))
+    tasks.add_next([Counter.construct(2), Counter.construct(3)])
+    Console.show("count {tasks.count()} second {tasks.getslot(1).n.peek()}")
+    next: &Counter <- tasks.remove_last()
+    Console.show("next {next.n.peek()}")
+    drop next
+    when check tasks.add_next([Counter.construct(7), Counter.construct(8), Counter.construct(9)])
+        is None => Console.show("added")
+        is FullCollectionError as full => Console.show("no room, capacity {full.capacity}")
+    tasks.clear()
+    Console.show("cleared {tasks.count()}")
+    tasks.add_last(Counter.construct(4))
+    drop tasks
+
+    # a List takes add_next too
+    numbers: &List[S64] <- List[S64].of(values: [100], manager: HEAP)
+    numbers.add_next([1, 2, 3])
+    Console.show("{numbers}")
+    steps: &List[Counter] <- List[Counter].of(values: [Counter.construct(5)], manager: HEAP)
+    steps.add_next([Counter.construct(6), Counter.construct(7)])
+    first: &Counter <- steps.remove_last()
+    Console.show("first {first.n.peek()}")
+    drop first
+    drop steps
+    drop numbers
+    Console.show("done")
+    return
