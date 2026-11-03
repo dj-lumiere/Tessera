@@ -21,7 +21,7 @@ public sealed class LateinitFlow
     }
 
     private readonly Dictionary<string, Pos> _declared = [];
-    private readonly List<(State State, bool IsBreak)> _exits = [];
+    private readonly List<(State State, bool IsBreak, string? Target)> _exits = [];
     private readonly HashSet<(int, int)> _reported = [];
     private readonly List<CompileError> _errors = [];
 
@@ -108,12 +108,12 @@ public sealed class LateinitFlow
                 foreach (var a in j.Args) Eval(a, st);
                 return null;
             case UnreachableStmt or TodoStmt: return null;
-            case BreakStmt:
-                _exits.Add((st.Copy(), true));
+            case BreakStmt br:
+                _exits.Add((st.Copy(), true, br.Target));
                 return null;
             case ContinueStmt c:
                 if (c.With is not null) foreach (var w in c.With) Eval(w.Value, st);
-                _exits.Add((st.Copy(), false));
+                _exits.Add((st.Copy(), false, c.Target));
                 return null;
             case IfStmt i:
             {
@@ -153,14 +153,18 @@ public sealed class LateinitFlow
         var round1 = Walk(l.Body, st.Copy());
         var again = st.Copy();
         if (round1 is not null) again.Unfilled.UnionWith(round1.Unfilled);
-        foreach (var (e, isBreak) in _exits.Skip(mark).Where(x => !x.IsBreak)) again.Unfilled.UnionWith(e.Unfilled);
+        // A jump that names another loop leaves this one without a round of its own.
+        foreach (var (e, isBreak, target) in _exits.Skip(mark).Where(x => !x.IsBreak && (x.Target is null || x.Target == l.Name)))
+            again.Unfilled.UnionWith(e.Unfilled);
         _exits.RemoveRange(mark, _exits.Count - mark);
         var round2 = Walk(l.Body, again);
-        var exits = _exits.Skip(mark).ToList();
+        var allExits = _exits.Skip(mark).ToList();
         _exits.RemoveRange(mark, _exits.Count - mark);
+        var exits = allExits.Where(x => x.Target is null || x.Target == l.Name).ToList();
+        _exits.AddRange(allExits.Where(x => x.Target is not null && x.Target != l.Name));
         State? after = l.NeverEndsByItself ? null : again.Copy();
         if (round2 is not null && !l.NeverEndsByItself) after!.Unfilled.UnionWith(round2.Unfilled);
-        foreach (var (e, isBreak) in exits)
+        foreach (var (e, isBreak, _) in exits)
             if (isBreak) after = Join(after, e);
             else if (!l.NeverEndsByItself && after is not null) after.Unfilled.UnionWith(e.Unfilled);
         if (after is null) return null;

@@ -92,6 +92,8 @@ public sealed partial class FunctionGen
         public LBlock Then { get; } = then;
         public string ThenRegion { get; } = thenRegion;
         public bool HasWith { get; } = hasWith;
+        /// The name the loop was given with `as`, or null.
+        public string? Name { get; set; }
         /// The name whose memory a `for` over an emitter walks (`xs` in `for x in xs.emitter()`), and the loop's line:
         /// the body may not move that memory.
         public (string Root, string? Field, Pos Pos, Expr Source)? Walks { get; set; }
@@ -2512,7 +2514,7 @@ public sealed partial class FunctionGen
             case BreakStmt br:
             {
                 if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
-                var loop = _loops.Peek();
+                var loop = br.Target is null ? _loops.Peek() : NamedLoop(br.Target, br.TargetPos, "break");
                 loop.Breaks = true;
                 GiveBackStackPlaces(loop.BoxDepth, br.Pos);
                 MemEdge(loop.ThenRegion, loop.HeaderNames, pos: br.Pos);
@@ -7210,6 +7212,7 @@ public sealed partial class FunctionGen
             afterRegion = NewRegion("after");
         var frame = new LoopFrame(header, headerRegion, thenB, thenRegion, l.With.Count > 0);
         frame.OuterNames.UnionWith(outerNames);
+        frame.Name = l.Name;
 
         // The first values: the carried values' inits, a range's start, all evaluated once, before the header.
         var firstOps = new List<string>();
@@ -7486,10 +7489,15 @@ public sealed partial class FunctionGen
     internal const string LiveFlag = "$live";
 
     /// `continue` / `continue with a: a2, ...`: the next round's values go back to the header.
+    /// The frame of the loop a `break to` or `continue to` names.
+    private LoopFrame NamedLoop(string name, Pos at, string verb) =>
+        _loops.FirstOrDefault(f => f.Name == name)
+        ?? throw Err(at, $"'{verb} to {name}' names no loop around it");
+
     private void EmitContinue(ContinueStmt c)
     {
         if (_loops.Count == 0) throw Err(c.Pos, "continue goes on with the next round of a loop, and there is no loop here");
-        var loop = _loops.Peek();
+        var loop = c.Target is null ? _loops.Peek() : NamedLoop(c.Target, c.TargetPos, "continue");
         var with = loop.Carried.Where(v => (loop.Range is not { } r || v.Name != r.Name) && v.Name != loop.LiveFlag).ToList();
         var given = c.With ?? [];
         if (with.Count > 0 && c.With is null)

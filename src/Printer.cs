@@ -134,6 +134,7 @@ public sealed class Printer
                     LoopKind.While => $"until {Expr(Bodies.Negated(l.Cond!))}",
                     _ => $"until {Expr(l.Cond!)}",
                 };
+                if (l.Name is not null) head += " as " + l.Name;
                 if (l.With.Count > 0)
                     head += " with " + string.Join(", ", l.With.Select(c => $"{Name(c.Name)}: {Type(c.Type)} = {Expr(c.Init)}"));
                 Line(s, indent, head);
@@ -166,12 +167,13 @@ public sealed class Printer
                 Line(s, indent, "todo");
                 break;
             case ContinueStmt c:
+                string verb = c.Target is null ? "continue" : $"continue to {c.Target}";
                 Line(s, indent, c.With is null
-                    ? "continue"
-                    : "continue with " + string.Join(", ", c.With.Select(w => $"{w.Name}: {Expr(w.Value)}")));
+                    ? verb
+                    : verb + " with " + string.Join(", ", c.With.Select(w => $"{w.Name}: {Expr(w.Value)}")));
                 break;
-            case BreakStmt:
-                Line(s, indent, "break");
+            case BreakStmt br:
+                Line(s, indent, br.Target is null ? "break" : $"break to {br.Target}");
                 break;
             case DropStmt d:
                 Line(s, indent, $"drop {Expr(d.Value)}");

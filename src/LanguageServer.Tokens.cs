@@ -977,6 +977,7 @@ public static partial class LanguageServer
                     }
                     var before = _written;
                     _written = new Dictionary<string, TypeRef>(_written);
+                    if (l.Name is not null) Mark(l.NamePos, l.Name, "variable", () => $"a loop named {l.Name}");
                     if (l.Var is not null)
                     {
                         _definedAt[l.Var] = l.VarPos;
@@ -1000,8 +1001,15 @@ public static partial class LanguageServer
                     if (_blocks.ContainsKey(j.Block)) Mark(j.Pos, j.Block, "block", BlockHover(j.Block));
                     foreach (var a in j.Args) Expr(a);
                     break;
-                case ContinueStmt { With: { } with }:
+                case ContinueStmt { With: { } with } cont:
+                    if (cont.Target is not null) Mark(cont.TargetPos, cont.Target, "variable", () => $"a loop named {cont.Target}");
                     foreach (var (_, v, _) in with) Expr(v);
+                    break;
+                case ContinueStmt { Target: { } contTarget } cont:
+                    Mark(cont.TargetPos, contTarget, "variable", () => $"a loop named {contTarget}");
+                    break;
+                case BreakStmt { Target: { } breakTarget } br:
+                    Mark(br.TargetPos, breakTarget, "variable", () => $"a loop named {breakTarget}");
                     break;
                 case BecomesStmt bc:
                     Expr(bc.Value);

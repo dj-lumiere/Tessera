@@ -806,6 +806,12 @@ routine start() -> None
   without them is a build error ("the body of a loop that carries values ends here without passing them on"). The
   values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `for`
   carries values the same way: `for i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
+- **Named loops.** `for y in 0 til h as rows` (also `until c as name`, `loop as name`; `as` comes before `with`) names a
+  loop, and `break to rows` / `continue to rows` act on it from inside loops nested in it. `break to rows` is `rows`' own
+  `break`: `rows`' `then` runs and the `then` of the loops inside it is skipped. `continue to rows` starts `rows`' next
+  round (with carried values: `continue to rows with total: total + 1`). A plain `break` / `continue` stays with the
+  innermost loop. A name no loop around the statement has, or a name an enclosing loop already has, is a build error. A
+  loop name nothing uses is a warning (`lint`, `check`, `build`).
 - **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run once whenever the loop is left
   for the line after it: when the loop ends on its own (the condition fails, the range or emitter is exhausted) and
   after its own `break` (a `break` of a loop inside only leaves that loop). A `return` leaves the routine and skips

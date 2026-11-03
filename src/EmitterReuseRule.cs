@@ -67,6 +67,9 @@ public static class EmitterReuseRule
         public State? Fall;
         public readonly List<State?> Breaks = [];
         public readonly List<State?> Continues = [];
+        /// The `break to` and `continue to` that name a loop, for the loop with that name to take: the name, the state
+        /// at the jump, and whether it breaks.
+        public readonly List<(string Target, State? State, bool IsBreak)> Named = [];
     }
 
     private sealed class Walker
@@ -111,13 +114,18 @@ public static class EmitterReuseRule
                     case LoopStmt l:
                         cur = WalkLoop(l, cur, paths);
                         break;
+                    case BreakStmt { Target: { } breakTarget }:
+                        paths.Named.Add((breakTarget, cur, true));
+                        cur = null;
+                        break;
                     case BreakStmt:
                         paths.Breaks.Add(cur);
                         cur = null;
                         break;
                     case ContinueStmt c:
                         foreach (var e in Bodies.Exprs(c)) cur = Named(cur, e);
-                        paths.Continues.Add(cur);
+                        if (c.Target is { } continueTarget) paths.Named.Add((continueTarget, cur, false));
+                        else paths.Continues.Add(cur);
                         cur = null;
                         break;
                     case ReturnStmt or JumpStmt or UnreachableStmt or TodoStmt:
@@ -165,6 +173,14 @@ public static class EmitterReuseRule
             var first = Walk(l.Body, bodyIn);
             _loops.RemoveAt(_loops.Count - 1);
 
+            // A jump that names this loop is one of its own breaks or continues, one that names a loop around it goes on
+            // to that loop.
+            foreach (var jump in first.Named)
+            {
+                if (jump.Target == l.Name) (jump.IsBreak ? first.Breaks : first.Continues).Add(jump.State);
+                else outer.Named.Add(jump);
+            }
+
             // The state a pass after the first starts from: what every way back round the loop has run out.
             var again = State.Meet([first.Fall, .. first.Continues]);
             if (again is not null && again.Empty.Count > 0)
@@ -173,8 +189,9 @@ public static class EmitterReuseRule
                 if (l.Var is not null) again.Empty.Remove(l.Var);
                 if (source is not null && again.Empty.TryGetValue(source, out var refilled)) Report(l, source, refilled);
                 _loops.Add((l, true));
-                Walk(l.Body, again);
+                var second = Walk(l.Body, again);
                 _loops.RemoveAt(_loops.Count - 1);
+                outer.Named.AddRange(second.Named.Where(j => j.Target != l.Name));
             }
 
             // Out of the loop: when it ends by itself (a for loop's emitter is then empty) or through a break.
@@ -199,6 +216,7 @@ public static class EmitterReuseRule
             {
                 into.Breaks.AddRange(p.Breaks);
                 into.Continues.AddRange(p.Continues);
+                into.Named.AddRange(p.Named);
             }
         }
 

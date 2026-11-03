@@ -365,6 +365,9 @@ public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, Lis
     public TypeRef? VarType { get; init; }
     public Pos VarPos { get; init; }
     public Expr? Source { get; init; }
+    /// `for y in 0 til h as rows`: the name a `break to rows` or `continue to rows` inside the loop can use, or null.
+    public string? Name { get; init; }
+    public Pos NamePos { get; init; }
 }
 
 /// One carried value of a loop: `a: T = init` after `with`.
@@ -396,10 +399,21 @@ public sealed record UnreachableStmt(Pos Pos) : Stmt(Pos);
 public sealed record TodoStmt(Expr Crash, string Block, Pos Pos) : Stmt(Pos);
 
 /// `continue`, or `continue with a: a2, b: b2` in a loop with carried values: the next round.
-public sealed record ContinueStmt(List<(string Name, Expr Value, Pos Pos)>? With, Pos Pos) : Stmt(Pos);
+public sealed record ContinueStmt(List<(string Name, Expr Value, Pos Pos)>? With, Pos Pos) : Stmt(Pos)
+{
+    /// `continue to rows`: the named loop that goes on with its next round, or null for the innermost loop.
+    public string? Target { get; init; }
+    public Pos TargetPos { get; init; }
+}
 
 /// `break`: out of the loop, on to its `then`.
-public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
+public sealed record BreakStmt(Pos Pos) : Stmt(Pos)
+{
+    /// `break to rows`: the named loop that is left (its `then` runs, the `then` of the loops inside it does not), or
+    /// null for the innermost loop.
+    public string? Target { get; init; }
+    public Pos TargetPos { get; init; }
+}
 
 /// `drop x`: `x` (a value, or a place such as `me.storage`) is given back here through its type's `destruct`, which only
 /// this statement calls from a program's own lines.
@@ -757,7 +771,7 @@ public static class Bodies
             WhenStmt w => w.Arms.All(a => Leaves(a.Body)),
             // Every way out of a loop but a return runs its `then`, so a `then` that leaves makes the loop leave.
             LoopStmt { Then: { } then } when Leaves(then) => true,
-            LoopStmt { NeverEndsByItself: true } l => !BreaksOut(l.Body),
+            LoopStmt { NeverEndsByItself: true } l => !BreaksOut(l.Body) && !BreaksToName(l),
             _ => false,
         };
     }
@@ -775,6 +789,10 @@ public static class Bodies
         BinaryExpr { Op: "!==" } b => b with { Op = "===" },
         _ => new UnaryExpr("not", cond, cond.Pos),
     };
+
+    /// Whether a `break to` written anywhere inside the loop (in a loop nested in it too) names it.
+    public static bool BreaksToName(LoopStmt l) =>
+        l.Name is { } name && All(l.Body).Any(s => s is BreakStmt { Target: { } t } && t == name);
 
     /// Whether a loop's body breaks out of it somewhere: a `break` in it, outside the loops nested in it (a `break` in
     /// a nested loop's `then` is this loop's, since `then` runs after the nested loop, as the body's own line).

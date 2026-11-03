@@ -24,6 +24,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// How deep in loops the parser is: `continue` and `break` belong to the innermost one.
     private int _loopDepth;
 
+    /// The loops around the line being parsed, innermost last: each one's name (null when it has none) and whether a
+    /// `break to` or `continue to` named it.
+    private readonly List<(string? Name, bool[] Used)> _loopNames = [];
+
     /// How deep in value `when`s the parser is: `becomes` belongs to the innermost one.
     private int _valueWhenDepth;
 
@@ -2069,6 +2073,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         else if (word.Text == "loop") cond = new BoolLit(true, word.Pos);
         else cond = ParseCondition();
+        string? loopName = null;
+        Pos loopNamePos = default;
+        if (IsIdent("as"))
+        {
+            Next();
+            var named = Expect(TokenKind.Ident, "the loop's name after 'as': for y in 0 til h as rows");
+            loopName = named.Text;
+            loopNamePos = named.Pos;
+            if (_loopNames.Any(o => o.Name == loopName))
+                throw new CompileError(named.Pos, $"a loop around this one is already named '{loopName}': give this loop another name");
+        }
         var with = new List<Carried>();
         if (IsIdent("with"))
         {
@@ -2087,8 +2102,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (variable is not null) _values?.Add(variable);
         foreach (var c in with) _values?.Add(c.Name);
         _loopDepth++;
+        var used = new[] { false };
+        _loopNames.Add((loopName, used));
         var body = ParseBody(col);
+        _loopNames.RemoveAt(_loopNames.Count - 1);
         _loopDepth--;
+
         if (body.Count == 0) throw new CompileError(word.Pos, $"{word.Text} needs lines of its own under it");
         List<Stmt>? then = null;
         if (IsIdent("then") && Cur.Pos.Col == col)
@@ -2103,7 +2122,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new LoopStmt(kind, cond, with, body, then, word.Pos)
         {
             Var = variable, VarPos = varPos, VarType = varType, Source = source, Endless = word.Text == "loop",
+            Name = loopName, NamePos = loopNamePos,
         };
+    }
+
+    /// The `to rows` after `break` or `continue`: the name of a loop around the line, which then counts as used. A name
+    /// no loop around has is an error.
+    private (string? Name, Pos Pos) ParseJumpTarget(string verb)
+    {
+        if (!IsIdent("to")) return (null, default);
+        Next();
+        var named = Expect(TokenKind.Ident, $"the name of a loop after '{verb} to'");
+        int at = _loopNames.FindLastIndex(o => o.Name == named.Text);
+        if (at < 0)
+        {
+            var known = _loopNames.Where(o => o.Name is not null).Select(o => $"'{o.Name}'").Distinct().ToList();
+            throw new CompileError(named.Pos, known.Count == 0
+                ? $"'{verb} to {named.Text}' names no loop: no loop around it is given a name. Name a loop with 'as {named.Text}' after its header"
+                : $"'{verb} to {named.Text}' names no loop around it. The loops named here are {string.Join(", ", known)}");
+        }
+        _loopNames[at].Used[0] = true;
+        return (named.Text, named.Pos);
     }
 
     /// The names after `with` on the current line: `a` and `b` in `while c with a: T = x, b: U = y`.
@@ -2320,6 +2359,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 if (_loopDepth == 0)
                     throw new CompileError(pos, "continue goes on with the next round of a loop, and there is no loop here");
+                var (continueTarget, continueTargetPos) = ParseJumpTarget("continue");
                 List<(string, Expr, Pos)>? with = null;
                 if (IsIdent("with"))
                 {
@@ -2332,13 +2372,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         with.Add((n.Text, ParseExpr(), n.Pos));
                     } while (Accept(TokenKind.Comma));
                 }
-                return new ContinueStmt(with, pos);
+                return new ContinueStmt(with, pos) { Target = continueTarget, TargetPos = continueTargetPos };
             }
             case "break":
                 if (_loopDepth == 0) throw new CompileError(pos, "break leaves a loop, and there is no loop here");
+                var (breakTarget, breakTargetPos) = ParseJumpTarget("break");
                 if (!Is(TokenKind.Newline) && !Is(TokenKind.Eof))
                     throw Error("break takes no value: a loop sends a value out through return or a place (x: &T <- value)");
-                return new BreakStmt(pos);
+                return new BreakStmt(pos) { Target = breakTarget, TargetPos = breakTargetPos };
             case "nothing":
                 return new NothingStmt(pos);
             case "becomes":
