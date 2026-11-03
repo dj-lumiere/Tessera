@@ -172,7 +172,8 @@ sources = ["src"]
 - **Threads and fibers:** a piece of work is `f.to[Work](param: value)`, a plain value. A ticket a `ThreadManager`,
   `CoroutineManager` or `ThreadPoolManager` lends (`Thread`, `Fiber`, `PassableFiber`) takes it with `put_work`, its
   `retrieve()` waits and gives the result (or throws the failure of the work's routine), and `drop` gives the ticket
-  back.
+  back. A ticket kept in a field, a list or a parameter may throw any failure, so a `check` on it ends with a
+  catch-all arm.
 - **Standard library:** written in Tessera and layered so that only `Hosted` and the hosted files of
   `System` (the heap and page managers) need libc. A target without an operating system builds without them
   and uses `Unhosted` (the startup steps, the CPU events, the interrupt controller, the timer, the serial port,
