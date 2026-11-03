@@ -2664,6 +2664,9 @@ public sealed partial class Compiler
                 return null;
             case VariantType { IsNullable: true }:
                 return null;
+            // An Optional of a Callable open to any failure is a flag and the pair: all zero is None.
+            case VariantType { IsFlagged: true, Leaves: [CallableType { IsOpen: true }, ..] }:
+                return null;
             case VariantType v when seen.Add(v.Key):
                 foreach (var branch in v.Branches)
                     if (NoZeroValueWhere(branch, $"{path} as {branch.Name}", seen) is { } found)

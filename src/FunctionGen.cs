@@ -3203,6 +3203,16 @@ public sealed partial class FunctionGen
 
         // A call that returns nothing, where the None record goes (a `T` bound to None), gives its one value.
         if (v.Type is VoidType && Compiler.IsNoneRecord(expected)) v = new Val("zeroinitializer", expected);
+        // A `Callable?` that is not open goes where one open to any failure is kept: None stays None.
+        if (expected is VariantType { IsOptional: true, Args: [CallableType { IsOpen: true } openArg] } openOptional
+            && v.Type is VariantType { IsOptional: true, Args: [CallableType { IsOpen: false } plainArg] } && plainArg.Plain.Equals(openArg.Plain))
+        {
+            _c.EnsureTypeDefined(openOptional);
+            string isNone = EmitTmp($"icmp eq ptr {v.Op}, null");
+            var some = WrapInVariant(PackOpen(new Val(v.Op, plainArg), plainArg, openArg), openOptional);
+            var none = WrapInVariant(new Val("zeroinitializer", openOptional.Leaves.First(Compiler.IsNoneRecord)), openOptional);
+            return new Val(EmitTmp($"select i1 {isNone}, {openOptional.Llvm} {none.Op}, {openOptional.Llvm} {some.Op}"), expected);
+        }
         if (!Compatible(v.Type, expected))
             throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected))
                 : FailuresMisfit(v.Type, expected) is { } failing ? Err(e.Pos, failing)
@@ -3669,7 +3679,10 @@ public sealed partial class FunctionGen
         if (e is IfExpr or WhenExpr) return null;
         var actual = InferQuiet(e);
         if (actual is not null)
-            return actual.Equals(vt) ? null : Widens(actual, vt) ? actual : null;
+            return actual.Equals(vt) ? null : Widens(actual, vt) ? actual
+                : actual is CallableType { IsOpen: false } plainValue
+                  && vt.Leaves.OfType<CallableType>().FirstOrDefault(l => l.IsOpen && l.Plain.Equals(plainValue.Plain)) is { } openBranch
+                    ? openBranch : null;
         return UntypedBranch(e, vt);
     }
 
@@ -3809,6 +3822,9 @@ public sealed partial class FunctionGen
         _c.CaseUses.Add(p.Pos);
         int index = v.LeafIndex(type);
         if (index >= 0) return ([index], p.Binding, type);
+        // A Callable written plain observes the branch that is the same Callable open to any failure.
+        if (type is CallableType plainArm && v.Leaves.OfType<CallableType>().FirstOrDefault(l => l.IsOpen && l.Plain.Equals(plainArm.Plain)) is { } openLeaf)
+            return ([v.LeafIndex(openLeaf)], p.Binding, openLeaf);
         // A branch written `E?` is the place of the E from a manager, a `&E`: `is Counter? as c` observes it.
         if (type is VariantType { IsAddressed: true } && _c.HeldOptional(type, p.Pos, _env) is var kept && v.LeafIndex(kept) >= 0)
             return ([v.LeafIndex(kept)], p.Binding, kept);
