@@ -154,13 +154,13 @@ routine start() -> None
   manager. The builder follows it like `poke_into`: a store into `dest` for the escape, access, and read-only checks.
 - Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to[U8](p.stride(i))` is an
   error: write `Byte.to[U8](p.stride(i).peek())`.
-- `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
+- `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a routine as `void*`:
   `fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
   its own, and an `Addr` is not callable.
 - A lambda, `(a, b) => a.add(b)` (one expression on one line, parentheses kept around one name: `(x) => x.mul(2)`),
   is a routine written where a `Callable` is expected: a parameter, a binding with a `Callable` type. Its parameter
   and result types come from that `Callable`. It sees its parameters, presets, globals, and routines, never a value of
-  the routine around it (a build error: pass it as a parameter). It is a plain function pointer.
+  the routine around it (a build error: pass it as a parameter). It is a plain routine address.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `handler: Callable[…] = me.handler.peek()`, then `handler.call(x)`. `me.handler(...)` is an error.
 - A field of a record value is read with plain `=`: `key: K = pair.key`.

@@ -256,7 +256,7 @@ internal sealed class AsmLowering
                         : $"a @naked routine keeps the C calling convention by itself, so it takes no @{name}");
         }
         else if (_r.AnnotationNamed("inline") is not null || _r.AnnotationNamed("noinline") is not null || _r.AnnotationNamed("export") is not null)
-            throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no function to inline, keep, or export");
+            throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no routine body to inline, keep, or export");
         foreach (var b in _r.Blocks!)
             if (b.Params.Count != 0)
                 throw new CompileError(b.Pos, "an assembly block takes no parameters: registers carry values from block to block");
