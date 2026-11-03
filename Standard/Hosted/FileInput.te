@@ -2,14 +2,14 @@
 #
 # A FileHandle reads as the console does (Stdio.te): read_line, read_word, and read[T] draw on one InputBuffer, the
 # same code that finds lines and words in standard input, filled from the file. The buffer is made from HEAP on the
-# first such read and given back by close. read_all, read_raw, and read_bytes(count, manager) take what the buffer
+# first such read and given back by close. read_all and read_bytes(count, manager) take what the buffer
 # holds first and then read the file on, and so does read_bytes(buffer, count), the Reader side, so the reads can be
 # mixed in any order. seek counts the bytes the buffer holds and drops them, and a write puts the OS position back
 # to where the program has read to first.
 #
 # read_line, read_word, and read[T] throw EndOfInputError at the end of the file, so `try h.read_line(manager)` is
-# None there. The others give an empty result. A read the OS refuses throws IoError, where the console reads a failure
-# as the end.
+# None there. The others give an empty result. A read the OS refuses throws its FsError, where the console reads a
+# failure as the end.
 
 module Hosted
 
@@ -60,62 +60,61 @@ secret routine @FileHandle.discard_input() -> None
     buffer.end.poke(0)
     return
 
-### Whether a read from the file failed since the last call, which clears it.
-### :returns: `true` when the buffer's source failed.
-secret routine @InputBuffer.take_failure() -> Bool
-    failed: Bool = me.failed.peek()
+### Throws the failure of a read from the file since the last call, and clears it. Does nothing when no read failed.
+### :throws: Throws the {FsError} the read failed with.
+secret routine @InputBuffer.throw_failure() -> None
+    if not me.failed.peek()
+        return
     me.failed.poke(false)
-    return failed
+    throw me.failure.peek()
 
 ### The next line, without its "\n" (or "\r\n"), in memory from manager. A last line with no "\n" still counts, and a
 ### blank line is "". Drop it.
 ### :param manager: The memory manager for the line.
 ### :returns: The line.
-### :throws: Throws `EndOfInputError` at the end of the file, `IoError` when a read fails.
+### :throws: Throws `EndOfInputError` at the end of the file, the {FsError} a read fails with.
 @expensive("allocates what it reads")
 routine @FileHandle.read_line(manager: @MemoryManager) -> BorrowedSlice[Byte]
     buffer: @InputBuffer = me.input_buffer()
 
     line: &Optional[BorrowedSlice[Byte]] <- buffer.line(manager, me)
-    failed: Bool = buffer.take_failure()
     when steal line
         is BorrowedSlice[Byte] as text =>
-            if failed
-                drop text
-                throw IoError(code: 0)
-            return text
+            when check buffer.throw_failure()
+                is None => return text
+                is FsError as error =>
+                    drop text
+                    throw error
         is None =>
-            if failed
-                throw IoError(code: 0)
+            buffer.throw_failure()
             throw EndOfInputError(reader: "FileHandle.read_line")
 
 ### The next word (spaces, tabs, and line ends separate words), in memory from manager. The space after the word
 ### stays in the file. Drop it.
 ### :param manager: The memory manager for the word.
 ### :returns: The word.
-### :throws: Throws `EndOfInputError` at the end of the file, `IoError` when a read fails.
+### :throws: Throws `EndOfInputError` at the end of the file, the {FsError} a read fails with.
 @expensive("allocates what it reads")
 routine @FileHandle.read_word(manager: @MemoryManager) -> BorrowedSlice[Byte]
     buffer: @InputBuffer = me.input_buffer()
 
     word: &Optional[BorrowedSlice[Byte]] <- buffer.take_word(manager, me)
-    failed: Bool = buffer.take_failure()
     when steal word
         is BorrowedSlice[Byte] as text =>
-            if failed
-                drop text
-                throw IoError(code: 0)
-            return text
+            when check buffer.throw_failure()
+                is None => return text
+                is FsError as error =>
+                    drop text
+                    throw error
         is None =>
-            if failed
-                throw IoError(code: 0)
+            buffer.throw_failure()
             throw EndOfInputError(reader: "FileHandle.read_word")
 
 ### Skips white space and reads the next word as a T, straight from the input buffer: nothing is allocated unless the
 ### word is longer than the buffer. The space after the word stays in the file.
 ### :typeparam T: The type to read, a Parsable one (every integer and float type).
 ### :returns: The value.
-### :throws: Throws `EndOfInputError` at the end of the file, `IoError` when a read fails, and the failure of
+### :throws: Throws `EndOfInputError` at the end of the file, the {FsError} a read fails with, and the failure of
 ###     `text.to[T]()` (`InvalidValueError`, `OutOfRangeError`) when the word isn't a T.
 routine @FileHandle.read[T]() -> T
 needs T obeys Parsable
@@ -123,9 +122,11 @@ needs T obeys Parsable
     lateinit spill: &[Byte]
 
     word: Optional[@[Byte]] = buffer.word(spill, me)
-    if buffer.take_failure()
-        drop spill
-        throw IoError(code: 0)
+    when check buffer.throw_failure()
+        is None => nothing
+        is FsError as error =>
+            drop spill
+            throw error
     when word
         is @[Byte] as text =>
             # The word may be a view of the buffer, so it's converted before anything reads the buffer again.
@@ -184,15 +185,6 @@ routine @FileHandle.read_bytes(buffer: @Byte, count: U64) -> U64
 ### :throws: Throws the reason when a read fails, `OutOfMemoryError` when `manager` fails.
 @expensive("allocates what it reads")
 routine @FileHandle.read_all(manager: @MemoryManager) -> BorrowedSlice[Byte]
-    when check read_rest(f: me, manager)
-        is BorrowedSlice[Byte] as text => return text
-
-### The same bytes as `read_all`, under the name the other two languages use for the undecoded rest of the file.
-### :param manager: The memory manager for the bytes.
-### :returns: The bytes from the position to the end of the file.
-### :throws: Throws the reason when a read fails, `OutOfMemoryError` when `manager` fails.
-@expensive("allocates what it reads")
-routine @FileHandle.read_raw(manager: @MemoryManager) -> BorrowedSlice[Byte]
     when check read_rest(f: me, manager)
         is BorrowedSlice[Byte] as text => return text
 

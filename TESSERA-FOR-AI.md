@@ -2237,8 +2237,8 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   writes the value as `Console.show` shows it and then a line end, and `end: "..."` (a literal) replaces the end, after a
   template too (`h.write("a", end: "|")`). `read_line(manager)`, `read_word(manager)` and `read[T]()` read as the console's
   `ask_line`, `ask_word` and `ask[T]()` do (one input buffer, made from `HEAP` at the first such read and given back by `close`;
-  `read[T]` takes no memory), and throw `EndOfInputError` at the end of the file (`try` gives `None`) and `IoError` when the OS
-  refuses the read. `read_all(manager)`, `read_raw(manager)` (the same bytes) and `read_bytes(count, manager)` give the rest, or
+  `read[T]` takes no memory), and throw `EndOfInputError` at the end of the file (`try` gives `None`) and the `FsError` member
+  when the OS refuses the read. `read_all(manager)` and `read_bytes(count, manager)` give the rest, or
   up to `count` bytes, empty at the end. All of them, and `read_bytes(buffer, count)`, take the buffered bytes first, `seek`
   counts them and drops them, and a write puts the OS position back to where the program has read to. There is no
   `read_lines` / `read_words`: a list of slices is one allocation per line, so loop on `try h.read_line(manager)` instead.
