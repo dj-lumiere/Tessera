@@ -806,6 +806,10 @@ routine start() -> None
   without them is a build error ("the body of a loop that carries values ends here without passing them on"). The
   values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `for`
   carries values the same way: `for i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
+- **Narrowing.** A `when x` (or `when p.second`, a member path of a record value) on an optional whose `is None` arm
+  leaves (`return`, `break`, `continue`, `throw`) goes on with the other branch (`else` may be left out or be
+  `nothing`), and below it `x` / `p.second` is the value type, until a line puts a new value in that path or in a path
+  it is part of (`p <-`, `p.second <-`). A `None` put there meanwhile stops the program loudly at the next read.
 - **Named loops.** `for y in 0 til h as rows` (also `until c as name`, `loop as name`; `as` comes before `with`) names a
   loop, and `break to rows` / `continue to rows` act on it from inside loops nested in it. `break to rows` is `rows`' own
   `break`: `rows`' `then` runs and the `then` of the loops inside it is skipped. `continue to rows` starts `rows`' next

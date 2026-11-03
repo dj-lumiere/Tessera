@@ -2481,6 +2481,7 @@ public sealed partial class FunctionGen
                 break;
             case FillStmt fill:
                 EmitFill(fill);
+                Unnarrow(fill.Place);
                 break;
             case IfStmt i:
                 EmitIf(i);
@@ -2891,6 +2892,7 @@ public sealed partial class FunctionGen
     private DType? InferNode(Expr e)
     {
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
+        if (e is FieldExpr narrowedField && NarrowedType(narrowedField) is { } narrowedType) return narrowedType;
         switch (e)
         {
             case WhenExpr: return null;
@@ -3060,6 +3062,12 @@ public sealed partial class FunctionGen
         if (FlagsOf(expected) is { } flagsExpected && e is BinaryExpr { Op: "|" or "&" or "^" } bitwise)
             throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
+        if (e is FieldExpr narrowedField && NarrowedType(narrowedField) is { } narrowedType)
+        {
+            var narrowedVal = EvalNarrowed(narrowedField, narrowedType);
+            if (!Compatible(narrowedVal.Type, expected)) throw Mismatch(e.Pos, expected, narrowedVal.Type.ToString() ?? "");
+            return narrowedVal;
+        }
         if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
         // `None()` where an `E?` is kept (a `&E` of an entity): the hollow place, which holds nothing.
         if (e is CallExpr { Name: "None", Args.Count: 0 } or RecordLit { Fields.Count: 0 } && KeptOptional(new PtrType(expected)) is not null
@@ -3752,8 +3760,119 @@ public sealed partial class FunctionGen
 
     /// `when` as a statement (`frame` null) or as a value (`frame` set: every arm ends with `becomes`). Each arm is a
     /// body in a block of its own. A statement's arm that doesn't leave goes on at the join block after the when.
+    // ── Narrowing ───────────────────────────────────────────────────────────
+
+    /// After a `when x` or `when a.b` whose `is None` arm leaves, the path holds a value of the type beside None, until a
+    /// line puts a new value in the path or in a path it is part of. A name is bound again to the value. A member path
+    /// is kept as a marker in the values (scoped like them) and read through a checked extract, so a None put there
+    /// meanwhile stops the program at the reading line.
+    private const string NarrowedMark = "$narrowed ";
+
+    /// The name or member path an expression spells (`x`, `a.b.c`), or null for anything else.
+    private static string? PathKey(Expr e) => e switch
+    {
+        ValueRef r => r.Name,
+        FieldExpr f when PathKey(f.Base) is { } b => b + "." + f.Name,
+        _ => null,
+    };
+
+    /// The type beside None in an optional variant that holds no entity, or null for any other type.
+    private static DType? OptionalPayload(VariantType vt)
+    {
+        if (vt.Leaves.Count != 2 || vt.IsAddressed) return null;
+        var none = vt.Leaves.FirstOrDefault(Compiler.IsNoneRecord);
+        var other = vt.Leaves.FirstOrDefault(l => !Compiler.IsNoneRecord(l));
+        return none is null || other is null || Entities.Holds(other) || other is VariantType ? null : other;
+    }
+
+    private bool IsNarrowedPath(FieldExpr f) => PathKey(f) is { } key && _values.ContainsKey(NarrowedMark + key);
+
+    private T WithoutNarrowing<T>(FieldExpr f, Func<T> run)
+    {
+        string mark = NarrowedMark + PathKey(f);
+        var saved = _values[mark];
+        _values.Remove(mark);
+        try { return run(); }
+        finally { _values[mark] = saved; }
+    }
+
+    /// The type a narrowed member path has, or null when the path is not narrowed.
+    private DType? NarrowedType(FieldExpr f) =>
+        IsNarrowedPath(f) && WithoutNarrowing(f, () => Infer(f)) is VariantType vt ? OptionalPayload(vt) : null;
+
+    private Val EvalNarrowed(FieldExpr f, DType payload)
+    {
+        var whole = WithoutNarrowing(f, () => EvalAny(f));
+        var vt = (VariantType)whole.Type;
+        string slot = NewSlot(vt);
+        Line($"store {vt.Llvm} {whole.Op}, ptr {slot}");
+        string tag = EmitTmp(vt.IsNullable ? $"icmp ne ptr {whole.Op}, null" : $"extractvalue {vt.Llvm} {whole.Op}, 0");
+        string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
+        string present = EmitTmp($"icmp eq i32 {id}, {vt.LeafId(payload)}");
+        var present1 = NewLBlock("narrowed");
+        var gone = NewLBlock("nolonger");
+        Terminate($"br i1 {present}, label %{present1.Label}, label %{gone.Label}");
+        _cur = gone;
+        CrashHere(new CallExpr("UnacceptedValueError", [],
+            [new StrLit($"{PathKey(f)} was checked for None and has been given None again since.", f.Pos)], f.Pos)
+            { ArgNames = ["description"], Path = Compiler.SystemModule }, f.Pos);
+        _cur = present1;
+        return new Val(PayloadLoad(vt, slot, payload), payload);
+    }
+
+    /// The branch type's value read out of the variant's stack copy.
+    private string PayloadLoad(VariantType vt, string slot, DType branch)
+    {
+        if (vt.IsNullable)
+            return vt.LeafIndex(branch) == 0 ? EmitTmp($"load {branch.Llvm}, ptr {slot}") : "zeroinitializer";
+        if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
+        {
+            _c.EnsureTypeDefined(branch);
+            return "zeroinitializer";
+        }
+        string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+        return EmitTmp($"load {branch.Llvm}, ptr {at}");
+    }
+
+    /// A `when x` with only the arm `is None => <leaves>` goes on with the other branch.
+    private WhenStmt WithImplicitElse(WhenStmt w, ValueFrame? frame)
+    {
+        if (frame is not null || w.Value is null || w.ElseBinding is not null
+            || w.Arms is not [{ Cases: [IsPattern { Binding: null } p] } only] || !Bodies.Leaves(only.Body)) return w;
+        if (PathKey(w.Value) is null || InferQuiet(w.Value) is not VariantType vt || OptionalPayload(vt) is null
+            || !Compiler.IsNoneRecord(Resolve(p.Type))) return w;
+        return w with { Arms = [only, new WhenArm(null, null, [], only.Pos)] };
+    }
+
+    /// After the when: the name or path it looked at is the value, when the `is None` arm left.
+    private void NarrowAfterWhen(WhenStmt w, Val subject)
+    {
+        if (subject.Type is not VariantType vt || OptionalPayload(vt) is not { } payload || PathKey(w.Value!) is not { } key) return;
+        var noneArm = w.Arms.FirstOrDefault(a => a.Cases is [IsPattern p] && Compiler.IsNoneRecord(Resolve(p.Type)));
+        if (noneArm is null || !Bodies.Leaves(noneArm.Body)) return;
+        if (w.Value is ValueRef name && _values.ContainsKey(name.Name))
+        {
+            string slot = NewSlot(vt);
+            Line($"store {vt.Llvm} {subject.Op}, ptr {slot}");
+            string value = PayloadLoad(vt, slot, payload);
+            _values[name.Name] = new Val(value, payload);
+            DescribeValue(name.Name, value, payload, name.Pos);
+        }
+        else if (w.Value is FieldExpr) _values[NarrowedMark + key] = new Val("true", BoolType.Instance);
+    }
+
+    /// A line that puts a new value in a place ends the narrowing of that member path and of the paths it is part of.
+    private void Unnarrow(Expr place)
+    {
+        if (PathKey(place) is not { } key) return;
+        foreach (var mark in _values.Keys.Where(k => k.StartsWith(NarrowedMark) && (k == NarrowedMark + key || k.StartsWith(NarrowedMark + key + "."))).ToList())
+            _values.Remove(mark);
+    }
+
     private void EmitWhen(WhenStmt w, ValueFrame? frame)
     {
+        w = WithImplicitElse(w, frame);
+        Val? subjectValue = null;
         var outerNames = _values.Keys.ToHashSet();
         var join = frame?.Join ?? NewLBlock("endwhen");
         string joinRegion = frame?.JoinRegion ?? NewRegion("endwhen");
@@ -3842,6 +3961,7 @@ public sealed partial class FunctionGen
             if (w.Value is ValueRef looked) _hollowSeen = looked;
             try { v = EvalAny(w.Value); }
             finally { _memMuted = mutedBefore; }
+            subjectValue = v;
             // The subject read through a temporary slot (`when Counter.at(n).get()`): a subject that
             // borrows nothing from it ends it here, before an arm can leave.
             if (!MayBorrow(v.Type, null)) FlushTemps(subjectTemps);
@@ -3870,6 +3990,7 @@ public sealed partial class FunctionGen
             Define(carried.Name, carried.Value, carried.Pos);
             DescribeValue(carried.Name, carried.Value.Op, carried.Value.Type, carried.Pos);
         }
+        if (frame is null && reached > 0 && subjectValue is { } looked2 && w.Value is not null) NarrowAfterWhen(w, looked2);
         foreach (var (binding, arm, line) in armNames)
             if (!_values.ContainsKey(binding.Name))
                 _hiddenPayloads[binding.Name] = $"'{binding.Name}' is named by the arm {arm} (line {line}), and is visible in that arm only: "
