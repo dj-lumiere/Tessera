@@ -785,7 +785,7 @@ routine start() -> None
   in a value (`for i in hi to lo by step` with `step` -2 walks down). `by 0` is a build error, and a step held in a
   value that is 0 crashes with `RangeStepZeroError` before the first round. A range walks the type of its bounds, `S64` when both are bare numbers; `for k: U64 in 0 til 27`
   names the type (for an index, say). A range is walked by counting, with no emitter. `for x in xs.emitter()` walks a
-  collection: each collection makes its emitter with `.emitter()`, and the builder keeps that emitter in a STACK place for
+  collection (an emitter reads its source and gives the next value each time it is asked, so the source keeps its shape while it walks): each collection makes its emitter with `.emitter()`, and the builder keeps that emitter in a STACK place for
   the loop, with nothing to give back. Write this form by default: every loop gets a new emitter. `for x in e` reads
   an emitter in a place you named (`e: &ListEmitter[Point] <- points.emitter()`), when the walk goes on after a `break`
   or `try e.emit()` reads it by hand. A `for` reads until emit throws `AbsentValueError`, its end. Any other failure
@@ -1525,6 +1525,12 @@ routine start() -> None
   HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
   is a `record` with no member variables (body `nothing`): its state is a `secret` global or the OS's, and its
   routines are `common`, called on the type. The builder does not check this by name: the stdlib follows it.
+  Kinds of type (a way to read a type, nothing is marked): a **data type** is its fields and each routine answers from
+  them alone. A service (Tessera's sense above) answers from state you do not hold as a value (the OS or a `secret`
+  global). A type with member variables that keeps its state itself is not a service: a manager hands out a resource,
+  takes it back and answers for its end, and an emitter (a record) reads a source and gives the next value each time.
+  `Channel[T]` mixes (it keeps waiting values, `receive` waits for another thread). No `Service` suffix; `Manager`
+  stays; no annotation, no builder check.
 - Handing over is written with `steal`. `steal a as b` hands what the place `a` holds over to a new place `b`, and an
   argument is handed over with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
   what a field holds into a new place `old` and leaves the field hollow: reading it before a value is put back
