@@ -59,7 +59,8 @@ routine @InterruptManagerByGic.start() -> None
     me.register(at: me.cpu_interface.peek(), offset: 0x004).poke_volatile(0xFF)
     me.register(at: me.cpu_interface.peek(), offset: 0x000).poke_volatile(1)
     RUNNING_GIC.store(me.to[Addr]())
-    me.before.poke(CpuEventManager.when_interrupt_requested(gic_interrupt.to[Callable]()))
+    me.before.poke(try CpuEventManager.holder(CpuEventKind.INTERRUPT))
+    CpuEventManager.when_interrupt_requested(gic_interrupt.to[Callable]())
     return
 
 ### Turns the controller off and puts the handler that held the CpuEventManager's interrupt slot before `start` back.
@@ -74,19 +75,30 @@ routine @InterruptManagerByGic.stop() -> None
 ### Puts `holder` in the slot of line `line`.
 ### :param line: The line's number, below GIC_LINES.
 ### :param holder: The handler, given the line's number, or None for none.
-### :returns: The handler that held the line before, None for none.
+### The handler that held the line before is `try gic.line_holder(line)`: read it first to put it back later.
 ### :throws: Crashes with `IndexOutOfBoundsError` for a line past GIC_LINES.
 @target(arch: "aarch64", os: "none")
 @track_caller
-routine @InterruptManagerByGic.when_line_raised(line: U32,
-    holder: Callable[(U32,), None]?) -> Callable[(U32,), None]?
+routine @InterruptManagerByGic.when_line_raised(line: U32, holder: Callable[(U32,), None]?) -> None
     slot: @Addr = me.handlers.getslot(line.to[U64]())
-    before: Callable[(U32,), None]? = line_handler_at(slot.peek())
     address: Addr = when holder
         is Callable[(U32,), None] as given => given.addr()
         is None => Addr.zero()
     slot.poke(address)
-    return before
+    return
+
+### The handler that holds the slot of line `line`.
+### :param line: The line's number, below GIC_LINES.
+### :returns: The handler.
+### :throws: Throws `AbsentValueError` when no handler holds the line.
+### :throws: Crashes with `IndexOutOfBoundsError` for a line past GIC_LINES.
+@target(arch: "aarch64", os: "none")
+@track_caller
+routine @InterruptManagerByGic.line_holder(line: U32) -> Callable[(U32,), None]
+    slot: @Addr = me.handlers.getslot(line.to[U64]())
+    when line_handler_at(slot.peek())
+        is Callable[(U32,), None] as held => return held
+        is None => throw AbsentValueError()
 
 ### The line handler at an address a slot of `handlers` holds.
 ### :param at: The address, zero for none.

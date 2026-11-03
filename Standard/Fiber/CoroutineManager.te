@@ -349,10 +349,19 @@ secret routine @CoroutineManager.make_fiber() -> @FiberState
     me.all.poke(fiber.to[Addr]())
     return fiber
 
-### The fiber running this code, if it is one of this manager's, or None: its handle for wake.
+### The fiber running this code, if it is one of this manager's: its handle for wake.
+### :returns: The running fiber's handle.
+### :throws: Throws `AbsentValueError` when this code is not running in one of this manager's fibers.
+@target(os: not "none")
+routine @CoroutineManager.current() -> @FiberState
+    when me.running()
+        is @FiberState as fiber => return fiber
+        is None => throw AbsentValueError()
+
+### The fiber running this code if it is one of this manager's, or None: what `current` throws on.
 ### :returns: The running fiber's handle, or None.
 @target(os: not "none")
-routine @CoroutineManager.current() -> @FiberState?
+secret routine @CoroutineManager.running() -> @FiberState?
     waiter: Waiter = current_waiter()
     if waiter.manager === me
         return waiter.fiber.to[@FiberState?]()
@@ -361,7 +370,7 @@ routine @CoroutineManager.current() -> @FiberState?
 ### Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
 routine @CoroutineManager.yield() -> None
-    running: @FiberState? = me.current()
+    running: @FiberState? = me.running()
 
     if running.is_absent()
         return
@@ -375,7 +384,7 @@ routine @CoroutineManager.yield() -> None
 ### last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 @target(os: not "none")
 routine @CoroutineManager.park() -> None
-    running: @FiberState? = me.current()
+    running: @FiberState? = me.running()
 
     if running.is_absent()
         return
@@ -395,7 +404,7 @@ routine @CoroutineManager.park() -> None
 ### :param deadline: When the fiber goes on without a wake.
 @target(os: not "none")
 routine @CoroutineManager.park_until(deadline: Duration) -> None
-    running: @FiberState? = me.current()
+    running: @FiberState? = me.running()
 
     if running.is_absent()
         return
@@ -434,7 +443,7 @@ routine @CoroutineManager.wake(fiber: @FiberState) -> None
 @target(os: not "none")
 routine @CoroutineManager.waitfor(duration: Duration) -> None
     deadline: Duration = Clock.monotonic() +^ duration
-    running: @FiberState? = me.current()
+    running: @FiberState? = me.running()
 
     if running.is_absent()
         sleep_thread(deadline)
@@ -495,7 +504,7 @@ secret routine @CoroutineManager.wake_word() -> @U32
 @target(os: not "none")
 routine @CoroutineManager.run_blocking[T](work: Callable[(@T,), None], arg: @T) -> None
 needs AnyType T
-    if me.current().is_absent()
+    if me.running().is_absent()
         work.call(arg)
         return
     t: Thread[None] <- get_thread[None]()
@@ -868,7 +877,7 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     outer_mold: Addr = RUNNING_MOLD.load()
     RUNNING_MOLD.store(fiber.mold.peek())
     # The AccessManager sees the fiber as the flow running here while it runs.
-    outer_flow: @(@AccessFlow?)? = AccessManager.switch_flow(fiber.access)
+    outer_flow: Addr = AccessManager.switch_flow(fiber.access.to[Addr]())
     # The running flow's StackManager is the fiber's while it runs.
     outer_stack: Addr = RUNNING_STACK.load()
     RUNNING_STACK.store(fiber.stack.to[Addr]())
