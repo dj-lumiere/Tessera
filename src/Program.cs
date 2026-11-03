@@ -520,6 +520,7 @@ static class Cli
             IngridDir = IngridDir(),
             LinkArguments = linkArguments ?? [],
             FramePointers = framePointers,
+            KeepCallablesPlain = !executable,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
         compiler.SetCrashMessageSize(crashMessageSize);

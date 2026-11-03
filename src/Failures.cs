@@ -524,6 +524,37 @@ public sealed partial class Compiler
 
     private bool _ticketsKeep;
 
+    /// The type of a routine's parameter in `env`. A `Callable` parameter of the program's own routine that the routine keeps (writes
+    /// into a field or a collection, hands to a record) is open to any failure, as the place it goes to is: the caller makes the
+    /// routine value for it.
+    public DType ResolveParam(RoutineDecl r, Param p, TypeEnv env)
+    {
+        var t = ResolveType(p.Type, env);
+        return t is CallableType { Failable: false } && KeptCallableParam(r, p) ? OpenCallable(t, false) : t;
+    }
+
+    private readonly Dictionary<(RoutineDecl, string), bool> _keptParams = new();
+
+    private bool KeptCallableParam(RoutineDecl r, Param p)
+    {
+        if (KeepCallablesPlain || r.IsLibrary || r.Blocks is null || r.AnnotationNamed("export") is not null || r.AnnotationNamed("external") is not null
+            || p.Type is not { Name: "Callable", Path: null, Question: false, Amp: false })
+            return false;
+        if (_keptParams.TryGetValue((r, p.Name), out var known)) return known;
+        int uses = 0;
+        bool address = false;
+        foreach (var b in r.Blocks)
+            foreach (var st in Bodies.All(b.Stmts))
+                foreach (var top in Bodies.Exprs(st))
+                    foreach (var e in ExprTree.All(top))
+                    {
+                        if (e is ValueRef v && v.Name == p.Name) uses++;
+                        if (e is MethodCallExpr { Name: "addr", Receiver: ValueRef addressed } && addressed.Name == p.Name) address = true;
+                    }
+        // One that is only called, or put on a ticket, is built for the value it is given; one C gets the address of stays plain.
+        return _keptParams[(r, p.Name)] = uses > 0 && !address && !OnlyCalledOrTicketed(r, p.Name);
+    }
+
     private bool OnlyCalled(RoutineDecl r, string name, HashSet<(RoutineDecl, string)> judging)
     {
         // A routine that reaches itself is judged by its other uses.

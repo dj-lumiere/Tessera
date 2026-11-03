@@ -185,7 +185,7 @@ public sealed partial class Compiler
         foreach (var p in r.Params)
         {
             // A `failable Callable` parameter is the routine value it was given in this instance.
-            var t = env.Get(FailingParamKey(p.Name)) ?? ResolveType(p.Type, env);
+            var t = env.Get(FailingParamKey(p.Name)) ?? ResolveParam(r, p, env);
             ps.Add(t);
         }
         CheckReceiver(r, env, ps);

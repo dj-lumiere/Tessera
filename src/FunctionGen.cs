@@ -3075,6 +3075,12 @@ public sealed partial class FunctionGen
         };
     }
 
+    /// Whether the routine value `arg` (a routine named there, or a name bound to one) goes where a Callable open to failures is
+    /// expected: the value there is made in the form that place holds.
+    private bool OpenFits(Expr arg, DType actual, DType expected) =>
+        expected is CallableType { IsOpen: true } open && actual is CallableType given && given.Plain.Equals(open.Plain)
+        && (given.Failable || arg is RoutineRef || arg is ValueRef { Name: var name } && _routineBindings.ContainsKey(name));
+
     /// Why a ticket or a piece of work whose entry can fail doesn't go where its type is written without that list (or
     /// with a list that lacks some of it): null when that isn't what differs.
     internal static string? FailuresMisfit(DType actual, DType expected)
@@ -3112,7 +3118,10 @@ public sealed partial class FunctionGen
             : ArgumentMismatch(argument, actual.ToString() ?? "", parameter);
 
     private static string FailingNote(CallableType given, CallableType wanted) =>
-        given.Failable != wanted.Failable
+        wanted.IsOpen && !given.Failable
+            ? "the place keeps a Callable open to any failure, and this one is a plain Callable that arrives from elsewhere: "
+                + "make the routine value where it is kept (f.to[Callable]()), or in a name bound to it in the same routine"
+            : given.Failable != wanted.Failable
             ? (given.Failable
                 ? "the argument may fail (it can throw " + string.Join(", ", given.Throws.Select(t => t.Name)) + ") and the parameter's type does not allow a failure"
                 : "the parameter's type allows a failure and the argument does not fail")
@@ -5688,9 +5697,10 @@ public sealed partial class FunctionGen
                         return No($"argument {i + 1}: a {shaped} can't be a {p}");
                     continue;
                 }
-                var pt = _c.ResolveType(p, env);
+                var pt = _c.ResolveParam(r, r.Params[i + first], env);
                 if (InferQuiet(args[i]) is { } at)
                 {
+                    if (OpenFits(args[i], at, pt)) continue;
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt) || PresetViews(args[i], at, pt)) preferred = false;

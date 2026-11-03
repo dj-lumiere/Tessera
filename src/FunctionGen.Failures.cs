@@ -446,6 +446,8 @@ public sealed partial class FunctionGen
             return given.Equals(declared) ? null : given;
         if (given is not CallableType value || declared is not CallableType wanted || !value.Plain.Equals(wanted.Plain))
             return null;
+        // A parameter the routine keeps is open to any failure: the value goes in as it is.
+        if (wanted.IsOpen) return null;
         if (wanted.Failable)
         {
             if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
@@ -485,8 +487,9 @@ public sealed partial class FunctionGen
             var param = r.Params[i + offset];
             if (plan.Env.Has(Compiler.FailingParamKey(param.Name)) || param.Type.Name is not ("Callable" or "Check")) continue;
             DType declared;
-            try { declared = _c.ResolveType(param.Type, plan.Env); }
+            try { declared = _c.ResolveParam(r, param, plan.Env); }
             catch (CompileError) { continue; }
+            if (declared is CallableType { IsOpen: true }) continue;
             if (plan.Args[i] is LambdaExpr lambda && declared is CallableType { Failable: true } open)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), FailableLambdaType(lambda, open));
             else if (plan.Args[i] is RoutineRef named && declared is CallableType { Failable: true } wantsFailing

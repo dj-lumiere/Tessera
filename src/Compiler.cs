@@ -27,6 +27,10 @@ public sealed partial class Compiler
     /// `ExposedSymbols` after `Generate`, the set the delta passes as `ProvidedSymbols`.
     public bool ExposeDefinitions { get; init; }
 
+    /// Set for a package built as a library (no executable): C and other builds call the Callables it holds and fill them, so
+    /// the ones it keeps in fields and collections stay plain instead of open to failures.
+    public bool KeepCallablesPlain { get; init; }
+
     /// Builds the delta of a split program: the symbols the base defines (its `ExposedSymbols`). A routine instance or a
     /// global whose symbol is here is declared, not defined, so this module links against the base's. The two modules
     /// must come from the same library and the same target.
@@ -1590,7 +1594,7 @@ public sealed partial class Compiler
     /// its plain Callables, which C and the runtime call.
     public DType OpenCallable(DType t, bool library)
     {
-        if (library) return t;
+        if (library || KeepCallablesPlain) return t;
         if (t is VariantType { IsOptional: true, Args: [CallableType inner] } optional && OpenCallable(inner, false) is var opened && !ReferenceEquals(opened, inner))
             return new VariantType(optional.Decl, [opened], VariantBranches);
         return t is CallableType { Failable: false, CallConv: "default" } plain
