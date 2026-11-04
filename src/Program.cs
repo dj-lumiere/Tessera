@@ -501,7 +501,7 @@ static class Cli
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
-        bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
+        bool? deadlockCheck = null, bool? accessOrder = null, int? crashMessageSize = null,
         TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false)
     {
         var inputs = files.ToList();
@@ -524,7 +524,7 @@ static class Cli
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
         compiler.SetCrashMessageSize(crashMessageSize);
-        compiler.SetAccessChecks(deadlockCheck ?? mode.DeadlockCheckedByDefault(), accessOrder);
+        compiler.SetAccessChecks(deadlockCheck, mode.DeadlockCheckedByDefault(), accessOrder);
         string ir = compiler.Generate();
         destructs?.Write(compiler.ShownDestructs());
         if (lint) Lint(decls, inputs, [compiler]);
@@ -1248,7 +1248,7 @@ static class Cli
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
                 raceCheck: race, traceFrames: manifest?.TraceFrames,
                 failureTraces: manifest?.FailureTraces, 
-                deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
+                deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder,
                 crashMessageSize: manifest?.CrashMessageSize, destructs: destructs,
                 linkArguments: manifest is null ? null : LibraryArguments(manifest));
         }

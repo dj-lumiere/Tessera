@@ -105,7 +105,7 @@ public sealed record Manifest(
 
     /// `[debug] access-order`: whether two accesses taken in opposite orders stop the program. Off unless the
     /// manifest turns it on.
-    public bool AccessOrder { get; init; }
+    public bool? AccessOrder { get; init; }
 
     /// `[debug] trace-frames`: the frames a crash trace and a failure's trace keep (a power of two), or null for 32.
     public int? TraceFrames { get; init; }
@@ -263,7 +263,7 @@ public sealed record Manifest(
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheckSetting = Bool(debug, "race-check", path),
             DeadlockCheck = Bool(debug, "deadlock-check", path),
-            AccessOrder = Bool(debug, "access-order", path) ?? false,
+            AccessOrder = Bool(debug, "access-order", path),
             TraceFrames = TraceSize(debug, "trace-frames", path, powerOfTwo: true),
             FailureTraces = TraceSize(debug, "failure-traces", path, powerOfTwo: false),
             CrashMessageSize = MessageSize(Section(root, "crash", path), path),

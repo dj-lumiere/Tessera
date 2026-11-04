@@ -1385,42 +1385,66 @@ public sealed partial class Compiler
         }
     }
 
+    /// Writes `value` into the standard library's preset `name`, which a manifest key sets. A key the manifest gives
+    /// (`required`) fails the build when the library has no such preset or declares it with another type than
+    /// `type`: the key would otherwise do nothing and say nothing.
+    /// :param name: The preset's name.
+    /// :param type: The type the preset must be declared with.
+    /// :param key: The manifest key that sets it, as the error names it (`[debug] deadlock-check`).
+    /// :param required: Whether the manifest gave the key.
+    internal void SetLibraryPreset(string name, string type, long value, string key, bool required)
+    {
+        var library = _presets.TryGetValue(("", name), out var list)
+            ? Enumerable.Range(0, list.Count).Where(i => list[i] is { IsLibrary: true, Value: not null }).ToList()
+            : [];
+        if (library.Count == 0)
+        {
+            if (required)
+                throw new ManifestError("config.toml",
+                    $"the key {key} sets the standard library's preset {name}, and the library has no preset with that name");
+            return;
+        }
+        foreach (int i in library)
+        {
+            if (list![i].Type.Name != type || list[i].Type.Args.Count != 0)
+            {
+                if (required)
+                    throw new ManifestError("config.toml",
+                        $"the key {key} sets the standard library's preset {name}, which is declared {list[i].Type.Name}, not {type}");
+                return;
+            }
+        }
+        foreach (int i in library) list![i] = list[i] with { Value = new IntLit(value, list[i].Value!.Pos) };
+    }
+
     /// Sets the trace sizes the manifest gives (`[debug] trace-frames`, `failure-traces`): the standard library's
     /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.te). Null keeps a size as the library has it.
     public void SetTraceSizes(int? frames, int? failures)
     {
-        void Set(string name, int? value)
+        if (frames is { } f)
         {
-            if (value is not { } n || !_presets.TryGetValue(("", name), out var list)) return;
-            for (int i = 0; i < list.Count; i++)
-                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(n, old.Pos) };
+            SetLibraryPreset("TRACE_CAPACITY", "U64", f, "[debug] trace-frames", required: true);
+            SetLibraryPreset("FAILURE_FRAMES", "U64", f, "[debug] trace-frames", required: true);
         }
-        Set("TRACE_CAPACITY", frames);
-        Set("FAILURE_FRAMES", frames);
-        Set("FAILURE_TRACES", failures);
+        if (failures is { } n) SetLibraryPreset("FAILURE_TRACES", "U64", n, "[debug] failure-traces", required: true);
     }
 
     /// Sets the size of the Crash service's message buffer the manifest gives (`[crash] message-size`): the standard
     /// library's CRASH_MESSAGE_SIZE (Crash.te). Null keeps the library's.
     public void SetCrashMessageSize(int? bytes)
     {
-        if (bytes is not { } n || !_presets.TryGetValue(("", "CRASH_MESSAGE_SIZE"), out var list)) return;
-        for (int i = 0; i < list.Count; i++)
-            if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(n, old.Pos) };
+        if (bytes is { } n) SetLibraryPreset("CRASH_MESSAGE_SIZE", "U64", n, "[crash] message-size", required: true);
     }
 
     /// Sets the AccessManager's checks the manifest or the mode gives: the standard library's DEADLOCK_CHECK
-    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.te).
-    public void SetAccessChecks(bool deadlockCheck, bool accessOrder)
+    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.te). A check the
+    /// manifest leaves out (null) takes the mode's default for the deadlock check and stays as the library has it for
+    /// the order check, and a program that doesn't link the AccessManager has neither preset.
+    public void SetAccessChecks(bool? deadlockCheck, bool deadlockDefault, bool? accessOrder)
     {
-        void Set(string name, bool value)
-        {
-            if (!_presets.TryGetValue(("", name), out var list)) return;
-            for (int i = 0; i < list.Count; i++)
-                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(value ? 1 : 0, old.Pos) };
-        }
-        Set("DEADLOCK_CHECK", deadlockCheck);
-        Set("ACCESS_ORDER", accessOrder);
+        SetLibraryPreset("DEADLOCK_CHECK", "U8", (deadlockCheck ?? deadlockDefault) ? 1 : 0, "[debug] deadlock-check",
+            required: deadlockCheck is not null);
+        if (accessOrder is { } order) SetLibraryPreset("ACCESS_ORDER", "U8", order ? 1 : 0, "[debug] access-order", required: true);
     }
 
     /// Whether a routine has type parameters, its own or its owner's.
