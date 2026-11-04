@@ -44,7 +44,7 @@ public sealed partial class Compiler
         {
             for (int i = 0; i < fields.Count; i++)
                 if (s.Decl.Fields[i].AnnotationNamed("aligned") is { } a)
-                    throw new CompileError(a.Pos, "@aligned has no place in a @layout(dense) record: its fields have no padding");
+                    throw new CompileError(Li.LayoutProblem, a.Pos, "@aligned has no place in a @layout(dense) record: its fields have no padding");
             long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.AnnotationNamed("layout")!.Pos, "@layout(align: N)", env).Align;
             var denseMembers = fields.Select(f => new Member(f.Type, 0)).ToList();
             if (KeepsStamp(s)) denseMembers.Add(new Member(IntType.U(32), 0));
@@ -57,7 +57,7 @@ public sealed partial class Compiler
         {
             if (s.Decl.Fields[i].AnnotationNamed("aligned") is { } fieldAlign)
             {
-                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "@aligned takes one buildtime integer");
+                if (fieldAlign.Args is not [var arg]) throw new CompileError(Li.LayoutProblem, fieldAlign.Pos, "@aligned takes one buildtime integer");
                 members.Add(AlignMember(arg, fieldAlign.Pos, "@aligned", env));
             }
             index[i] = members.Count;
@@ -73,7 +73,7 @@ public sealed partial class Compiler
     private static (bool Dense, AnnotationArg? Align) LayoutOf(RecordDecl d)
     {
         if (d.AnnotationNamed("aligned") is { } misplaced)
-            throw new CompileError(misplaced.Pos, "@aligned goes on a field; a record's own alignment is @layout(align: N)");
+            throw new CompileError(Li.LayoutProblem, misplaced.Pos, "@aligned goes on a field; a record's own alignment is @layout(align: N)");
         if (d.AnnotationNamed("layout") is not { } layout) return (false, null);
         return layout.Args switch
         {
@@ -82,8 +82,8 @@ public sealed partial class Compiler
             [{ Key: null, Value: "dense" }, { Key: "align" } align] => (true, align),
             [{ Key: "align" } align, { Key: null, Value: "dense" }] => (true, align),
             [{ Key: null, Value: "std140" or "std430" } planned] =>
-                throw new CompileError(layout.Pos, $"@layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
-            _ => throw new CompileError(layout.Pos,
+                throw new CompileError(Li.LayoutProblem, layout.Pos, $"@layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
+            _ => throw new CompileError(Li.LayoutProblem, layout.Pos,
                 "@layout takes dense, align: N (a power of two), or both; std140 and std430 are planned"),
         };
     }
@@ -113,11 +113,11 @@ public sealed partial class Compiler
             : new PresetRef(null, arg.Value, pos));
         long align = EvalConstInt(expr, env, 0);
         if (align < 1 || (align & (align - 1)) != 0)
-            throw new CompileError(pos, $"{what} needs a power of two, got {align}");
+            throw new CompileError(Li.LayoutProblem, pos, $"{what} needs a power of two, got {align}");
         // The member's vector type must have exactly this alignment on the target.
         long vectorAlign = Layout(pos).VectorAlign(align * 8);
         if (vectorAlign != align)
-            throw new CompileError(pos, $"alignment {align} isn't supported on {Target.LlvmTriple}");
+            throw new CompileError(Li.LayoutProblem, pos, $"alignment {align} isn't supported on {Target.LlvmTriple}");
         return new Member(null, align);
     }
 
@@ -160,7 +160,7 @@ public sealed partial class Compiler
                 return SizeAlign(new PtrType(null), pos);
             case VariantType v:
             {
-                if (!_sizing.Add(v.Key)) throw new CompileError(pos, $"{v} contains itself");
+                if (!_sizing.Add(v.Key)) throw new CompileError(Li.RecursiveValueRecord, pos, $"{v} contains itself");
                 try
                 {
                     var (tagSize, tagAlign) = v.IsFlagged ? (1L, 1L) : Layout(pos).Int(VariantType.Tag.Bits);
@@ -176,7 +176,7 @@ public sealed partial class Compiler
             }
             case RecordType s when s.Decl.AnnotationNamed("llvm") is null:
             {
-                if (!_sizing.Add(s.Key)) throw new CompileError(pos, $"{s} contains itself");
+                if (!_sizing.Add(s.Key)) throw new CompileError(Li.RecursiveValueRecord, pos, $"{s} contains itself");
                 try
                 {
                     var shape = Shape(s);
@@ -201,7 +201,7 @@ public sealed partial class Compiler
                 }
             }
             default:
-                throw new CompileError(pos, $"the size of {t} isn't known at build time");
+                throw new CompileError(Li.LayoutProblem, pos, $"the size of {t} isn't known at build time");
         }
     }
 
@@ -224,7 +224,7 @@ public sealed class DataLayout
     {
         if (Cache.TryGetValue(target.LlvmTriple, out var cached)) return cached;
         string text = Query(target.LlvmTriple).GetAwaiter().GetResult()
-                      ?? throw new CompileError(pos, $"cannot get the data layout for {target.LlvmTriple} from clang");
+                      ?? throw new CompileError(Li.LayoutProblem, pos, $"cannot get the data layout for {target.LlvmTriple} from clang");
         return Cache.GetOrAdd(target.LlvmTriple, Parse(text));
     }
 

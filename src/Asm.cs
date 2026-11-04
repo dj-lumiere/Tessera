@@ -86,7 +86,7 @@ internal sealed class AsmLowering
         _sig = sig;
         _r = sig.Decl;
         if (_r.AnnotationNamed("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false, Values: null or { Count: 1 } }))
-            throw new CompileError(_r.Pos,
+            throw new CompileError(Li.AsmRoutineForm, _r.Pos,
                 $"assembly belongs to one architecture: give '{_r.DisplayName}' @target(arch: \"{c.Target.Arch}\")");
         _arch = c.Target.Arch switch
         {
@@ -94,7 +94,7 @@ internal sealed class AsmLowering
             "aarch64" => Arch.A64,
             "arm" => Arch.Arm,
             "riscv64" or "riscv32" => Arch.Rv,
-            var other => throw new CompileError(_r.Pos,
+            var other => throw new CompileError(Li.AsmRoutineForm, _r.Pos,
                 $"assembly is written for x86_64, aarch64, arm, riscv64 and riscv32; '{_r.DisplayName}' is built for {other}"),
         };
         _paramOutput = new int[_r.Params.Count];
@@ -122,7 +122,7 @@ internal sealed class AsmLowering
                 var reg = ParamRegister(i);
                 string name = LlvmName(reg, t);
                 if (_fixedOutputs.ContainsKey(name))
-                    throw new CompileError(placed.Pos, $"two parameters arrive in {Shown(reg)}");
+                    throw new CompileError(Li.AsmRegisterClash, placed.Pos, $"two parameters arrive in {Shown(reg)}");
                 _paramOutput[i] = AddOutput($"={{{name}}}", t);
                 _fixedOutputs[name] = _paramOutput[i];
             }
@@ -142,7 +142,7 @@ internal sealed class AsmLowering
                 _fixedOutputs[name] = index;
             }
             else if (!_outputs[index].Type.Equals(item.Type))
-                throw new CompileError(_r.Pos, $"{Shown(item.Reg)} is both {_outputs[index].Type} and {item.Type}");
+                throw new CompileError(Li.AsmRegisterClash, _r.Pos, $"{Shown(item.Reg)} is both {_outputs[index].Type} and {item.Type}");
             resultOutputs.Add(index);
         }
 
@@ -150,7 +150,7 @@ internal sealed class AsmLowering
         // A system register changes on its own (a counter, a random number) or writing it changes the machine, so the
         // optimizer may never merge, drop or move the routine as @pure or @readonly would let it.
         if (_systemRegister is { } sys && (_r.AnnotationNamed("pure") ?? _r.AnnotationNamed("readonly")) is { } weaker)
-            throw new CompileError(weaker.Pos,
+            throw new CompileError(Li.AsmInstruction, weaker.Pos,
                 $"'{_r.DisplayName}' names the system register {sys.Name} (line {sys.Pos.Line}), whose value changes on its "
                 + $"own or whose writing changes the machine, so it keeps its side effects: drop @{weaker.Name}");
         return new AsmPlan(text, _arch == Arch.X86, _outputs, inputs, Clobbers(), resultOutputs,
@@ -171,29 +171,29 @@ internal sealed class AsmLowering
             var p = _r.Params[i];
             var cls = ClassOf(_sig.Params[i], p.Pos);
             if (_sig.Params[i].Repr is VectorType)
-                throw new CompileError(p.Pos, "a @naked routine takes integers, pointers and floats, which arrive in registers");
-            if (_arch == Arch.Arm && cls != RegClass.Gpr) throw new CompileError(p.Pos, ArmNakedFloats);
+                throw new CompileError(Li.AsmNaked, p.Pos, "a @naked routine takes integers, pointers and floats, which arrive in registers");
+            if (_arch == Arch.Arm && cls != RegClass.Gpr) throw new CompileError(Li.AsmNaked, p.Pos, ArmNakedFloats);
             var abi = cls == RegClass.Gpr ? ArgRegister(true, ints++, i, p.Pos) : ArgRegister(false, floats++, i, p.Pos);
             if (p.Register is not { } placed)
-                throw new CompileError(p.Pos,
+                throw new CompileError(Li.AsmNaked, p.Pos,
                     $"a @naked routine names where each parameter arrives: {p.Name}: {_sig.Params[i]} = {abi.Written}");
             var reg = ParamRegister(i);
             if (reg.Class != abi.Class || reg.Index != abi.Index)
-                throw new CompileError(placed.Pos,
+                throw new CompileError(Li.AsmInstruction, placed.Pos,
                     $"{_c.Target.Arch}-{_c.Target.Os}'s calling convention passes {p.Name} in {Shown(abi)}, not {Shown(reg)}: "
                     + $"{p.Name}: {_sig.Params[i]} = {abi.Written}");
         }
         foreach (var item in results)
         {
             if (item.Reg is null)
-                throw new CompileError(_r.Pos, "a @naked routine returns in the convention's result register, not a parameter's");
+                throw new CompileError(Li.AsmNaked, _r.Pos, "a @naked routine returns in the convention's result register, not a parameter's");
             bool isInt = ClassOf(item.Type, _r.Pos) == RegClass.Gpr;
-            if (!isInt && _arch == Arch.Arm) throw new CompileError(_r.Pos, ArmNakedFloats);
+            if (!isInt && _arch == Arch.Arm) throw new CompileError(Li.AsmNaked, _r.Pos, ArmNakedFloats);
             var abi = new Reg(isInt ? RegClass.Gpr : _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
                 _arch == Arch.Rv ? 10 : 0, "");
             abi = abi with { Written = WrittenName(abi) };
             if (results.Count > 1 || item.Reg.Class != abi.Class || item.Reg.Index != abi.Index)
-                throw new CompileError(_r.Pos, $"a @naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
+                throw new CompileError(Li.AsmNaked, _r.Pos, $"a @naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
         }
     }
 
@@ -217,7 +217,7 @@ internal sealed class AsmLowering
             _ => 8,
         };
         if (index >= count)
-            throw new CompileError(pos, "this parameter goes on the stack, and a @naked routine reads only parameters in registers");
+            throw new CompileError(Li.AsmNaked, pos, "this parameter goes on the stack, and a @naked routine reads only parameters in registers");
         var reg = (_arch, integer) switch
         {
             (Arch.X86, true) => new Reg(RegClass.Gpr, windows ? win64[index] : sysV[index], ""),
@@ -244,22 +244,22 @@ internal sealed class AsmLowering
     private void CheckDeclaration()
     {
         if (_r.TypeParams.Count != 0)
-            throw new CompileError(_r.Pos, $"an assembly routine takes no type parameters, and '{_r.DisplayName}' has some");
+            throw new CompileError(Li.AsmRoutineForm, _r.Pos, $"an assembly routine takes no type parameters, and '{_r.DisplayName}' has some");
         if (_r.AnnotationNamed("pure") is not null && _r.AnnotationNamed("readonly") is not null)
-            throw new CompileError(_r.Pos, "@pure already touches no memory; @readonly says less, so write one of them");
+            throw new CompileError(Li.AsmRoutineForm, _r.Pos, "@pure already touches no memory; @readonly says less, so write one of them");
         if (_naked)
         {
             foreach (var name in new[] { "clobbers", "pure", "readonly", "inline", "callconv" })
                 if (_r.AnnotationNamed(name) is { } a)
-                    throw new CompileError(a.Pos, name == "inline"
+                    throw new CompileError(Li.AsmNaked, a.Pos, name == "inline"
                         ? "a @naked routine is called, never put in place"
                         : $"a @naked routine keeps the C calling convention by itself, so it takes no @{name}");
         }
         else if (_r.AnnotationNamed("inline") is not null || _r.AnnotationNamed("noinline") is not null || _r.AnnotationNamed("export") is not null)
-            throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no routine body to inline, keep, or export");
+            throw new CompileError(Li.AsmRoutineForm, _r.Pos, "an assembly routine is put in place at each call; it has no routine body to inline, keep, or export");
         foreach (var b in _r.Blocks!)
             if (b.Params.Count != 0)
-                throw new CompileError(b.Pos, "an assembly block takes no parameters: registers carry values from block to block");
+                throw new CompileError(Li.AsmBlock, b.Pos, "an assembly block takes no parameters: registers carry values from block to block");
     }
 
     // ── Registers ───────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ internal sealed class AsmLowering
     {
         var r = TryRegister(name);
         if (r is null)
-            throw new CompileError(pos, SystemName(name) switch
+            throw new CompileError(Li.AsmInstruction, pos, SystemName(name) switch
             {
                 AsmSystemNames.Kind.Register => $"{name} is a system register, which only an instruction reads or writes "
                                                 + $"({SystemExample}): read it into a general register first",
@@ -286,7 +286,7 @@ internal sealed class AsmLowering
                 },
             });
         if (_arch == Arch.A64 && r is { Class: RegClass.Gpr, Index: 31 })
-            throw new CompileError(pos, "aarch64's x31 is the stack pointer in some instructions and the zero register in others: write SP or ZERO");
+            throw new CompileError(Li.AsmMemoryOperand, pos, "aarch64's x31 is the stack pointer in some instructions and the zero register in others: write SP or ZERO");
         return r;
     }
 
@@ -390,11 +390,11 @@ internal sealed class AsmLowering
     private Reg ParamRegister(int param)
     {
         var placed = _r.Params[param].Register!;
-        if (placed.Escaped) throw new CompileError(placed.Pos, $"a register is a bare name, not `{placed.Text}`");
+        if (placed.Escaped) throw new CompileError(Li.AsmRegisterClash, placed.Pos, $"a register is a bare name, not `{placed.Text}`");
         var reg = Register(placed.Text, placed.Pos);
         var cls = ClassOf(_sig.Params[param], _r.Params[param].Pos);
         if (reg.Class != cls || IsStackOrZero(reg) || reg.Class is RegClass.Sp or RegClass.Zero)
-            throw new CompileError(placed.Pos, $"{_r.Params[param].Name} is {_sig.Params[param]}, which can't arrive in {Shown(reg)}");
+            throw new CompileError(Li.AsmRegisterClash, placed.Pos, $"{_r.Params[param].Name} is {_sig.Params[param]}, which can't arrive in {Shown(reg)}");
         return reg;
     }
 
@@ -404,19 +404,19 @@ internal sealed class AsmLowering
         IntType or BoolType or PtrType or CallableType => RegClass.Gpr,
         FloatType => _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
         VectorType => RegClass.Vec,
-        _ => throw new CompileError(pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
+        _ => throw new CompileError(Li.AsmInstruction, pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
     };
 
     /// 32-bit ARM's register class for a value: a general register holds up to 32 bits, an S register a B32 (or an
     /// B16), a D register a B64 or a 64-bit vector.
     private RegClass ArmClassOf(DType t, Pos pos) => t.Repr switch
     {
-        IntType { Bits: > 32 } => throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
+        IntType { Bits: > 32 } => throw new CompileError(Li.AsmRegisterType, pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
         IntType or BoolType or PtrType or CallableType => RegClass.Gpr,
         FloatType { Bits: 16 or 32 } => RegClass.Single,
         FloatType { Bits: 64 } => RegClass.Double,
         VectorType when Bits(t, pos) == 64 => RegClass.Double,
-        _ => throw new CompileError(pos, "an operand on 32-bit ARM is an integer or a pointer of up to 32 bits (an R register), "
+        _ => throw new CompileError(Li.AsmInstruction, pos, "an operand on 32-bit ARM is an integer or a pointer of up to 32 bits (an R register), "
                                          + $"a B32 (an S register), or a B64 or a 64-bit vector (a D register), not {t}"),
     };
 
@@ -427,7 +427,7 @@ internal sealed class AsmLowering
         PtrType or CallableType => _c.CSize.Bits,
         FloatType ft => ft.Bits,
         VectorType vt => checked((int)(Bits(vt.Elem, pos) * vt.Count)),
-        _ => throw new CompileError(pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
+        _ => throw new CompileError(Li.AsmInstruction, pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
     };
 
     /// The constraint letter LLVM places a value of this class in.
@@ -456,7 +456,7 @@ internal sealed class AsmLowering
         (Arch.Rv, RegClass.Gpr) => "x" + r.Index,
         (Arch.Rv, RegClass.Fpr) => "f" + r.Index,
         (Arch.Rv, RegClass.Vec) => "v" + r.Index,
-        _ => throw new CompileError(_r.Pos, $"{r.Written} isn't a register a value can be in"),
+        _ => throw new CompileError(Li.AsmRegisterClash, _r.Pos, $"{r.Written} isn't a register a value can be in"),
     };
 
     /// `RDX=R2`: the architecture's name next to Lapila's, as a build error shows a register.
@@ -477,7 +477,7 @@ internal sealed class AsmLowering
                 return bits switch
                 {
                     8 => X86Names8[r.Index], 16 => X86Names16[r.Index], 32 => X86Names32[r.Index], 64 => X86Names64[r.Index],
-                    _ => throw new CompileError(pos, $"{Shown(r)} holds 8, 16, 32 or 64 bits, not {t}"),
+                    _ => throw new CompileError(Li.AsmRegisterType, pos, $"{Shown(r)} holds 8, 16, 32 or 64 bits, not {t}"),
                 };
             case (Arch.X86, RegClass.Vec):
                 return LlvmName(r, t);
@@ -492,26 +492,26 @@ internal sealed class AsmLowering
             case (Arch.A64, RegClass.Vec):
                 return t.Repr is VectorType vt ? $"v{r.Index}.{Arrangement(vt, pos)}" : $"{ScalarLetter(bits, pos)}{r.Index}";
             case (Arch.Arm, RegClass.Gpr) when bits > 32:
-                throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}");
+                throw new CompileError(Li.AsmRegisterType, pos, $"32-bit ARM's general registers hold 32 bits, not {t}");
             case (Arch.Arm, RegClass.Gpr):
             case (Arch.Arm, RegClass.Single) when bits is 16 or 32:
             case (Arch.Arm, RegClass.Double) when bits == 64:
                 return LlvmName(r, t);
             case (Arch.Arm, RegClass.Single or RegClass.Double):
-                throw new CompileError(pos, $"{Shown(r)} holds {(r.Class == RegClass.Single ? 32 : 64)} bits, not {t}");
+                throw new CompileError(Li.AsmRegisterType, pos, $"{Shown(r)} holds {(r.Class == RegClass.Single ? 32 : 64)} bits, not {t}");
             case (_, RegClass.Pc):
                 return "pc";
             case (Arch.Rv, _):
                 return LlvmName(r, t);
         }
-        throw new CompileError(pos, $"{r.Written} isn't an operand here");
+        throw new CompileError(Li.AsmInstruction, pos, $"{r.Written} isn't an operand here");
     }
 
     /// AArch64's scalar view of a vector register: b, h, s, d or q by width.
     private static string ScalarLetter(int bits, Pos pos) => bits switch
     {
         8 => "b", 16 => "h", 32 => "s", 64 => "d", 128 => "q",
-        _ => throw new CompileError(pos, $"aarch64's vector registers hold 8, 16, 32, 64 or 128 bits as a scalar, not {bits}"),
+        _ => throw new CompileError(Li.AsmRegisterType, pos, $"aarch64's vector registers hold 8, 16, 32, 64 or 128 bits as a scalar, not {bits}"),
     };
 
     /// AArch64's arrangement for a vector type: `Vector[B32, 4]` is `4s`.
@@ -519,7 +519,7 @@ internal sealed class AsmLowering
     {
         int lane = Bits(vt.Elem, pos);
         if (lane * vt.Count is not (64 or 128))
-            throw new CompileError(pos, $"aarch64's vectors are 64 or 128 bits, and {vt} is {lane * vt.Count}");
+            throw new CompileError(Li.AsmRegisterType, pos, $"aarch64's vectors are 64 or 128 bits, and {vt} is {lane * vt.Count}");
         return $"{vt.Count}{ScalarLetter(lane, pos)}";
     }
 
@@ -530,19 +530,19 @@ internal sealed class AsmLowering
         int n = _paramOutput[param];
         var cls = ClassOf(_sig.Params[param], pos);
         if (cls != ClassOf(t, pos) && !(_arch == Arch.X86 && cls == RegClass.Vec))
-            throw new CompileError(pos, $"{_r.Params[param].Name} is in a register for {_sig.Params[param]}, which can't be viewed as {t}");
+            throw new CompileError(Li.AsmRegisterType, pos, $"{_r.Params[param].Name} is in a register for {_sig.Params[param]}, which can't be viewed as {t}");
         int bits = Bits(t, pos);
         return (_arch, cls) switch
         {
             (Arch.X86, RegClass.Gpr) => bits switch
             {
                 8 => $"${{{n}:b}}", 16 => $"${{{n}:w}}", 32 => $"${{{n}:k}}", 64 => $"${{{n}:q}}",
-                _ => throw new CompileError(pos, $"a general register holds 8, 16, 32 or 64 bits, not {t}"),
+                _ => throw new CompileError(Li.AsmRegisterType, pos, $"a general register holds 8, 16, 32 or 64 bits, not {t}"),
             },
             (Arch.X86, _) => bits switch { > 256 => $"${{{n}:g}}", > 128 => $"${{{n}:t}}", _ => $"${{{n}:x}}" },
             (Arch.A64, RegClass.Gpr) => bits <= 32 ? $"${{{n}:w}}" : $"${{{n}:x}}",
             (Arch.A64, _) => t.Repr is VectorType vt ? $"${{{n}}}.{Arrangement(vt, pos)}" : $"${{{n}:{ScalarLetter(bits, pos)}}}",
-            (Arch.Arm, RegClass.Gpr) when bits > 32 => throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
+            (Arch.Arm, RegClass.Gpr) when bits > 32 => throw new CompileError(Li.AsmRegisterType, pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
             _ => $"${{{n}}}",
         };
     }
@@ -550,7 +550,7 @@ internal sealed class AsmLowering
     private int ParamIndex(ValueRef v)
     {
         int i = _r.Params.FindIndex(p => p.Name == v.Name);
-        if (i < 0) throw new CompileError(v.Pos, $"{v.Name} is not a parameter of '{_r.DisplayName}'");
+        if (i < 0) throw new CompileError(Li.AsmInstruction, v.Pos, $"{v.Name} is not a parameter of '{_r.DisplayName}'");
         return i;
     }
 
@@ -577,23 +577,23 @@ internal sealed class AsmLowering
             var items = ResultItems(ret);
             string key = string.Join(",", items.Select(i => i.Reg is null ? $"%{i.Param}" : LlvmName(i.Reg, i.Type)));
             if (foundKey is not null && key != foundKey)
-                throw new CompileError(ret.Pos, "every return of an assembly routine names the same registers");
+                throw new CompileError(Li.AsmRoutineForm, ret.Pos, "every return of an assembly routine names the same registers");
             found = items;
             foundKey = key;
         }
-        return found ?? (_sig.Ret is VoidType ? [] : throw new CompileError(_r.Pos, $"'{_r.DisplayName}' never returns its {_sig.Ret}"));
+        return found ?? (_sig.Ret is VoidType ? [] : throw new CompileError(Li.AsmRegisterClash, _r.Pos, $"'{_r.DisplayName}' never returns its {_sig.Ret}"));
     }
 
     private List<Result> ResultItems(ReturnStmt ret)
     {
         var rt = _sig.Ret;
         if (ret.Value is null)
-            return rt is VoidType ? [] : throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name its register, return(R0)");
-        if (rt is VoidType) throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns nothing: return");
+            return rt is VoidType ? [] : throw new CompileError(Li.AsmReturn, ret.Pos, $"'{_r.DisplayName}' returns {rt}: name its register, return(R0)");
+        if (rt is VoidType) throw new CompileError(Li.AsmReturn, ret.Pos, $"'{_r.DisplayName}' returns nothing: return");
         if (rt is RecordType { IsTuple: true } tuple)
         {
             if (ret.Value is not ArrayLit { IsTuple: true } lit || lit.Elements.Count != tuple.Args.Count)
-                throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return((R0, R2))");
+                throw new CompileError(Li.AsmReturn, ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return((R0, R2))");
             return lit.Elements.Select((e, i) => ResultItem(e, tuple.Args[i])).ToList();
         }
         return [ResultItem(ret.Value, rt)];
@@ -607,18 +607,18 @@ internal sealed class AsmLowering
             {
                 int i = ParamIndex(v);
                 if (!_sig.Params[i].Equals(t))
-                    throw new CompileError(v.Pos, $"{v.Name} is {_sig.Params[i]}, and the result is {t}");
+                    throw new CompileError(Li.AsmReturn, v.Pos, $"{v.Name} is {_sig.Params[i]}, and the result is {t}");
                 return new Result(i, null, t);
             }
             case PresetRef { Owner: null, Path: null } p:
             {
                 var reg = Register(p.Name, p.Pos);
                 if (reg.Class != ClassOf(t, p.Pos) || IsStackOrZero(reg) || reg.Class is RegClass.Sp or RegClass.Zero)
-                    throw new CompileError(p.Pos, $"a result of type {t} can't be in {Shown(reg)}");
+                    throw new CompileError(Li.AsmReturn, p.Pos, $"a result of type {t} can't be in {Shown(reg)}");
                 return new Result(-1, reg, t);
             }
             default:
-                throw new CompileError(e.Pos, "a result is a register (R0) or a parameter's register (a)");
+                throw new CompileError(Li.AsmReturn, e.Pos, "a result is a register (R0) or a parameter's register (a)");
         }
     }
 
@@ -637,8 +637,8 @@ internal sealed class AsmLowering
         foreach (var b in blocks)
         {
             if (!b.Name.All(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_') || b.Name == EndLabel)
-                throw new CompileError(b.Pos, $"an assembly block's name is a label: letters, digits and '_', and not '{EndLabel}'");
-            if (!names.Add(b.Name)) throw new CompileError(b.Pos, $"block '{b.Name}' is declared twice");
+                throw new CompileError(Li.AsmBlock, b.Pos, $"an assembly block's name is a label: letters, digits and '_', and not '{EndLabel}'");
+            if (!names.Add(b.Name)) throw new CompileError(Li.AsmBlock, b.Pos, $"block '{b.Name}' is declared twice");
         }
 
         var lines = new List<string>();
@@ -656,8 +656,8 @@ internal sealed class AsmLowering
                 switch (t)
                 {
                     case JumpStmt j:
-                        if (!names.Contains(j.Block)) throw new CompileError(j.Pos, $"no block named '{j.Block}'");
-                        if (j.Args.Count != 0) throw new CompileError(j.Pos, "an assembly block takes no arguments");
+                        if (!names.Contains(j.Block)) throw new CompileError(Li.AsmBlock, j.Pos, $"no block named '{j.Block}'");
+                        if (j.Args.Count != 0) throw new CompileError(Li.AsmBlock, j.Pos, "an assembly block takes no arguments");
                         return (Label(j.Block), j.Block == next);
                     case ReturnStmt when _naked:
                         endUsed = true;
@@ -666,7 +666,7 @@ internal sealed class AsmLowering
                         endUsed |= next is not null;
                         return (Label(EndLabel), next is null);
                     default:
-                        throw new CompileError(t.Pos, "an assembly block goes to a block or returns");
+                        throw new CompileError(Li.AsmReturn, t.Pos, "an assembly block goes to a block or returns");
                 }
             }
             // A jump to the block that follows is left out, as is a return from the last one.
@@ -677,7 +677,7 @@ internal sealed class AsmLowering
             Stmt OnlyLeave(List<Stmt> body, Pos pos)
             {
                 if (body is not [JumpStmt or ReturnStmt])
-                    throw new CompileError(pos, "an if in an assembly block holds one line: a jump to a block, or a return");
+                    throw new CompileError(Li.AsmBlock, pos, "an if in an assembly block holds one line: a jump to a block, or a return");
                 return body[0];
             }
 
@@ -709,14 +709,14 @@ internal sealed class AsmLowering
                         var taken = OnlyLeave(ifStmt.Then, ifStmt.Pos);
                         if (ifStmt.Else is null)
                         {
-                            if (last) throw new CompileError(ifStmt.Pos, "an assembly block ends with jump or return after an if without else");
+                            if (last) throw new CompileError(Li.AsmBlock, ifStmt.Pos, "an assembly block ends with jump or return after an if without else");
                             var (label, _) = Where(taken);
                             if (label == Label(EndLabel)) endUsed = true;
                             lines.Add(ConditionalJump(ifStmt.Cond, label, negate: false));
                             break;
                         }
                         // The true target is always branched to, even when it follows: the false one is then the jump.
-                        if (!last) throw new CompileError(ifStmt.Pos, "an if with an else ends an assembly block: both sides leave it");
+                        if (!last) throw new CompileError(Li.AsmBlock, ifStmt.Pos, "an if with an else ends an assembly block: both sides leave it");
                         var other = OnlyLeave(ifStmt.Else, ifStmt.Pos);
                         var (takenLabel, _) = Where(taken);
                         if (takenLabel == Label(EndLabel)) endUsed = true;
@@ -726,24 +726,24 @@ internal sealed class AsmLowering
                     }
                     case JumpStmt j:
                         EndItBlock();
-                        if (!last) throw new CompileError(j.Pos, "a jump ends an assembly block: no line follows it");
+                        if (!last) throw new CompileError(Li.AsmBlock, j.Pos, "a jump ends an assembly block: no line follows it");
                         if (JumpText(j) is { } jl) lines.Add($"{Jump()} {jl}");
                         break;
                     case ReturnStmt r when _naked:
                         EndItBlock();
-                        if (!last) throw new CompileError(r.Pos, "a return ends an assembly block: no line follows it");
+                        if (!last) throw new CompileError(Li.AsmBlock, r.Pos, "a return ends an assembly block: no line follows it");
                         lines.Add(Ret());
                         break;
                     case ReturnStmt r:
                         EndItBlock();
-                        if (!last) throw new CompileError(r.Pos, "a return ends an assembly block: no line follows it");
+                        if (!last) throw new CompileError(Li.AsmBlock, r.Pos, "a return ends an assembly block: no line follows it");
                         if (JumpText(r) is { } rl) lines.Add($"{Jump()} {rl}");
                         break;
                     case UnreachableStmt:
                         EndItBlock();
                         break;
                     default:
-                        throw new CompileError(s.Pos, "an assembly block holds instructions, an if that jumps or returns, and ends with jump or return");
+                        throw new CompileError(Li.AsmReturn, s.Pos, "an assembly block holds instructions, an if that jumps or returns, and ends with jump or return");
                 }
             }
             EndItBlock();
@@ -784,12 +784,12 @@ internal sealed class AsmLowering
     private (string Text, string? Condition) Instruction(Stmt s)
     {
         if (s is not ExprStmt es)
-            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add[U64, U64](R0, R3)");
+            throw new CompileError(Li.AsmInstruction, s.Pos, "an assembly body holds instructions, one per line: add[U64, U64](R0, R3)");
         string prefix = "";
         foreach (var a in es.Annotations)
         {
             if (a.Name != "asm_prefix" || a.Args is not [{ Key: null, Negated: false, Expr: null } p] || p.Value.Length == 0)
-                throw new CompileError(a.Pos, "an instruction takes @asm_prefix(\"lock\"), the prefix as the assembler spells it");
+                throw new CompileError(Li.AsmInstruction, a.Pos, "an instruction takes @asm_prefix(\"lock\"), the prefix as the assembler spells it");
             prefix += Escape(p.Value) + " ";
         }
 
@@ -798,11 +798,11 @@ internal sealed class AsmLowering
         (string mnemonic, List<TypeRef> typeArgs, List<Expr> operands) = es.Value switch
         {
             CallExpr { Path: null } c => (c.Name, c.TypeArgs, c.Args),
-            NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns => throw new CompileError(ns.Pos,
+            NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns => throw new CompileError(Li.AsmInstruction, ns.Pos,
                 $"an instruction is written like a routine, its operands in order: {ns.Name}[…]({o.Name}{(ns.Args.Count > 0 ? ", …" : "")})"),
-            MethodCallExpr m => throw new CompileError(m.Pos,
+            MethodCallExpr m => throw new CompileError(Li.AsmInstruction, m.Pos,
                 $"an instruction is written like a routine, its operands in order: {m.Name}[…]({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
-            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add[U64, U64](R0, R3), rdtsc()"),
+            _ => throw new CompileError(Li.AsmInstruction, es.Pos, "an instruction is written like a routine, its operands in order: add[U64, U64](R0, R3), rdtsc()"),
         };
         // A name that is no register and no word of the instruction set is said as that, before the types are counted.
         foreach (var o in operands)
@@ -812,7 +812,7 @@ internal sealed class AsmLowering
         // reads (its size). An immediate, a condition, a system register and a named option take none.
         int wanted = operands.Count(IsTyped);
         if (typeArgs.Count != wanted)
-            throw new CompileError(es.Pos, wanted switch
+            throw new CompileError(Li.AsmInstruction, es.Pos, wanted switch
             {
                 0 => $"'{mnemonic}' has no register operand, so it takes no types",
                 1 => $"'{mnemonic}' has one register operand, so it takes its type: {mnemonic}[U64]",
@@ -858,9 +858,9 @@ internal sealed class AsmLowering
             {
                 var reg = Register(p.Name, p.Pos);
                 if (reg.Class == RegClass.Flags)
-                    throw new CompileError(p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U64]), not as an operand");
+                    throw new CompileError(Li.AsmCondition, p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U64]), not as an operand");
                 if (reg.Class == RegClass.Pc && _arch is not (Arch.A64 or Arch.Arm))
-                    throw new CompileError(p.Pos, "PC is read through offset: PC.offset(8)");
+                    throw new CompileError(Li.AsmMemoryOperand, p.Pos, "PC is read through offset: PC.offset(8)");
                 Name(reg, t, p.Pos);
                 return RegText(reg, t, p.Pos);
             }
@@ -875,7 +875,7 @@ internal sealed class AsmLowering
             case ArrayLit { IsTuple: false } list:
                 return RegisterList(list, t);
             default:
-                throw new CompileError(e.Pos, "an operand is a register, a parameter, an integer literal or a memory operand");
+                throw new CompileError(Li.AsmMemoryOperand, e.Pos, "an operand is a register, a parameter, an integer literal or a memory operand");
         }
     }
 
@@ -884,7 +884,7 @@ internal sealed class AsmLowering
     private string RegisterList(ArrayLit list, DType t)
     {
         if (_arch != Arch.Arm)
-            throw new CompileError(list.Pos, "a register list, { R4, R5, LR }, is 32-bit ARM's");
+            throw new CompileError(Li.AsmInstruction, list.Pos, "a register list, { R4, R5, LR }, is 32-bit ARM's");
         var texts = new List<string>();
         foreach (var item in list.Elements)
         {
@@ -894,7 +894,7 @@ internal sealed class AsmLowering
                 {
                     var reg = Register(p.Name, p.Pos);
                     if (reg.Class == RegClass.Flags)
-                        throw new CompileError(p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U32]), not as an operand");
+                        throw new CompileError(Li.AsmCondition, p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U32]), not as an operand");
                     Name(reg, t, p.Pos);
                     texts.Add(RegText(reg, t, p.Pos));
                     break;
@@ -906,7 +906,7 @@ internal sealed class AsmLowering
                     texts.Add(ParamText(ParamIndex(v), t, v.Pos));
                     break;
                 default:
-                    throw new CompileError(item.Pos, "a register list holds registers and parameters: { R4, R5, LR }");
+                    throw new CompileError(Li.AsmInstruction, item.Pos, "a register list holds registers and parameters: { R4, R5, LR }");
             }
         }
         return "{" + string.Join(", ", texts) + "}";
@@ -923,10 +923,10 @@ internal sealed class AsmLowering
             NsCallExpr { Owner: { Args.Count: 0, Path: null } o, TypeArgs.Count: 0 } ns =>
                 ((Expr?)new PresetRef(null, o.Name, ns.Pos), ns.Name, ns.Args, ns.Pos),
             MethodCallExpr { TypeArgs.Count: 0 } m => (m.Receiver, m.Name, m.Args, m.Pos),
-            _ => throw new CompileError(e.Pos, "a memory operand is built from its base register: R3.offset(8)"),
+            _ => throw new CompileError(Li.AsmMemoryOperand, e.Pos, "a memory operand is built from its base register: R3.offset(8)"),
         };
         BigInteger Literal(Expr x) => x is IntLit l ? l.Value
-            : throw new CompileError(x.Pos, "an offset or a scale is an integer literal");
+            : throw new CompileError(Li.AsmMemoryOperand, x.Pos, "an offset or a scale is an integer literal");
         bool IsBase(Expr x) => x is PresetRef { Owner: null } or ValueRef;
 
         switch (name)
@@ -937,15 +937,15 @@ internal sealed class AsmLowering
             {
                 var m = ReadMemory(inner!);
                 if (m.Offset != 0 || m.Update || m.After)
-                    throw new CompileError(pos, "a memory operand takes one offset");
+                    throw new CompileError(Li.AsmMemoryOperand, pos, "a memory operand takes one offset");
                 return m with { Offset = Literal(args[0]) };
             }
             case "index" when args.Count == 2 && IsBase(inner!):
             {
                 var scale = Literal(args[1]);
                 if (scale != 1 && scale != 2 && scale != 4 && scale != 8)
-                    throw new CompileError(args[1].Pos, "an index's scale is 1, 2, 4 or 8");
-                if (!IsBase(args[0])) throw new CompileError(args[0].Pos, "an index is a register or a parameter");
+                    throw new CompileError(Li.AsmMemoryOperand, args[1].Pos, "an index's scale is 1, 2, 4 or 8");
+                if (!IsBase(args[0])) throw new CompileError(Li.AsmMemoryOperand, args[0].Pos, "an index is a register or a parameter");
                 return new Mem(inner!, args[0], (int)scale, 0, false, false);
             }
             case "after_offset" when args.Count == 1 && IsBase(inner!):
@@ -953,11 +953,11 @@ internal sealed class AsmLowering
             case "update" when args.Count == 0:
             {
                 var m = ReadMemory(inner!);
-                if (m.Update || m.After) throw new CompileError(pos, "a memory operand updates its base once");
+                if (m.Update || m.After) throw new CompileError(Li.AsmRegisterClash, pos, "a memory operand updates its base once");
                 return m with { Update = true };
             }
             default:
-                throw new CompileError(pos, $"'{name}' isn't a memory operand: offset(n), index(reg, scale), after_offset(n), update()");
+                throw new CompileError(Li.AsmMemoryOperand, pos, $"'{name}' isn't a memory operand: offset(n), index(reg, scale), after_offset(n), update()");
         }
     }
 
@@ -969,13 +969,13 @@ internal sealed class AsmLowering
         {
             int i = ParamIndex(v);
             if (ClassOf(_sig.Params[i], v.Pos) != RegClass.Gpr)
-                throw new CompileError(v.Pos, $"{v.Name} is {_sig.Params[i]}, not an address");
+                throw new CompileError(Li.AsmMemoryOperand, v.Pos, $"{v.Name} is {_sig.Params[i]}, not an address");
             return ParamText(i, addr, v.Pos);
         }
         var p = (PresetRef)e;
         var reg = Register(p.Name, p.Pos);
         if (reg.Class is not (RegClass.Gpr or RegClass.Sp or RegClass.Pc or RegClass.Fs or RegClass.Gs))
-            throw new CompileError(p.Pos, $"{Shown(reg)} can't hold an address");
+            throw new CompileError(Li.AsmMemoryOperand, p.Pos, $"{Shown(reg)} can't hold an address");
         Name(reg, addr, p.Pos);
         return reg.Class is RegClass.Fs or RegClass.Gs ? "" : RegText(reg, addr, p.Pos);
     }
@@ -984,7 +984,7 @@ internal sealed class AsmLowering
     {
         var m = ReadMemory(e);
         if ((m.Update || m.After) && _arch is not (Arch.A64 or Arch.Arm))
-            throw new CompileError(e.Pos, "update() and after_offset() are aarch64's and 32-bit ARM's");
+            throw new CompileError(Li.AsmMemoryOperand, e.Pos, "update() and after_offset() are aarch64's and 32-bit ARM's");
         string baseText = AddressText(m.Base);
         string? index = m.Index is null ? null : AddressText(m.Index);
         var off = m.Offset;
@@ -1002,7 +1002,7 @@ internal sealed class AsmLowering
             case Arch.A64 or Arch.Arm:
             {
                 if (index is not null && off != 0)
-                    throw new CompileError(e.Pos, $"{_c.Target.Arch} has no address with both an index and an offset");
+                    throw new CompileError(Li.AsmMemoryOperand, e.Pos, $"{_c.Target.Arch} has no address with both an index and an offset");
                 if (m.After) return $"[{baseText}], #{off}";
                 string inner = index is not null
                     ? m.Scale == 1 ? $"{baseText}, {index}" : $"{baseText}, {index}, lsl #{BitOperations.Log2((uint)m.Scale)}"
@@ -1010,7 +1010,7 @@ internal sealed class AsmLowering
                 return $"[{inner}]{(m.Update ? "!" : "")}";
             }
             default:
-                if (index is not null) throw new CompileError(e.Pos, "RISC-V has no indexed address: add the index first");
+                if (index is not null) throw new CompileError(Li.AsmMemoryOperand, e.Pos, "RISC-V has no indexed address: add the index first");
                 return $"{off}({baseText})";
         }
     }
@@ -1018,7 +1018,7 @@ internal sealed class AsmLowering
     private string X86Size(DType t, Pos pos) => (Bits(t, pos) / 8) switch
     {
         1 => "byte", 2 => "word", 4 => "dword", 8 => "qword", 10 => "tbyte", 16 => "xmmword", 32 => "ymmword", 64 => "zmmword",
-        var n => throw new CompileError(pos, $"x86 has no memory operand of {n} bytes ({t})"),
+        var n => throw new CompileError(Li.AsmMemoryOperand, pos, $"x86 has no memory operand of {n} bytes ({t})"),
     };
 
     // ── Branches ────────────────────────────────────────────────────────────
@@ -1038,18 +1038,18 @@ internal sealed class AsmLowering
                 return jump + (negate ? Opposite(code) : code) + " " + label;
             }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
-                throw new CompileError(cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)");
+                throw new CompileError(Li.AsmCondition, cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
-                throw new CompileError(cond.Pos, "an if on RISC-V compares two registers, written like a call: if lt[U64](R10, R11)");
+                throw new CompileError(Li.AsmCondition, cond.Pos, "an if on RISC-V compares two registers, written like a call: if lt[U64](R10, R11)");
             case CallExpr { Path: null } c when _arch == Arch.Rv:
             {
                 var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
                 if (!Parser.AsmComparisons.Contains(name))
-                    throw new CompileError(pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
+                    throw new CompileError(Li.AsmCondition, pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
                 if (negate)
                     name = name switch { "eq" => "ne", "ne" => "eq", "lt" => "ge", "ge" => "lt", "gt" => "le", _ => "gt" };
                 if (c.Args.Count != 2 || types.Count > 1)
-                    throw new CompileError(pos, $"an if on RISC-V compares two registers: if {name}[U64](R10, R11)");
+                    throw new CompileError(Li.AsmCondition, pos, $"an if on RISC-V compares two registers: if {name}[U64](R10, R11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
                 var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.CSize;
@@ -1066,7 +1066,7 @@ internal sealed class AsmLowering
                 };
             }
             default:
-                throw new CompileError(cond.Pos, _arch == Arch.Rv
+                throw new CompileError(Li.AsmCondition, cond.Pos, _arch == Arch.Rv
                     ? "an if on RISC-V compares two registers: if lt[U64](R10, R11)"
                     : "an if in assembly tests the flags: eq, ne, lt[U64] … or a FLAGS field such as FLAGS.Carry");
         }
@@ -1080,7 +1080,7 @@ internal sealed class AsmLowering
         if (cond is AsmCondExpr c) return FlagCondition(c.Name, Signedness(c.Name, c.Type, c.Pos));
         var f = (PresetRef)cond;
         if (f.Owner!.Args.Count != 0 || f.Owner.Path is not null)
-            throw new CompileError(f.Pos, $"FLAGS.{f.Name} names a flag of the last instruction");
+            throw new CompileError(Li.AsmCondition, f.Pos, $"FLAGS.{f.Name} names a flag of the last instruction");
         return (f.Name, _arch) switch
         {
             ("Carry", Arch.X86) => "c", ("Carry", _) => "cs",
@@ -1088,7 +1088,7 @@ internal sealed class AsmLowering
             ("Sign", Arch.X86) => "s", ("Sign", _) => "mi",
             ("Zero" or "Equal", Arch.X86) => "e", ("Zero" or "Equal", _) => "eq",
             ("Parity", Arch.X86) => "p",
-            _ => throw new CompileError(f.Pos,
+            _ => throw new CompileError(Li.AsmCondition, f.Pos,
                 $"{_c.Target.Arch}'s FLAGS has no {f.Name}: Carry, Overflow, Sign, Zero (Equal){(_arch == Arch.X86 ? ", Parity" : "")}"),
         };
     }
@@ -1099,32 +1099,32 @@ internal sealed class AsmLowering
     private string ConditionOperand(Expr cond) => _arch switch
     {
         Arch.A64 => ConditionCode(cond),
-        Arch.X86 => throw new CompileError(cond.Pos,
+        Arch.X86 => throw new CompileError(Li.AsmInstruction, cond.Pos,
             "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand. An if tests it."),
-        Arch.Arm => throw new CompileError(cond.Pos,
+        Arch.Arm => throw new CompileError(Li.AsmInstruction, cond.Pos,
             "32-bit ARM spells a condition in the mnemonic (moveq, addne), so it isn't an operand. An if tests it."),
-        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)"),
+        _ => throw new CompileError(Li.AsmCondition, cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)"),
     };
 
     private string CompareOperand(Expr e, DType t) => e switch
     {
         PresetRef or ValueRef => Operand(e, t),
-        _ => throw new CompileError(e.Pos, "an if on RISC-V compares registers or parameters"),
+        _ => throw new CompileError(Li.AsmCondition, e.Pos, "an if on RISC-V compares registers or parameters"),
     };
 
     /// Whether an ordered comparison is signed, from its type; null for eq and ne, which need none.
     private bool? Signedness(string name, TypeRef? type, Pos pos)
     {
         if (name is not ("eq" or "ne" or "lt" or "le" or "gt" or "ge"))
-            throw new CompileError(pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
+            throw new CompileError(Li.AsmCondition, pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
         if (type is null)
             return name is "eq" or "ne" ? null
-                : throw new CompileError(pos, $"'{name}' compares in order, so it takes a type for the signedness: {name}[S64] or {name}[U64]");
+                : throw new CompileError(Li.AsmCondition, pos, $"'{name}' compares in order, so it takes a type for the signedness: {name}[S64] or {name}[U64]");
         return _c.ResolveType(type, _sig.Env).Repr switch
         {
             IntType { Kind: IntKind.Signed } => true,
             IntType or PtrType => false,
-            var t => throw new CompileError(pos, $"a comparison's type is an integer type, not {t}"),
+            var t => throw new CompileError(Li.AsmCondition, pos, $"a comparison's type is an integer type, not {t}"),
         };
     }
 
@@ -1172,19 +1172,19 @@ internal sealed class AsmLowering
             foreach (var a in annotation.Args)
             {
                 if (a.Key is not null || a.Negated || a.Expr is not null)
-                    throw new CompileError(annotation.Pos, "@clobbers lists registers, FLAGS and MEMORY: @clobbers(R2, FLAGS)");
+                    throw new CompileError(Li.AsmCondition, annotation.Pos, "@clobbers lists registers, FLAGS and MEMORY: @clobbers(R2, FLAGS)");
                 if (a.Value == "MEMORY") { Add("~{memory}"); continue; }
                 if (a.Value == "FLAGS")
                 {
-                    if (_arch == Arch.Rv) throw new CompileError(annotation.Pos, "RISC-V has no flags");
+                    if (_arch == Arch.Rv) throw new CompileError(Li.AsmCondition, annotation.Pos, "RISC-V has no flags");
                     Add(FlagsClobber);
                     continue;
                 }
                 var reg = Register(a.Value, annotation.Pos);
                 if (reg.Class == RegClass.Sp || IsStackOrZero(reg) && reg.Index != 0)
-                    throw new CompileError(annotation.Pos, "SP can't be changed: assembly that moves the stack pointer breaks the routine around it");
+                    throw new CompileError(Li.AsmInstruction, annotation.Pos, "SP can't be changed: assembly that moves the stack pointer breaks the routine around it");
                 if (reg.Class is not (RegClass.Gpr or RegClass.Vec or RegClass.Fpr or RegClass.Single or RegClass.Double))
-                    throw new CompileError(annotation.Pos, $"{a.Value} can't be listed in @clobbers");
+                    throw new CompileError(Li.AsmClobbers, annotation.Pos, $"{a.Value} can't be listed in @clobbers");
                 if (IsStackOrZero(reg)) continue;
                 string name = LlvmName(reg, null);
                 if (!_fixedOutputs.ContainsKey(name)) Add($"~{{{name}}}");

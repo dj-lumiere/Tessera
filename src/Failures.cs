@@ -71,13 +71,13 @@ public sealed partial class Compiler
         if (inst.Decl.AnnotationNamed("throws") is not { } a) return null;
         var types = a.Args is [{ Types: { } listed }]
             ? listed
-            : throw new CompileError(a.Pos, "@throws lists the crashables the routine may give: @throws([NotFoundError, ParseError])");
+            : throw new CompileError(Li.ThrowsAnnotation, a.Pos, "@throws lists the crashables the routine may give: @throws([NotFoundError, ParseError])");
         var resolved = new List<DType>();
         foreach (var t in types)
         {
             var r = ResolveType(t, inst.Env);
             if (!Crashing.IsCrashable(r))
-                throw new CompileError(t.Pos, $"@throws lists crashables, and {r} isn't one (a crashable is declared crashable {r.Name})");
+                throw new CompileError(Li.ThrowsAnnotation, t.Pos, $"@throws lists crashables, and {r} isn't one (a crashable is declared crashable {r.Name})");
             resolved.Add(r);
         }
         return Crashing.Ordered(resolved);
@@ -242,7 +242,7 @@ public sealed partial class Compiler
                     .Select(kv => kv.Key))
                 .Distinct().ToList();
             if (stale.Count == 0) return;
-            if (round > 64) throw new CompileError(default, "the crashables and the moved memory of routines that call each other don't settle");
+            if (round > 64) throw new CompileError(Li.FailureSettle, default, "the crashables and the moved memory of routines that call each other don't settle");
             foreach (var symbol in stale) BuildInstance(_instances[symbol]);
             while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         }
@@ -258,7 +258,7 @@ public sealed partial class Compiler
             var missing = (_inferredThrows.GetValueOrDefault(inst.Symbol) ?? [])
                 .Where(t => !declared.Any(d => d.Equals(t))).ToList();
             if (missing.Count > 0)
-                errors.Add(new CompileError(inst.Decl.AnnotationNamed("throws")!.Pos,
+                errors.Add(new CompileError(Li.ThrowsListIncomplete, inst.Decl.AnnotationNamed("throws")!.Pos,
                     $"'{inst.Decl.DisplayName}' can throw {string.Join(", ", missing.Select(m => m.Name))}, which its @throws "
                     + $"doesn't list: add {(missing.Count == 1 ? "it" : "them")} to the list, or receive {(missing.Count == 1 ? "it" : "them")} "
                     + "inside with check"));
@@ -305,7 +305,7 @@ public sealed partial class Compiler
         }
         bool split = ExposeDefinitions || ProvidedSymbols.Count > 0;
         if (split && size > SplitMoldBytes)
-            throw new CompileError(default, $"a crashable of this program takes {size} bytes, and a split program's mold holds {SplitMoldBytes}: "
+            throw new CompileError(Li.FailureSize, default, $"a crashable of this program takes {size} bytes, and a split program's mold holds {SplitMoldBytes}: "
                 + "keep a crashable to a few values");
         if (split) size = SplitMoldBytes;
         long words = (size + align - 1) / align;
@@ -435,7 +435,7 @@ public sealed partial class Compiler
             for (string? at2 = found; at2 is not null; at2 = from[at2])
                 if (_instances.TryGetValue(at2, out var step)) path.Add(step.Decl.DisplayName);
             path.Reverse();
-            errors.Add(new CompileError(at, $"{what} takes memory from a general memory manager ({string.Join(" -> ", path)}), "
+            errors.Add(new CompileError(Li.FailureMemory, at, $"{what} takes memory from a general memory manager ({string.Join(" -> ", path)}), "
                 + "and it runs while the program crashes, which may be because memory ran out: write into a buffer of your "
                 + "own or straight to the device, without HEAP or a table made from it"));
         }
@@ -613,20 +613,20 @@ public sealed partial class Compiler
         if (!r.IsFailable)
         {
             if (r.IsInfallible && r.AnnotationNamed("throws") is { } stray)
-                throw new CompileError(stray.Pos, $"@throws lists what a routine may throw, and '{r.DisplayName}' is infallible: it promises not to fail");
+                throw new CompileError(Li.ThrowsListMisplaced, stray.Pos, $"@throws lists what a routine may throw, and '{r.DisplayName}' is infallible: it promises not to fail");
             return;
         }
         if (r.AnnotationNamed("export") is { } export)
-            throw new CompileError(export.Pos, $"'{r.DisplayName}' is @export, so C calls it, and C has no failure to receive: "
+            throw new CompileError(Li.FailureAcrossC, export.Pos, $"'{r.DisplayName}' is @export, so C calls it, and C has no failure to receive: "
                 + "an exported routine gives no failure back. Receive the failure inside with check (or try), or let it stop the program there");
         if (r.AnnotationNamed("external") is { First: "c" } external)
-            throw new CompileError(external.Pos, $"'{r.DisplayName}' is a C routine, and C doesn't throw: it gives no failure back");
+            throw new CompileError(Li.FailureAcrossC, external.Pos, $"'{r.DisplayName}' is a C routine, and C doesn't throw: it gives no failure back");
         if (r.AnnotationNamed("external") is { First: "asm" or "llvm" } other)
-            throw new CompileError(other.Pos, $"'{r.DisplayName}' is @external(\"{other.First}\"), which has no way to throw: it gives no failure back");
+            throw new CompileError(Li.FailureAcrossC, other.Pos, $"'{r.DisplayName}' is @external(\"{other.First}\"), which has no way to throw: it gives no failure back");
         if (r.AnnotationNamed("noreturn") is { } noreturn)
-            throw new CompileError(noreturn.Pos, $"'{r.DisplayName}' is @noreturn, so it never gives anything back, a failure included");
+            throw new CompileError(Li.FailureAcrossC, noreturn.Pos, $"'{r.DisplayName}' is @noreturn, so it never gives anything back, a failure included");
         if (r.AnnotationNamed("inline") is { } inline && !r.IsRecovering)
-            throw new CompileError(inline.Pos, $"'{r.DisplayName}' gives its failures back to its caller, and a routine that does isn't @inline");
+            throw new CompileError(Li.FailureAcrossC, inline.Pos, $"'{r.DisplayName}' gives its failures back to its caller, and a routine that does isn't @inline");
     }
 }
 

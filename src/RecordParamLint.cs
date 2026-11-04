@@ -34,7 +34,7 @@ public static class RecordParamLint
                 if (IsCAbi(r) || r.Source is not null || r is { Owner: not null, Name: "construct" }) continue;
                 int count = Count(r);
                 if (count < MaxParameters) continue;
-                warnings.Add($"{r.Pos}: warning: routine '{r.DisplayName}' takes {count} parameters (not counting me): "
+                warnings.Add($"{Li.TooManyParameters.Head}: {r.Pos}: routine '{r.DisplayName}' takes {count} parameters (not counting me): "
                     + $"group the ones that belong together into a record and take that, so it takes fewer than "
                     + $"{MaxParameters} and the call names each value in the record literal");
             }

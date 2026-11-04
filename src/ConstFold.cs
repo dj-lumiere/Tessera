@@ -38,7 +38,7 @@ public sealed partial class Compiler
     {
         string key = $"{c.File}:{c.Pos}:{self?.Key}";
         if (_presetValues.TryGetValue(key, out var done)) return done;
-        if (!_foldingPresets.Add(key)) throw new CompileError(usePos, $"preset '{c.Name}' is defined in terms of itself");
+        if (!_foldingPresets.Add(key)) throw new CompileError(Li.PresetValue, usePos, $"preset '{c.Name}' is defined in terms of itself");
         try
         {
             var env = new TypeEnv(c.File);
@@ -58,12 +58,12 @@ public sealed partial class Compiler
         {
             FloatType ft => HexFloat.Format(ft),
             _ when HexFloat.IsB128(t) => (HexFloat.B128Fraction, HexFloat.B128Exponent),
-            _ => throw new CompileError(pos, $"the hex float '{f.Text}' is used as {t.Name} here, and a hex float spells a "
+            _ => throw new CompileError(Li.HexFloatNotBinaryFloat, pos, $"the hex float '{f.Text}' is used as {t.Name} here, and a hex float spells a "
                 + "power-of-two value exactly, so only B16, BF16, B32, B64 and B128 take one: write the value in decimal, or give "
                 + "it a binary float type"),
         };
         if (HexFloat.Encode(f.Text!, fraction, exponent) is not { } bits)
-            throw new CompileError(pos, $"the hex float '{f.Text}' isn't exactly a {t.Name}: {HexFloat.Why(f.Text!, fraction, exponent, t.Name)}, "
+            throw new CompileError(Li.HexFloatInexact, pos, $"the hex float '{f.Text}' isn't exactly a {t.Name}: {HexFloat.Why(f.Text!, fraction, exponent, t.Name)}, "
                 + "and a hex float spells its value exactly, so write one the type holds"
                 + (HexFloat.IsB128(t) ? "" : ", or use a wider binary float"));
         return new ConstVal(t, bits);
@@ -82,13 +82,13 @@ public sealed partial class Compiler
             double d = (double)value;
             double largest = ft == FloatType.B16 ? 65504 : ft == FloatType.B64 ? double.MaxValue : float.MaxValue;
             if (double.IsInfinity(d) || Math.Abs(d) > largest)
-                throw new CompileError(pos, $"the number {value} is beyond the largest {ft.Name}");
+                throw new CompileError(Li.FloatLiteralOverflow, pos, $"the number {value} is beyond the largest {ft.Name}");
             return new ConstVal(ft, FloatBits(ft, d));
         }
         if (HexFloat.IsB128(t))
             return HexFloat.Encode(hex, HexFloat.B128Fraction, HexFloat.B128Exponent) is { } bits
                 ? new ConstVal(t!, bits)
-                : throw new CompileError(pos, $"the number {value} isn't exactly a B128: write it as a hex float that rounds it");
+                : throw new CompileError(Li.HexFloatInexact, pos, $"the number {value} isn't exactly a B128: write it as a hex float that rounds it");
         return null;
     }
 
@@ -130,14 +130,14 @@ public sealed partial class Compiler
         if (v.Type is null)
         {
             if (t is not IntType it)
-                throw new CompileError(pos, argument > 0
+                throw new CompileError(argument > 0 ? Li.ArgumentTypeMismatch : Li.TypeMismatch, pos, argument > 0
                     ? $"argument {argument}: an integer literal can't be a {t.Name}"
                     : $"an integer can't be a {t.Name}");
             CheckRange(v.Value, it, pos);
             return new ConstVal(it, v.Value);
         }
         if (!v.Type.Equals(t))
-            throw new CompileError(pos, argument > 0
+            throw new CompileError(argument > 0 ? Li.ArgumentTypeMismatch : Li.TypeMismatch, pos, argument > 0
                 ? FunctionGen.ArgumentMismatch(argument, v.Type.Name, t)
                 : $"expected {t.Name}, found {v.Type.Name}");
         return v;
@@ -152,7 +152,7 @@ public sealed partial class Compiler
     private static void CheckRange(BigInteger v, IntType it, Pos pos)
     {
         var (min, max) = Range(it);
-        if (v < min || v > max) throw new CompileError(pos, $"{v} is out of range for {it.Name} ({min}..{max})");
+        if (v < min || v > max) throw new CompileError(Li.IntegerLiteralRange, pos, $"{v} is out of range for {it.Name} ({min}..{max})");
     }
 
     /// v reduced into it's range, modulo 2^bits.
@@ -194,7 +194,7 @@ public sealed partial class Compiler
     {
         var value = u.Value;
         if (u.TypeName == "Duration" ? value > DurationMax || value < DurationMin : value > ulong.MaxValue)
-            throw new CompileError(u.Pos, u.TypeName == "Duration"
+            throw new CompileError(Li.IntegerLiteralRange, u.Pos, u.TypeName == "Duration"
                 ? $"{u.Text} is longer than a Duration holds: {DurationMin}ns up to {DurationMax}ns, about 292 billion years either way"
                 : $"{u.Text} is larger than a ByteSize holds: at most 18446744073709551615b, 16 EiB less a byte");
         return value;
@@ -215,10 +215,10 @@ public sealed partial class Compiler
                     return new ConstVal(flags, Typed(Fold(both.Left, flags, env), flags, both.Left.Pos).Value
                                                | Typed(Fold(both.Right, flags, env), flags, both.Right.Pos).Value);
                 case BinaryExpr { Op: "|" or "&" or "^" } bitwise:
-                    throw new CompileError(bitwise.Pos, $"'{bitwise.Op}' is for integers, and this is a {flags.Name} value: members "
+                    throw new CompileError(Li.FlagsUse, bitwise.Pos, $"'{bitwise.Op}' is for integers, and this is a {flags.Name} value: members "
                         + "combine with 'and' (A and B)");
                 case IntLit number:
-                    throw new CompileError(number.Pos, $"a {flags.Name} value is made of its members, or none for no member on, not a number");
+                    throw new CompileError(Li.FlagsUse, number.Pos, $"a {flags.Name} value is made of its members, or none for no member on, not a number");
             }
         }
         // Where a choice member goes, a bare name of a member is that member, unless a value parameter or a preset of
@@ -237,7 +237,7 @@ public sealed partial class Compiler
             case IntLit il:
                 if (hint is IntType it)
                 {
-                    if (it.Literal(il.Value, il.HexDigits, out var error) is null) throw new CompileError(il.Pos, error);
+                    if (it.Literal(il.Value, il.HexDigits, out var error) is null) throw new CompileError(Li.InvalidNumericLiteral, il.Pos, error);
                     return new ConstVal(it, il.Value);
                 }
                 return new ConstVal(null, il.Value);
@@ -252,7 +252,7 @@ public sealed partial class Compiler
             case FloatLit f:
                 if (hint is FloatType ft) return new ConstVal(ft, FloatBits(ft, f.Value));
                 if (f.IsWord && HexFloat.IsB128(hint)) return new ConstVal(hint, f.WordB128Bits);
-                throw new CompileError(f.Pos, hint is null
+                throw new CompileError(Li.LiteralNeedsType, f.Pos, hint is null
                     ? "nothing says this float literal's type; name it: B64.add(1.5, 2.0)"
                     : $"a float literal can't be a {hint.Name}");
             case PresetRef r:
@@ -282,7 +282,7 @@ public sealed partial class Compiler
                 var values = c.Args.Select(a => Fold(a, hint, env)).ToList();
                 var type = values.FirstOrDefault(v => v.Type is not null)?.Type;
                 if (type is not null and not IntType)
-                    throw new CompileError(c.Pos, $"{c.Name} in a preset takes integers, not {type.Name}");
+                    throw new CompileError(Li.PresetValue, c.Pos, $"{c.Name} in a preset takes integers, not {type.Name}");
                 values = values.Select(v => type is null ? v : Typed(v, type, c.Pos)).ToList();
                 var pick = c.Name == "max" ? values.MaxBy(v => v.Value)! : values.MinBy(v => v.Value)!;
                 return pick;
@@ -294,9 +294,9 @@ public sealed partial class Compiler
                 return new ConstVal(null, c.Name == "sizeof" ? size : align);
             }
             case CallExpr c:
-                throw new CompileError(c.Pos, $"'{c.Name}' can't run at build time; {NotBuildtimeTail()}");
+                throw new CompileError(Li.BuildtimeFold, c.Pos, $"'{c.Name}' can't run at build time; {NotBuildtimeTail()}");
             default:
-                throw new CompileError(e.Pos, $"this isn't a buildtime constant; {NotBuildtimeTail()}");
+                throw new CompileError(Li.PresetNotConstant, e.Pos, $"this isn't a buildtime constant; {NotBuildtimeTail()}");
         }
     }
 
@@ -314,20 +314,20 @@ public sealed partial class Compiler
         if (owner is ChoiceType ct)
         {
             var member = ct.Decl.Members.FirstOrDefault(m => m.Name == r.Name);
-            if (member.Name is null) throw new CompileError(r.Pos, $"choice '{ct.Name}' has no member '{r.Name}'");
-            if (member.Value is not IntLit lit) throw new CompileError(r.Pos, "choice member values must be integer literals");
+            if (member.Name is null) throw new CompileError(Li.ChoiceMemberNotFound, r.Pos, $"choice '{ct.Name}' has no member '{r.Name}'");
+            if (member.Value is not IntLit lit) throw new CompileError(Li.PresetValue, r.Pos, "choice member values must be integer literals");
             return new ConstVal(ct, lit.Value);
         }
         string ownerName = owner?.OwnerName ?? r.Owner?.Name ?? "";
         var c = FindPreset(ownerName, r.Name, env.File, r.Pos, r.Path)
-                ?? throw new CompileError(r.Pos, $"unknown preset '{(ownerName == "" ? r.Name : ownerName + "." + r.Name)}'");
+                ?? throw new CompileError(Li.UnknownName, r.Pos, $"unknown preset '{(ownerName == "" ? r.Name : ownerName + "." + r.Name)}'");
         if (c.IsStorage)
-            throw new CompileError(r.Pos, $"'{c.Name}' is in memory, not a buildtime constant: its name is an address");
+            throw new CompileError(Li.PresetValue, r.Pos, $"'{c.Name}' is in memory, not a buildtime constant: its name is an address");
         var cenv = new TypeEnv(c.File);
         if (owner is not null) cenv.Bind("Me", owner);
         var t = ResolveType(c.Type, cenv);
         if (PresetInMemory(t))
-            throw new CompileError(r.Pos, $"'{c.Name}' is a {t}, and a preset folds only numbers, Bool and choice values from other presets");
+            throw new CompileError(Li.PresetValue, r.Pos, $"'{c.Name}' is a {t}, and a preset folds only numbers, Bool and choice values from other presets");
         return PresetConst(c, t, owner, r.Pos);
     }
 
@@ -346,17 +346,17 @@ public sealed partial class Compiler
             && FindPreset("", n.Owner.Name, env.File, n.Pos, n.Owner.Path) is { IsStorage: false })
             return FoldMethod(new PresetRef(null, n.Owner.Name, n.Owner.Pos) { Path = n.Owner.Path }, n.Name, n.TypeArgs, n.Args, hint, env, n.Pos);
         var owner = TryResolveType(n.Owner, env);
-        if (owner is null) throw new CompileError(n.Owner.Pos, $"unknown type '{n.Owner.Name}'");
+        if (owner is null) throw new CompileError(Li.UnknownName, n.Owner.Pos, $"unknown type '{n.Owner.Name}'");
         if (n.Name == "from_bits" && n.Args.Count == 1)
         {
             int? bits = owner is FloatType ft ? ft.Bits : BitRecordWidth(owner);
-            if (bits is null) throw new CompileError(n.Pos, $"{owner.Name}.from_bits isn't a buildtime constant");
+            if (bits is null) throw new CompileError(Li.PresetNotConstant, n.Pos, $"{owner.Name}.from_bits isn't a buildtime constant");
             var raw = Typed(Fold(n.Args[0], IntType.U(bits.Value), env), IntType.U(bits.Value), n.Args[0].Pos, 1);
             return new ConstVal(owner, raw.Value);
         }
         // `S64.add(1, 2)`: the receiver is the first argument, of the owner type
         if (n.Args.Count == 0)
-            throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; {NotBuildtimeTail()}");
+            throw new CompileError(Li.BuildtimeFold, n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; {NotBuildtimeTail()}");
         var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos, 1);
         // `B64.to[B16](1.5)`: the typewise form of a conversion.
         if (IsConversion(n.Name, n.TypeArgs) && n.Args.Count == 1)
@@ -380,7 +380,7 @@ public sealed partial class Compiler
             else return new ConstVal(null, Untyped(receiver.Value, name, arg.Value, pos));
         }
         if (receiver.Type is null)
-            throw new CompileError(receiverExpr.Pos, $"nothing says this literal's type; name it: U64.{name}(...)");
+            throw new CompileError(Li.LiteralNeedsType, receiverExpr.Pos, $"nothing says this literal's type; name it: U64.{name}(...)");
         if (conversion && receiver.Type is IntType { IsNumber: true } from && args.Count == 0)
             return Convert(receiver.Value, from, name, typeArgs[0], env, pos);
         if (conversion && receiver.Type is FloatType fromFloat && args.Count == 0)
@@ -400,7 +400,7 @@ public sealed partial class Compiler
         "mul" => a * b,
         "min" => BigInteger.Min(a, b),
         "max" => BigInteger.Max(a, b),
-        _ => throw new CompileError(pos, $"nothing says these literals' type; name it: S64.{name}(...)"),
+        _ => throw new CompileError(Li.LiteralNeedsType, pos, $"nothing says these literals' type; name it: S64.{name}(...)"),
     };
 
     /// `firstArgument` is the position of args[0] among the call's arguments: 1 after a receiver, 2 in the typewise
@@ -420,7 +420,7 @@ public sealed partial class Compiler
             case { } b128 when HexFloat.IsB128(b128) && name == "neg" && args.Count == 0:
                 return new ConstVal(b128, r.Value ^ (BigInteger.One << 127));
             default:
-                throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
+                throw new CompileError(Li.BuildtimeFold, pos, $"{r.Type!.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
         }
     }
 
@@ -447,7 +447,7 @@ public sealed partial class Compiler
                 case "mul": v = a * b; break;
                 case "floordiv" or "mod" or "div_trunc" or "mod_trunc":
                 {
-                    if (b.IsZero) throw new CompileError(pos, $"{name} by zero in a preset");
+                    if (b.IsZero) throw new CompileError(Li.BuildtimeArithmetic, pos, $"{name} by zero in a preset");
                     BigInteger q = BigInteger.DivRem(a, b, out BigInteger r);
                     // `floordiv` / `mod` are Euclidean: the remainder is never negative.
                     if (name is "floordiv" or "mod" && r.Sign < 0)
@@ -473,28 +473,28 @@ public sealed partial class Compiler
                     if (b < 0 || b >= it.Bits) return new ConstVal(it, 0);
                     return new ConstVal(it, Wrap(Unsigned(a, it.Bits) >> (int)b, it));
                 default:
-                    throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
+                    throw new CompileError(Li.BuildtimeFold, pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
             }
             CheckOverflow(v, it, name, pos);
             return new ConstVal(it, v);
         }
-        throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
+        throw new CompileError(Li.BuildtimeFold, pos, $"{it.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     private static void CheckOverflow(BigInteger v, IntType it, string name, Pos pos)
     {
         var (min, max) = Range(it);
-        if (v < min || v > max) throw new CompileError(pos, $"{it.Name}.{name} overflows in this preset ({v})");
+        if (v < min || v > max) throw new CompileError(Li.BuildtimeArithmetic, pos, $"{it.Name}.{name} overflows in this preset ({v})");
     }
 
     /// `to[T]()` (checked, like the routine that crashes) and `to_wrap[T]()` from one integer type to another.
     private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (name == "to_unchecked" || TryResolveType(target, env) is not IntType { IsNumber: true } to)
-            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
+            throw new CompileError(Li.BuildtimeFold, pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
         if (name == "to_wrap") return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
-        if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to[{to.Name}] in a preset)");
+        if (a < min || a > max) throw new CompileError(Li.BuildtimeArithmetic, pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to[{to.Name}] in a preset)");
         return new ConstVal(to, a);
     }
 
@@ -529,7 +529,7 @@ public sealed partial class Compiler
                 if (left.Type is null || !left.Type.Equals(right.Type)
                     || left.Type is not (IntType { IsNumber: true } or ChoiceType { Decl.IsFlags: false } or BoolType)
                     || left.Type is not IntType && c.Op is not ("==" or "!="))
-                    throw new CompileError(c.Pos, "not a buildtime comparison");
+                    throw new CompileError(Li.PresetNotConstant, c.Pos, "not a buildtime comparison");
                 int order = left.Value.CompareTo(right.Value);
                 return c.Op switch
                 {
@@ -556,7 +556,7 @@ public sealed partial class Compiler
             BigInteger b = Typed(Fold(args[0], BoolType.Instance, env), BoolType.Instance, args[0].Pos, firstArgument).Value;
             return new ConstVal(BoolType.Instance, (a == b) == (name == "eq") ? 1 : 0);
         }
-        throw new CompileError(pos, $"Bool.{name} can't run at build time; {NotBuildtimeTail()}");
+        throw new CompileError(Li.BuildtimeFold, pos, $"Bool.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     /// B32 and B64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE). The checked
@@ -590,12 +590,12 @@ public sealed partial class Compiler
             {
                 string got = double.IsNaN(result) ? "NaN" : result > 0 ? "+inf" : "-inf";
                 string symbol = Operators.OperatorFor(name)!;
-                throw new CompileError(pos, $"{ft.Name}.{name} gives {got} in this preset, and a float operation whose result "
+                throw new CompileError(Li.BuildtimeArithmetic, pos, $"{ft.Name}.{name} gives {got} in this preset, and a float operation whose result "
                     + $"isn't finite crashes: write {name}_unchecked (the operator '{symbol}!') for the raw IEEE 754 value");
             }
             return new ConstVal(ft, resultBits);
         }
-        throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
+        throw new CompileError(Li.BuildtimeFold, pos, $"{ft.Name}.{name} can't run at build time; {NotBuildtimeTail()}");
     }
 
     /// A float conversion in a preset, between B16, BF16, B32 and B64, rounded to nearest (ties to even) as the stdlib
@@ -604,15 +604,15 @@ public sealed partial class Compiler
     private ConstVal ConvertFloat(BigInteger bits, FloatType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (name == "to_wrap" || TryResolveType(target, env) is not FloatType to)
-            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
+            throw new CompileError(Li.BuildtimeFold, pos, $"{from.Name}.{name}[{target}] can't run at build time; {NotBuildtimeTail()}");
         double value = FloatValue(from, bits);
         BigInteger result = to == FloatType.BF16 ? ToBFloat16Once(value) : FloatBits(to, value);
         if (name == "to" && double.IsFinite(value) && !double.IsFinite(FloatValue(to, result)))
-            throw new CompileError(pos, $"{from.Name}.to[{to.Name}] gives {(value > 0 ? "+inf" : "-inf")} in this preset: the value "
+            throw new CompileError(Li.BuildtimeArithmetic, pos, $"{from.Name}.to[{to.Name}] gives {(value > 0 ? "+inf" : "-inf")} in this preset: the value "
                 + $"is past {to.Name}'s range, and a conversion that turns a finite value into an infinity crashes; write "
                 + $"to_unchecked[{to.Name}]() for the infinity");
         if (name == "to_unchecked" && to.Bits >= from.Bits && !(from == FloatType.BF16 && to == FloatType.B16))
-            throw new CompileError(pos, $"{from.Name}.to_unchecked[{to.Name}] doesn't exist: every {from.Name} fits {to.Name}, so to[{to.Name}]() never crashes");
+            throw new CompileError(Li.BuildtimeFold, pos, $"{from.Name}.to_unchecked[{to.Name}] doesn't exist: every {from.Name} fits {to.Name}, so to[{to.Name}]() never crashes");
         return new ConstVal(to, result);
     }
 

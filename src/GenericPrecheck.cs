@@ -173,7 +173,7 @@ public sealed partial class Compiler
                 if (Conforms(cd, cargs, file, conf.Source.Pos) is not { } why) continue;
                 string wanted = Show(cd.Name, cargs);
                 string missing = _missingConstraint.GetValueOrDefault(ConformsKey(cd, cargs), ShowNeeds(cd.Name, cargs));
-                throw new CompileError(conf.Source.Pos,
+                throw new CompileError(Li.TypeNotSupported, conf.Source.Pos,
                     $"{claim} holds through '{method.DisplayName}', which requires {wanted}, and the "
                     + $"conformance doesn't promise it: {why}; add {missing} to the when of {claim}");
             }
@@ -362,7 +362,7 @@ public sealed partial class Compiler
             _ => $"{string.Join(" and ", providers.Select(p => p.Name))} provide it; add the one meant "
                  + $"({string.Join(" or ", providers.Select(p => p.Line))}) to {scope.Fix}",
         };
-        return new CompileError(pos, $"{scope.What} calls {method} on {value}, a {valueType.Name} ({t.Name} is a type parameter), "
+        return new CompileError(Li.TypeNotSupported, pos, $"{scope.What} calls {method} on {value}, a {valueType.Name} ({t.Name} is a type parameter), "
             + $"and no constraint in force gives {t.Name} a routine '{method}' ({InForce(t)}); {fix}");
     }
 

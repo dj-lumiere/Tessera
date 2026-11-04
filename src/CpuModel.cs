@@ -55,7 +55,7 @@ public sealed class CpuModel
         var cpu = Regex.Match(ir, "\"target-cpu\"=\"([^\"]*)\"");
         var feats = Regex.Match(ir, "\"target-features\"=\"([^\"]*)\"");
         if (!cpu.Success)
-            throw new CompileError(pos, $"clang gave no CPU for {target.LlvmTriple}{(target.Cpu is null ? "" : $" with --cpu {target.Cpu}")}: {err.Trim()}");
+            throw new CompileError(Li.TargetCpuProblem, pos, $"clang gave no CPU for {target.LlvmTriple}{(target.Cpu is null ? "" : $" with --cpu {target.Cpu}")}: {err.Trim()}");
         return Cache.GetOrAdd(key, new CpuModel(target, cpu.Groups[1].Value, feats.Success ? feats.Groups[1].Value : ""));
     }
 
@@ -68,7 +68,7 @@ public sealed class CpuModel
         // Not in the CPU's list: ask clang whether the name exists at all (it warns about one it doesn't know).
         var (_, err) = QueryClang(_target, [.._target.Features, "+" + feature], pos);
         if (err.Contains("not a recognized feature", StringComparison.Ordinal))
-            throw new CompileError(pos, $"'{feature}' is not a CPU feature of {_target.Arch}");
+            throw new CompileError(Li.TargetCpuProblem, pos, $"'{feature}' is not a CPU feature of {_target.Arch}");
         lock (_known) _known.Add(feature);
         return false;
     }
@@ -78,9 +78,9 @@ public sealed class CpuModel
     private static (string Ir, string Err) QueryClang(BuildTarget target, IEnumerable<string> features, Pos pos)
     {
         var run = Run(target, features).GetAwaiter().GetResult()
-                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and wasn't found: put it on PATH, or name it with LAPILA_CLANG");
+                  ?? throw new CompileError(Li.TargetCpuProblem, pos, "clang is needed to resolve the target's CPU features and wasn't found: put it on PATH, or name it with LAPILA_CLANG");
         if (run.ExitCode != 0)
-            throw new CompileError(pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {run.Err.Trim()}");
+            throw new CompileError(Li.TargetCpuProblem, pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {run.Err.Trim()}");
         return (run.Ir, run.Err);
     }
 

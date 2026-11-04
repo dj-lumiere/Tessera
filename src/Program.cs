@@ -123,12 +123,12 @@ static class Cli
         }
         catch (ToolError e)
         {
-            Console.Error.WriteLine($"error: {e.Message}");
+            Console.Error.WriteLine(e.Report);
             return 1;
         }
         catch (ManifestError e)
         {
-            Console.Error.WriteLine($"error: {e.Message}");
+            Console.Error.WriteLine(e.Report);
             return 1;
         }
     }
@@ -184,7 +184,7 @@ static class Cli
     private static int Docs(string[] args)
     {
         if (args.Length != 2) return Fail("docs: give the library's source directory and the output directory");
-        if (!Directory.Exists(args[0])) throw new ToolError($"no such directory: {args[0]}");
+        if (!Directory.Exists(args[0])) throw new ToolError(Li.NoSuchFile, $"no such directory: {args[0]}");
         // The standard library's reference also holds Ingrid's library, the other one every program has.
         bool standard = Path.GetFullPath(args[0]).TrimEnd(Path.DirectorySeparatorChar)
             == Path.GetFullPath(StdlibDir()).TrimEnd(Path.DirectorySeparatorChar);
@@ -203,7 +203,7 @@ static class Cli
             ? Directory.EnumerateFiles(p, "*.li", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         foreach (var file in files)
-            if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
+            if (!File.Exists(file)) throw new ToolError(Li.NoSuchFile, $"no such file: {file}");
         var expensive = ExpensiveCallsIn(files);
         var programRoots = ProgramModuleRoots(files);
         int count = 0, expensiveCount = 0;
@@ -325,7 +325,14 @@ static class Cli
         return 2;
     }
 
-    internal sealed class ToolError(string message) : Exception(message);
+    internal sealed class ToolError(Code code, string message) : Exception(message)
+    {
+        /// The diagnostic code, printed as `error[LI-S1450]`.
+        public Code Code { get; } = code;
+
+        /// The whole report line: the code and what is wrong.
+        public string Report => $"{Code.Head}: {Message}";
+    }
 
     /// `--target`, `--cpu`, `--feature`, and `--board`, in any order. Build applies the CPU and features to the triple
     /// (the board's, then the ones given).
@@ -346,7 +353,7 @@ static class Cli
             {
                 case "--target":
                     try { _target = BuildTarget.Parse(args[++i]); }
-                    catch (ArgumentException e) { throw new ToolError(e.Message); }
+                    catch (ArgumentException e) { throw new ToolError(Li.BadOption, e.Message); }
                     _targetGiven = true;
                     return true;
                 case "--board":
@@ -368,7 +375,7 @@ static class Cli
         {
             if (Board is null) return _target with { Cpu = _cpu, Features = _features };
             if (_targetGiven && _target.LlvmTriple != Board.Target.LlvmTriple)
-                throw new ToolError($"--target is {_target.Arch}-{_target.Os}-{_target.Abi}, and the board {Board.Name} is " +
+                throw new ToolError(Li.TargetMismatch, $"--target is {_target.Arch}-{_target.Os}-{_target.Abi}, and the board {Board.Name} is " +
                     $"{Board.Target.Arch}-{Board.Target.Os}-{Board.Target.Abi}: leave --target out, the board gives it");
             return Board.Target with { Cpu = _cpu ?? Board.Target.Cpu, Features = [.. Board.Target.Features, .. _features] };
         }
@@ -380,7 +387,7 @@ static class Cli
     private static void RequireRaceCheckable(BuildTarget target)
     {
         if (!RaceCheckable(target))
-            throw new ToolError($"the data race check runs on Linux and macOS on x86_64 and aarch64, not on {target.LlvmTriple}");
+            throw new ToolError(Li.TargetMismatch, $"the data race check runs on Linux and macOS on x86_64 and aarch64, not on {target.LlvmTriple}");
     }
 
     /// `--trace` / `--no-trace`: whether the build keeps the crash trace; null when neither is given.
@@ -397,9 +404,9 @@ static class Cli
     /// `--mode <name>`: one of the four build modes.
     private static BuildMode ParseMode(string[] args, ref int i)
     {
-        if (i + 1 >= args.Length) throw new ToolError($"--mode takes {BuildModes.Names}");
+        if (i + 1 >= args.Length) throw new ToolError(Li.BadOption, $"--mode takes {BuildModes.Names}");
         string name = args[++i];
-        return BuildModes.Parse(name) ?? throw new ToolError($"--mode is {BuildModes.Names}, not \"{name}\"");
+        return BuildModes.Parse(name) ?? throw new ToolError(Li.BadOption, $"--mode is {BuildModes.Names}, not \"{name}\"");
     }
 
     /// The files of `lapila build` or `lapila run`. The commands take files and nothing else: a flag that config.toml
@@ -418,7 +425,7 @@ static class Cli
         string? file = args.Where((a, i) => !a.StartsWith('-') && !(i > 0 && takesValue.Contains(args[i - 1]))).FirstOrDefault();
         foreach (var (arg, i) in args.Select((a, i) => (a, i)))
             if (arg.StartsWith('-'))
-                throw new ToolError(FlagMessage(arg, i + 1 < args.Length ? args[i + 1] : null, file));
+                throw new ToolError(Li.BadOption, FlagMessage(arg, i + 1 < args.Length ? args[i + 1] : null, file));
         return [.. args];
     }
 
@@ -434,9 +441,9 @@ static class Cli
         {
             if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
             if (args[i] == "--show-destructs")
-                throw new ToolError("`--show-destructs` isn't an option: a test's <name>.destructs file holds the destruct "
+                throw new ToolError(Li.BadOption, "`--show-destructs` isn't an option: a test's <name>.destructs file holds the destruct "
                     + "routines the builder writes, and `lapila test` compares them");
-            if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
+            if (args[i].StartsWith('-')) throw new ToolError(Li.BadOption, $"unknown option '{args[i]}'");
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
@@ -537,10 +544,10 @@ static class Cli
         if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
             throw compiler.MainRoutine is { } main
-                ? new CompileError(main.Pos,
+                ? new CompileError(Li.EntryPoint, main.Pos,
                     "no entry point: an executable's entry point is 'routine start() -> None', and main is an ordinary routine name; " +
                     "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Hosted)")
-                : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
+                : new CompileError(Li.EntryPoint, new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                     "no entry point: an executable needs 'routine start() -> None' (use 'lapila check' to type-check a file without one)");
         return ir;
     }
@@ -579,7 +586,7 @@ static class Cli
     {
         files = files.ToList();
         foreach (string file in files)
-            if (OldSourceMessage(file) is { } old) throw new ToolError(old);
+            if (OldSourceMessage(file) is { } old) throw new ToolError(Li.OldExtension, old);
         // The clang runs that resolve the target's CPU and data layout don't depend on the sources, so they go on
         // while the sources are parsed.
         CpuModel.Prefetch(target);
@@ -631,7 +638,7 @@ static class Cli
                     parsed[i] = StandardLibrary.Declarations(path, shownAs!, stamp, module);
                     return;
                 }
-                if (!File.Exists(path)) throw new ToolError($"no such file: {path}");
+                if (!File.Exists(path)) throw new ToolError(Li.NoSuchFile, $"no such file: {path}");
                 parsed[i] = ParseFile(path, isLibrary, shownAs, programRoots);
             }
             catch (Exception e)
@@ -705,13 +712,13 @@ static class Cli
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
                 if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
                     return _stdlib = Path.Combine(dir.FullName, "Standard");
-        throw new ToolError("cannot find the standard library; set LAPILA_STDLIB to the stdlib directory");
+        throw new ToolError(Li.ToolchainMissing, "cannot find the standard library; set LAPILA_STDLIB to the stdlib directory");
     }
 
     /// The solution's manifest, for `build` / `run` given no files.
     private static Manifest SolutionManifest() =>
         Manifest.Load(Manifest.Find(Directory.GetCurrentDirectory())
-                      ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above"));
+                      ?? throw new ToolError(Li.CommandUsage, $"no input files, and no {Manifest.FileName} here or above"));
 
     /// The manifest of one file with a config.toml in its own folder: that config.toml's settings (target, mode,
     /// [debug]) with the file as the entry, or null when there is no such config.toml.
@@ -825,9 +832,9 @@ static class Cli
         if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } manifest)
         {
             if (manifest.IsLibrary)
-                throw new ToolError($"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use lapila build");
+                throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use lapila build");
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
-                throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use lapila build");
+                throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use lapila build");
             return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
         }
         var target = BuildTarget.Host();
@@ -925,7 +932,7 @@ static class Cli
 
             Process p;
             try { p = Process.Start(psi)!; }
-            catch (System.ComponentModel.Win32Exception) { throw new ToolError("clang was not found on PATH"); }
+            catch (System.ComponentModel.Win32Exception) { throw new ToolError(Li.ToolchainMissing, "clang was not found on PATH"); }
 
             // Read both streams concurrently: the linker reports on stdout, and a full pipe would block it.
             var outTask = p.StandardOutput.ReadToEndAsync();
@@ -935,7 +942,7 @@ static class Cli
             if (p.ExitCode != 0)
                 // An instruction of an assembly routine the assembler doesn't know (a misspelt mnemonic, an operand it
                 // can't take) is the program's mistake, reported by the assembler, not a fault of the builder.
-                throw new ToolError(err.Contains("<inline asm>", StringComparison.Ordinal)
+                throw new ToolError(Li.ToolchainMissing, err.Contains("<inline asm>", StringComparison.Ordinal)
                     ? $"the assembler doesn't accept an instruction of an assembly routine. Check its mnemonic and " +
                       $"operands:\n{err}"
                     : $"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
@@ -957,13 +964,13 @@ static class Cli
             foreach (var a in CpuModel.ClangCpuArguments(target, target.Features)) psi.ArgumentList.Add(a);
         Process p;
         try { p = Process.Start(psi)!; }
-        catch (System.ComponentModel.Win32Exception) { throw new ToolError("clang was not found on PATH"); }
+        catch (System.ComponentModel.Win32Exception) { throw new ToolError(Li.ToolchainMissing, "clang was not found on PATH"); }
         var outTask = p.StandardOutput.ReadToEndAsync();
         string err = p.StandardError.ReadToEnd();
         string output = outTask.Result;
         p.WaitForExit();
         if (p.ExitCode != 0)
-            throw new ToolError(err.Contains("<inline asm>", StringComparison.Ordinal)
+            throw new ToolError(Li.ToolchainMissing, err.Contains("<inline asm>", StringComparison.Ordinal)
                 ? $"the assembler doesn't accept an instruction of an assembly routine. Check its mnemonic and operands:\n{err}"
                 : $"clang failed (this is a builder bug if the IR is invalid):\n{output}{err}");
     }
@@ -1082,7 +1089,7 @@ static class Cli
         }
         var target = targetArgs.Build();
         args = [.. dirs];
-        if (args.Length == 0) throw new ToolError("test takes one or more directories or .li files");
+        if (args.Length == 0) throw new ToolError(Li.CommandUsage, "test takes one or more directories or .li files");
         // A test is one file, or a subdirectory whose .li files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
         // A subdirectory with a config.toml builds through it.
@@ -1098,11 +1105,11 @@ static class Cli
                     continue;
                 }
                 if (Path.GetExtension(dir) != ".li")
-                    throw new ToolError($"{dir} is not a Lapila source (Lapila sources end in .li)");
+                    throw new ToolError(Li.OldExtension, $"{dir} is not a Lapila source (Lapila sources end in .li)");
                 tests.Add((Path.ChangeExtension(dir, null), [dir]));
                 continue;
             }
-            if (!Directory.Exists(dir)) throw new ToolError($"{dir} does not exist");
+            if (!Directory.Exists(dir)) throw new ToolError(Li.NoSuchFile, $"{dir} does not exist");
             // A folder with its expected output next to it is one test, as when its parent is given.
             string stem = dir.TrimEnd('/', '\\');
             if (new[] { ".expected", ".exit", ".error" }.Any(ext => File.Exists(stem + ext)))
@@ -1113,7 +1120,7 @@ static class Cli
                 continue;
             }
             var found = TestsIn(dir);
-            if (found.Count == 0) throw new ToolError($"no .li files in {dir}");
+            if (found.Count == 0) throw new ToolError(Li.NoSuchFile, $"no .li files in {dir}");
             tests.AddRange(found);
         }
         bool qualify = args.Length > 1;

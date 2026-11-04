@@ -87,7 +87,7 @@ public sealed partial class FunctionGen
             _ => null,
         };
         if (written is not null && ReadOnlyView(written))
-            throw Err(plan.Pos, $"{Spelled(written)} is the view of a shared read access, which reads only: take exclusive access "
+            throw Err(Li.SharedAccessWrite, plan.Pos, $"{Spelled(written)} is the view of a shared read access, which reads only: take exclusive access "
                 + "(get_exclusive_access, an Authorized[T], or an AuthorizedSlice[T] for a run of values) to write");
         foreach (var (name, _) in _c.ReshapesOf(sig, _inst, plan.Pos))
         {
@@ -96,7 +96,7 @@ public sealed partial class FunctionGen
             Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
                 : index - offset >= 0 && index - offset < plan.Args.Count ? plan.Args[index - offset] : null;
             if (arg is not null && ReadOnlyView(arg))
-                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of {Spelled(arg)} (it is @reshaping), and "
+                throw Err(Li.SharedAccessWrite, plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of {Spelled(arg)} (it is @reshaping), and "
                     + $"{Spelled(arg)} is the view of a shared read access, which reads only: take exclusive access to change it");
         }
     }

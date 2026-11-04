@@ -69,7 +69,7 @@ public static class StandardLibrary
         var names = shownAs.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
         var parts = names.Length > 0 ? names[..^1] : names;
         if (parts is not [Compiler.StandardRoot, _, ..])
-            throw new CompileError(new Pos(shownAs, 1, 1),
+            throw new CompileError(Li.BuildSettingAnnotation, new Pos(shownAs, 1, 1),
                 "a standard library file goes in a module's folder under Standard, not in Standard itself");
         return string.Join('/', parts[1..]);
     }

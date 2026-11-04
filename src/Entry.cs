@@ -38,11 +38,11 @@ public sealed partial class Compiler
     {
         var found = _userRoutines.Where(r => r.Owner is null && r.Name == name).ToList();
         if (found.Count > 1 && found.FirstOrDefault(r => r.IsScript) is { } script)
-            throw new CompileError(found.First(r => r != script).Pos,
+            throw new CompileError(Li.EntryPoint, found.First(r => r != script).Pos,
                 $"{Path.GetFileName(script.File)} runs its top-level lines as the program's start, and this is another "
                 + "start: a program has one entry, so keep one");
         if (found.Count > 1)
-            throw new CompileError(found[1].Pos,
+            throw new CompileError(Li.EntryPoint, found[1].Pos,
                 $"the program has two '{name}' routines (also at {found[0].Pos}), and it has one entry: keep one");
         return found.FirstOrDefault();
     }
@@ -66,17 +66,17 @@ public sealed partial class Compiler
             ? "start is the program's entry point"
             : "when_power_on is the board step that runs before start";
         if (r.Name == WhenPowerOnName && Target.HasOs)
-            throw new CompileError(r.Pos,
+            throw new CompileError(Li.EntryPoint, r.Pos,
                 $"when_power_on is the board step of a program for a target without an operating system, and " +
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has one: do that work at the top of start");
         bool returnsVoid = ResolveType(r.ReturnType, new TypeEnv(r.File), allowVoid: true) is VoidType;
         if (r.TypeParams.Count != 0 || r.Params.Count != 0 || !returnsVoid)
-            throw new CompileError(r.Pos,
+            throw new CompileError(Li.EntryPoint, r.Pos,
                 r.Name == StartName
                     ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Hosted sets the exit status)"
                     : $"{what}, declared '{shape}'");
         if (r.Blocks is null || IsAsm(r) || r.AnnotationNamed("export") is not null || r.AnnotationNamed("inline") is not null)
-            throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no @external, @export, or @inline)");
+            throw new CompileError(Li.BuilderCalledShape, r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no @external, @export, or @inline)");
     }
 
     /// Checks that the program's entry routines go together: `when_power_on` only with `start`, and without an
@@ -89,12 +89,12 @@ public sealed partial class Compiler
         if (start is null)
         {
             if (board is not null)
-                throw new CompileError(board.Pos, "when_power_on runs before start, and the program has no start: add 'routine start() -> None'");
+                throw new CompileError(Li.EntryPoint, board.Pos, "when_power_on runs before start, and the program has no start: add 'routine start() -> None'");
             return;
         }
         if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenPowerOnName)) return;
         if (!Target.HasOs && board is null)
-            throw new CompileError(start.Pos,
+            throw new CompileError(Li.EntryPoint, start.Pos,
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has no operating system, so the reset lands in the program's own "
                 + "'routine when_power_on() -> None', and this program has none: write one that calls prepare_core() "
                 + "(Unhosted) first, which puts the globals in place, then puts a reporting routine in the Crash "
@@ -121,7 +121,7 @@ public sealed partial class Compiler
     private Instance EntryHelper(string module, string name, Pos pos)
     {
         var decl = _free.GetValueOrDefault(name)?.FirstOrDefault(r => r.IsLibrary && r.Module == module)
-                   ?? throw new CompileError(pos,
+                   ?? throw new CompileError(Li.EntryPoint, pos,
                        $"the generated entry needs {module}/{name}, which the standard library doesn't have for {Target.Arch}-{Target.Os}-{Target.Abi}");
         return RequireInstance(decl, new TypeEnv(decl.File));
     }
@@ -167,11 +167,11 @@ public sealed partial class Compiler
         var cpu = CpuModel.For(Target, start.Pos);
         bool armM = Target.Arch == "arm";
         if (armM && !cpu.IsMProfile)
-            throw new CompileError(start.Pos,
+            throw new CompileError(Li.EntryPoint, start.Pos,
                 $"on 32-bit ARM without an operating system the entry is a Cortex-M reset vector, and the build's CPU ({cpu.Cpu}) " +
                 "isn't an M-profile one: name a Cortex-M CPU, cpu = \"cortex-m3\" under [target] in config.toml (or the board's Cortex-M), or bring your own entry instead of start");
         if (Target.Arch is not ("x86_64" or "aarch64" or "arm" or "riscv32"))
-            throw new CompileError(start.Pos,
+            throw new CompileError(Li.EntryPoint, start.Pos,
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board, startInst, halt };

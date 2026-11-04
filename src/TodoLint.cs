@@ -16,7 +16,7 @@ public static class TodoLint
             var todo = (r.Blocks ?? []).Where(b => Bodies.All(b.Stmts).OfType<TodoStmt>().Any()).ToList();
             if (todo.Count == 0) continue;
             string lines = string.Join(", ", todo.SelectMany(b => Bodies.All(b.Stmts).OfType<TodoStmt>()).Select(t => $"line {t.Pos.Line}"));
-            warnings.Add($"{r.Pos}: warning: routine '{r.Name}' has lines not written yet (todo): {lines}");
+            warnings.Add($"{Li.TodoLeft.Head}: {r.Pos}: routine '{r.Name}' has lines not written yet (todo): {lines}");
         }
         return warnings;
     }

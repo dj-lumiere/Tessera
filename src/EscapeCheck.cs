@@ -442,7 +442,7 @@ public sealed class EscapeCheck
             string where = s.EntityField is { } entity
                 ? $"a field of the entity {entity}, which any routine that reaches the entity may use later"
                 : $"the global '{global!.Name}', which every routine reaches";
-            return new CompileError(s.Pos, $"{s.Text} keeps {source} in {where}, and the build can't compare those later uses "
+            return new CompileError(Li.ViewOutlives, s.Pos, $"{s.Text} keeps {source} in {where}, and the build can't compare those later uses "
                 + "with where that view's place is given back: keep a Stamped of the entity there (its stamp(), read back with "
                 + "fetch(), which fails once the entity has ended), make the field an &E? when one holder keeps the value, or "
                 + "hand the view as an argument to the routines that use it. An Addr (the view's .to[Addr](), turned back with "
@@ -476,7 +476,7 @@ public sealed class EscapeCheck
                 foreach (var g in value.OfType<GlobalAtom>().Where(g => g.ThreadLocal && g.Level <= 0))
                     found.ReturnsThreadLocal.TryAdd((g.Name, g.Level), new Why(r.Pos, Routine, "return"));
                 if (errors is not null && Reaches(value) is { } sees)
-                    errors.Add(new CompileError(r.Pos, $"this returns a value that reaches {sees.What}, which is gone once "
+                    errors.Add(new CompileError(Li.ViewReturned, r.Pos, $"this returns a value that reaches {sees.What}, which is gone once "
                         + $"'{Routine}' returns: return the values themselves, or let the caller pass the memory in (a span "
                         + "or a slot) and write there" + Note));
             }
@@ -499,13 +499,13 @@ public sealed class EscapeCheck
                         }
                 Store(found, place, value, new Why(s.Pos, Routine, s.Text));
                 StoreThreadLocal(found, place, value, new Why(s.Pos, Routine, s.Text),
-                    (local, shared) => new CompileError(s.Pos, $"this keeps the address of the thread-local '{local.Name}' in "
+                    (local, shared) => new CompileError(Li.ThreadLocalAddress, s.Pos, $"this keeps the address of the thread-local '{local.Name}' in "
                         + $"the global '{shared.Name}', which every thread reaches and which outlives the thread: "
                         + ThreadLocalFix(local.Name) + Note), errors);
                 if (errors is not null && StoredView(s, place, value) is { } stored)
                     errors.Add(stored);
                 else if (errors is not null && Outside(place) && Reaches(value) is { } sees)
-                    errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
+                    errors.Add(new CompileError(Li.ViewOutlives, s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
                         + $"'{Routine}': that memory is gone once the routine returns. Keep the values there, or keep the "
                         + "view in this routine only" + Note));
             }
@@ -530,7 +530,7 @@ public sealed class EscapeCheck
                 if (ReachesThreadLocal(args[i]) is { } local)
                 {
                     string handed = call.Handed is { } h && i < h.Count && h[i].Text != local.Name ? $" in '{h[i].Text}'" : "";
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands the work the address of this thread's "
+                    errors.Add(new CompileError(Li.CrossThreadView, call.Pos, $"{call.Text} hands the work the address of this thread's "
                         + $"'{local.Name}'{handed}, and the work runs on another thread: " + ThreadLocalFix(local.Name) + Note));
                     break;
                 }
@@ -541,7 +541,7 @@ public sealed class EscapeCheck
                 foreach (var ((local, _), why) in e.ReturnsThreadLocal.OrderBy(r => r.Key.Global, StringComparer.Ordinal))
                 {
                     var at = why.Store;
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it returns the "
+                    errors.Add(new CompileError(Li.CrossThreadView, call.Pos, $"{call.Text} runs '{name}' on another thread, and it returns the "
                         + $"address of that thread's '{local}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line "
                         + $"{at.Pos.Line}), which the thread that waits for the work reads: " + ThreadLocalFix(local) + Note));
                     break;
@@ -552,7 +552,7 @@ public sealed class EscapeCheck
                 foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
                 {
                     var at = why.Store;
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it changes the global "
+                    errors.Add(new CompileError(Li.GlobalChangedAcrossThreads, call.Pos, $"{call.Text} runs '{name}' on another thread, and it changes the global "
                         + $"'{global}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line {at.Pos.Line}: {at.Text}) without an "
                         + $"exclusive access, while other threads reach it too: {fix}" + Note));
                     break;
@@ -570,7 +570,7 @@ public sealed class EscapeCheck
                           + $"name first, held: AuthorizedSlice[{element.Name}] <- s.get_exclusive_access(), and dropped after the "
                           + "ticket's retrieve"
                         : fix;
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands {what} to '{name}', which changes it on another thread "
+                    errors.Add(new CompileError(Li.CrossThreadView, call.Pos, $"{call.Text} hands {what} to '{name}', which changes it on another thread "
                         + "without an exclusive access, and it isn't handed over with steal, so other threads may reach it too: "
                         + $"hand it over with steal, or {handFix}" + Note));
                     break;
@@ -589,7 +589,7 @@ public sealed class EscapeCheck
                     {
                         var decl = all.GetValueOrDefault(callee)?.Inst.Decl;
                         string name = decl is not null && param < decl.Params.Count ? $"'{decl.Params[param].Name}'" : $"parameter {param + 1}";
-                        errors.Add(new CompileError(call.Pos, $"{call.Text} hands '{Callee(callee)}' a view of {data.Origin}, which is "
+                        errors.Add(new CompileError(Li.CrossThreadView, call.Pos, $"{call.Text} hands '{Callee(callee)}' a view of {data.Origin}, which is "
                             + $"read-only memory, and '{Callee(callee)}' writes through its {name}: copy the values into a place "
                             + $"first and hand that place, {data.Copy}"));
                         break;
@@ -633,7 +633,7 @@ public sealed class EscapeCheck
                 var value = new HashSet<Atom> { new GlobalAtom(global, level, ThreadLocal: true) };
                 var reason = new Why(call.Pos, Routine, call.Text, why);
                 StoreThreadLocal(found, place, value, reason,
-                    (local, shared) => new CompileError(call.Pos, $"{call.Text} has '{Callee(callee)}' keep the address "
+                    (local, shared) => new CompileError(Li.ThreadLocalAddress, call.Pos, $"{call.Text} has '{Callee(callee)}' keep the address "
                         + $"of the thread-local '{local.Name}' in the global '{shared.Name}' ({Line(why)}), which every "
                         + "thread reaches and which outlives the thread: " + ThreadLocalFix(local.Name) + Note), errors);
             }
@@ -649,7 +649,7 @@ public sealed class EscapeCheck
                     errors.Add(Kept(call, callee, from, sees, why));
                 else if (errors is not null && depth == 0 && call.Channels?.GetValueOrDefault(into) is { Text: not null } channel
                          && Reaches(value) is { } seen)
-                    errors.Add(new CompileError(call.Pos, $"'{channel.Text}' is a {channel.Type}, which hands its values to "
+                    errors.Add(new CompileError(Li.ChannelSharing, call.Pos, $"'{channel.Text}' is a {channel.Type}, which hands its values to "
                         + $"another thread or fiber, and {call.Text} hands it a view of {seen.What}, which ends in "
                         + $"'{Routine}': the receiver could read it after that. Hand the memory itself over to a channel of "
                         + $"places (a Channel[&[Byte]] for bytes) with steal, or transmit a view of memory that never ends "
@@ -722,7 +722,7 @@ public sealed class EscapeCheck
             var callee = all.GetValueOrDefault(calleeSymbol)?.Inst.Decl;
             string calleeName = callee?.DisplayName ?? calleeSymbol;
             string paramName = callee is not null && param < callee.Params.Count ? callee.Params[param].Name : $"argument {param + 1}";
-            return new CompileError(call.Pos, $"{call.Text} hands '{calleeName}' the address of the thread-local "
+            return new CompileError(Li.ThreadLocalAddress, call.Pos, $"{call.Text} hands '{calleeName}' the address of the thread-local "
                 + $"'{local.Name}', and '{calleeName}' keeps what its '{paramName}' reaches in a global every thread "
                 + $"reaches ({Line(why)}), which outlives the thread: " + ThreadLocalFix(local.Name) + Note);
         }
@@ -737,7 +737,7 @@ public sealed class EscapeCheck
             string kept = store.Routine == calleeName
                 ? $"line {store.Pos.Line}: {store.Text}"
                 : $"'{store.Routine}', line {store.Pos.Line}: {store.Text}";
-            return new CompileError(call.Pos, $"{call.Text} hands '{calleeName}' a value that reaches {sees.What}, and "
+            return new CompileError(Li.ViewOutlives, call.Pos, $"{call.Text} hands '{calleeName}' a value that reaches {sees.What}, and "
                 + $"'{calleeName}' keeps what its '{paramName}' reaches where it outlives the call ({kept}). That memory "
                 + $"is gone once '{Routine}' returns: keep the values themselves there, or keep the view in '{Routine}' only" + Note);
         }

@@ -185,7 +185,7 @@ public sealed class LateinitFlow
     {
         if (!st.Unfilled.Contains(r.Name) || !_declared.TryGetValue(r.Name, out var decl)) return;
         if (!_reported.Add((r.Pos.Line, r.Pos.Col))) return;
-        _errors.Add(new CompileError(r.Pos,
+        _errors.Add(new CompileError(Li.LateinitRead, r.Pos,
             $"'{r.Name}' was declared lateinit on line {decl.Line}, and this reads it before anything fills it on some path: "
             + $"fill it first, with {r.Name}.store(value) or {r.Name}.construct(...), by handing it to the routine that fills it, "
             + $"or by declaring it with a value ({r.Name}: &T <- value)"));

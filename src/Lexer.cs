@@ -82,7 +82,7 @@ public static class SourceText
             int lineStart = start + before.LastIndexOf((byte)'\n') + 1;
             int line = 1 + before.Count((byte)'\n');
             int col = 1 + Strict.GetString(bytes[lineStart..bad]).Length;
-            throw new CompileError(new Pos(shown, line, col), "the source is not valid UTF-8 (save the file as UTF-8)");
+            throw new CompileError(Li.InvalidSourceEncoding, new Pos(shown, line, col), "the source is not valid UTF-8 (save the file as UTF-8)");
         }
     }
 
@@ -113,8 +113,11 @@ public static class SourceText
 /// never a keyword.
 public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default, bool Escaped = false);
 
-public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error[LI]: {message}")
+public sealed class CompileError(Code code, Pos pos, string message) : Exception($"{code.Head}: {pos}: {message}")
 {
+    /// The diagnostic code, printed as `error[LI-S007]`.
+    public Code Code { get; } = code;
+
     public Pos Pos { get; } = pos;
 
     /// The message without its place.
@@ -186,7 +189,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             }
 
             if (c == '%' && IsIdentChar(Peek(1)) && !OperandBefore())
-                throw new CompileError(pos, "a value is written without '%': count, not %count");
+                throw new CompileError(Li.RemovedSpelling, pos, "a value is written without '%': count, not %count");
 
             if (c == '`')
             {
@@ -214,7 +217,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             {
                 string name = ReadIdent();
                 if (name is "self" or "Self")
-                    throw new CompileError(pos, name == "self"
+                    throw new CompileError(Li.RemovedSpelling, pos, name == "self"
                         ? "'self' isn't a Lapila name: the receiver is written me"
                         : "'Self' isn't a Lapila name: the type a routine is on is written Me");
                 _tokens.Add(new Token(TokenKind.Ident, name, pos));
@@ -236,7 +239,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             }
 
             if (c >= CharText.Length)
-                throw new CompileError(pos, $"'{c}' can't stand here: outside text and comments a source is ASCII");
+                throw new CompileError(Li.InvalidCharacter, pos, $"'{c}' can't stand here: outside text and comments a source is ASCII");
             _i++;
             _col++;   // never a newline here
             TokenKind kind;
@@ -264,7 +267,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     kind = char.IsAsciiLetterLower(Peek()) ? TokenKind.Hash : TokenKind.At;
                     break;
                 case '|':
-                    if (Peek() == '|') throw new CompileError(pos, "'or' joins two Bool values; '|' is bitor");
+                    if (Peek() == '|') throw new CompileError(Li.BoolOperatorSpelling, pos, "'or' joins two Bool values; '|' is bitor");
                     kind = TokenKind.Pipe;
                     break;
                 case '/':
@@ -303,12 +306,12 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '%': kind = TokenKind.Op; break;
                 case '^': kind = TokenKind.Op; break;
                 case '&':
-                    if (Peek() == '&') throw new CompileError(pos, "'and' joins two Bool values; '&' is bitand");
+                    if (Peek() == '&') throw new CompileError(Li.BoolOperatorSpelling, pos, "'and' joins two Bool values; '&' is bitand");
                     kind = TokenKind.Op;
                     break;
                 case '~': kind = TokenKind.Op; break;
                 case '!':
-                    if (Peek() != '=') throw new CompileError(pos, "'not' negates a Bool; '!' alone is nothing");
+                    if (Peek() != '=') throw new CompileError(Li.BoolOperatorSpelling, pos, "'not' negates a Bool; '!' alone is nothing");
                     Advance();
                     kind = TokenKind.Op;
                     text = "!=";
@@ -327,9 +330,9 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     else if (Peek() == '>') { Advance(); text = ">>"; }
                     break;
                 default:
-                    throw new CompileError(pos, $"unexpected character '{c}'");
+                    throw new CompileError(Li.InvalidCharacter, pos, $"unexpected character '{c}'");
             }
-            if (_depth < 0) throw new CompileError(pos, $"unmatched '{c}'");
+            if (_depth < 0) throw new CompileError(Li.UnmatchedBracket, pos, $"unmatched '{c}'");
             _tokens.Add(new Token(kind, text, pos));
         }
 
@@ -489,10 +492,10 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         Advance();
         int start = _i;
         while (_i < src.Length && src[_i] is not ('`' or '\n' or '\r')) Advance();
-        if (Peek() != '`') throw new CompileError(pos, "a name between backticks ends on the same line, with a backtick");
+        if (Peek() != '`') throw new CompileError(Li.InvalidBacktickName, pos, "a name between backticks ends on the same line, with a backtick");
         string name = src[start.._i];
         Advance();
-        if (name.Length == 0) throw new CompileError(pos, "a name between backticks holds at least one character");
+        if (name.Length == 0) throw new CompileError(Li.InvalidBacktickName, pos, "a name between backticks holds at least one character");
         return name;
     }
 
@@ -527,15 +530,15 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         {
             var number = ReadFloat(start, pos);
             if (radix == 10 && UnitAt(_i) is { } fractionUnit)
-                throw new CompileError(pos, $"a {UnitKind(fractionUnit)} literal takes a whole number: write it in a smaller unit, such as 1500ms for 1.5s");
+                throw new CompileError(Li.UnitLiteral, pos, $"a {UnitKind(fractionUnit)} literal takes a whole number: write it in a smaller unit, such as 1500ms for 1.5s");
             return number;
         }
 
         var digits = src.AsSpan(digitsStart, _i - digitsStart);
-        if (digits.Length == digits.Count('_')) throw new CompileError(pos, "malformed number");
+        if (digits.Length == digits.Count('_')) throw new CompileError(Li.InvalidNumericLiteral, pos, "malformed number");
         string? unit = radix == 10 ? UnitAt(_i) : null;
         if (unit is null && _i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
-            throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
+            throw new CompileError(Li.InvalidNumericLiteral, pos, $"unexpected '{src[_i]}' in a number");
 
         // The digits gather in a ulong while it can't overflow (below 2^59, times 16 plus 15), then in a BigInteger.
         ulong small = 0;
@@ -545,7 +548,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         {
             if (d == '_') continue;
             int dv = HexValue(d);
-            if (dv >= radix) throw new CompileError(pos, $"digit '{d}' is invalid in base {radix}");
+            if (dv >= radix) throw new CompileError(Li.InvalidNumericLiteral, pos, $"digit '{d}' is invalid in base {radix}");
             if (!big && small < 1UL << 59)
             {
                 small = small * (ulong)radix + (ulong)dv;
@@ -557,16 +560,16 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 big = true;
             }
             mag = mag * radix + dv;
-            if (mag > MaxLiteral) throw new CompileError(pos, $"integer literal overflows {MaxLiteralBits} bits");
+            if (mag > MaxLiteral) throw new CompileError(Li.IntegerLiteralRange, pos, $"integer literal overflows {MaxLiteralBits} bits");
         }
         if (!big) mag = small;
         if (neg && mag > (MaxLiteral >> 1) + 1)
-            throw new CompileError(pos, $"integer literal is below the {MaxLiteralBits}-bit range");
+            throw new CompileError(Li.IntegerLiteralRange, pos, $"integer literal is below the {MaxLiteralBits}-bit range");
 
         if (unit is not null)
         {
             if (neg && Units[unit].Type != "Duration")
-                throw new CompileError(pos, $"a {UnitKind(unit)} is never negative, so '-{src[digitsStart.._i]}{unit}' isn't one");
+                throw new CompileError(Li.UnitLiteral, pos, $"a {UnitKind(unit)} is never negative, so '-{src[digitsStart.._i]}{unit}' isn't one");
             _i += unit.Length;
             _col += unit.Length;
             return new Token(TokenKind.Unit, src[start.._i], pos, neg ? -mag : mag);
@@ -644,11 +647,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         if (Peek() is '+' or '-') Advance();
         while (_i < src.Length && char.IsAsciiDigit(src[_i])) Advance();
         string text = src[start.._i];
-        if (intDigits.Length + fracDigits.Length == 0) throw new CompileError(pos, $"malformed float literal '{text}'");
+        if (intDigits.Length + fracDigits.Length == 0) throw new CompileError(Li.InvalidFloatLiteral, pos, $"malformed float literal '{text}'");
         if (_i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
-            throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
+            throw new CompileError(Li.InvalidNumericLiteral, pos, $"unexpected '{src[_i]}' in a number");
         if (!int.TryParse(src[expStart.._i], System.Globalization.CultureInfo.InvariantCulture, out int exponent))
-            throw new CompileError(pos, $"malformed float literal '{text}'");
+            throw new CompileError(Li.InvalidFloatLiteral, pos, $"malformed float literal '{text}'");
 
         // The literal keeps its text: where it is used, the type it goes into must hold it exactly (HexFloat.Encode),
         // B128's 113 bits included. The double here is only a stand-in for the text.
@@ -671,7 +674,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         string text = src[start.._i];
         if (!double.TryParse(text.Replace("_", ""), System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out double value))
-            throw new CompileError(pos, $"malformed float literal '{text}'");
+            throw new CompileError(Li.InvalidFloatLiteral, pos, $"malformed float literal '{text}'");
         return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(value));
     }
 
@@ -689,15 +692,15 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             {
                 'n' => 10, 't' => 9, 'r' => 13, '0' => 0, '\\' => '\\', '\'' => '\'', '"' => '"',
                 'x' when byteOnly => ReadHexByte(pos),
-                'x' => throw new CompileError(pos, "a character takes \\uXXXXXX; \\xXX is a byte"),
+                'x' => throw new CompileError(Li.ByteLiteral, pos, "a character takes \\uXXXXXX; \\xXX is a byte"),
                 'u' when !byteOnly => ReadScalar(pos),
-                'u' => throw new CompileError(pos, "a byte takes \\xXX; \\uXXXXXX is a character"),
-                _ => throw new CompileError(pos, $"unknown escape '\\{e}'"),
+                'u' => throw new CompileError(Li.ByteLiteral, pos, "a byte takes \\xXX; \\uXXXXXX is a character"),
+                _ => throw new CompileError(Li.InvalidEscape, pos, $"unknown escape '\\{e}'"),
             };
         }
         else if (byteOnly)
         {
-            if (c > 0x7F) throw new CompileError(pos, "a byte literal must hold one ASCII character");
+            if (c > 0x7F) throw new CompileError(Li.ByteLiteral, pos, "a byte literal must hold one ASCII character");
             v = c;
             Advance();
         }
@@ -713,7 +716,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             Advance();
         }
         if (Peek() != '\'')
-            throw new CompileError(pos, byteOnly
+            throw new CompileError(Li.ByteLiteral, pos, byteOnly
                 ? "a byte literal must hold exactly one byte"
                 : "a character literal must hold exactly one character");
         Advance();
@@ -724,10 +727,10 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     private int ReadScalar(Pos pos)
     {
         if (_i + 6 > src.Length || !src.Substring(_i, 6).All(char.IsAsciiHexDigit))
-            throw new CompileError(pos, "\\u needs six hex digits, as in \\u0000E9");
+            throw new CompileError(Li.InvalidEscape, pos, "\\u needs six hex digits, as in \\u0000E9");
         int v = Convert.ToInt32(src.Substring(_i, 6), 16);
         if (v > 0x10FFFF || v is >= 0xD800 and <= 0xDFFF)
-            throw new CompileError(pos, $"\\u{v:X6} is not a Unicode scalar value (a surrogate or past 10FFFF)");
+            throw new CompileError(Li.InvalidEscape, pos, $"\\u{v:X6} is not a Unicode scalar value (a surrogate or past 10FFFF)");
         for (int k = 0; k < 6; k++) Advance();
         return v;
     }
@@ -736,7 +739,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     {
         string hex = $"{Peek()}{Peek(1)}";
         if (!char.IsAsciiHexDigit(hex[0]) || !char.IsAsciiHexDigit(hex[1]))
-            throw new CompileError(pos, "\\x needs two hex digits");
+            throw new CompileError(Li.InvalidEscape, pos, "\\x needs two hex digits");
         Advance();
         Advance();
         return Convert.ToInt64(hex, 16);
@@ -790,7 +793,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         char previous = ' ';
         while (true)
         {
-            if (_i >= src.Length || Peek() == '\n') throw new CompileError(pos, "unterminated string literal");
+            if (_i >= src.Length || Peek() == '\n') throw new CompileError(Li.UnterminatedString, pos, "unterminated string literal");
             char c = Peek();
             if (holes && c == '{' && depth == 0 && Peek(1) == '{')
             {
@@ -819,7 +822,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 'n' => "\n", 't' => "\t", 'r' => "\r", '0' => "\0", '\\' => "\\", '"' => "\"", '\'' => "'",
                 'x' => SourceText.RawByte((int)ReadHexByte(pos)).ToString(),
                 'u' => char.ConvertFromUtf32(ReadScalar(pos)),
-                _ => throw new CompileError(pos, $"unknown escape '\\{e}'"),
+                _ => throw new CompileError(Li.InvalidEscape, pos, $"unknown escape '\\{e}'"),
             });
         }
         return new Token(TokenKind.Str, sb.ToString(), pos);
@@ -832,7 +835,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         Advance();
         while (true)
         {
-            if (_i >= src.Length || Peek() == '\n') throw new CompileError(pos, "unterminated string literal");
+            if (_i >= src.Length || Peek() == '\n') throw new CompileError(Li.UnterminatedString, pos, "unterminated string literal");
             char c = Peek();
             sb.Append(c);
             Advance();

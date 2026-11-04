@@ -23,7 +23,7 @@ public static class FinishLint
             if (r.Blocks?.FirstOrDefault(b => b.Name == BlockName) is not { } finish) continue;
             foreach (var b in r.Blocks.Where(b => b != finish))
                 foreach (var ret in Bodies.All(b.Stmts).OfType<ReturnStmt>())
-                    warnings.Add($"{ret.Pos}: warning: a return outside {BlockName} here: jump {BlockName}(...) instead, "
+                    warnings.Add($"{Li.ReturnInFinishBlock.Head}: {ret.Pos}: a return outside {BlockName} here: jump {BlockName}(...) instead, "
                         + $"so the release in {BlockName} runs on this exit too");
         }
         return warnings;

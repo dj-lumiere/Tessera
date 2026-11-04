@@ -420,7 +420,7 @@ public sealed partial class FunctionGen
     /// A routine's value as a Callable: a failable routine's carries what it can throw.
     private CallableType OwnCallable(Instance inst)
     {
-        if (inst.Ret is VariantType { IsAddressed: true } optional) throw new CompileError(inst.Decl.Pos, Compiler.NoOptionalCallable(optional));
+        if (inst.Ret is VariantType { IsAddressed: true } optional) throw new CompileError(Li.TypeForm, inst.Decl.Pos, Compiler.NoOptionalCallable(optional));
         if (!inst.IsFailable) return new CallableType(inst.CallConv, inst.Params, inst.Ret);
         if (Emitting) _c.EnsureThrowsKnown(inst);
         return new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true, Emitting ? _c.ThrowsOf(inst, _inst) : []);
@@ -430,7 +430,7 @@ public sealed partial class FunctionGen
     private void NoFailableAddress(RoutineDecl routine, Pos pos)
     {
         if (routine.IsFailable)
-            throw Err(pos, $"addr() gives '{routine.DisplayName}' to C, and it gives its failures back, which C has no way to receive: "
+            throw Err(Li.FailureAcrossC, pos, $"addr() gives '{routine.DisplayName}' to C, and it gives its failures back, which C has no way to receive: "
                 + "hand C a routine that receives the failure itself (with check or try)");
     }
 
@@ -451,13 +451,13 @@ public sealed partial class FunctionGen
         if (wanted.Failable)
         {
             if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
-                throw Err(r.Pos, $"'{r.DisplayName}' is a C routine, and C has no way to receive a failure: its parameter "
+                throw Err(Li.FailureAcrossC, r.Pos, $"'{r.DisplayName}' is a C routine, and C has no way to receive a failure: its parameter "
                     + $"'{r.Params[param].Name}' can't take a routine value that fails");
             return value;
         }
         if (!value.Failable) return null;
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
-            throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is the value of a routine that can fail, whose "
+            throw Err(Li.FailureAcrossC, at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is the value of a routine that can fail, whose "
                 + "failure C has no way to receive: hand it a routine that receives the failure itself (with check or try)");
         // A ticket keeps its entry's failure for its retrieve(), and the ticket's type says what it can be (BindTicketWork).
         if (IsTicketRoutine(r) && r.Params[param].Name == "entry") return value;
@@ -470,7 +470,7 @@ public sealed partial class FunctionGen
         // A routine that only calls the value or puts it on a ticket is built for the value: what the ticket's work throws is
         // received by its retrieve().
         if (_c.OnlyCalledOrTicketed(r, r.Params[param].Name)) return value;
-        throw Err(at, $"you hand a routine value that may fail to '{r.Params[param].Name}' of '{r.DisplayName}', which keeps it "
+        throw Err(Li.FailureCallable, at, $"you hand a routine value that may fail to '{r.Params[param].Name}' of '{r.DisplayName}', which keeps it "
             + "or hands it on, so its failure would have no caller to go to: hand it an infallible routine, or one that "
             + "receives its failures itself (with check or try)");
     }
@@ -709,13 +709,13 @@ public sealed partial class FunctionGen
         Val v;
         if (_inst.Ret is VoidType)
         {
-            if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
+            if (r.Value is not null) throw Err(Li.ReturnTypeMismatch, r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
             v = new Val("zeroinitializer", _c.ValueTypeOf(VoidType.Instance, r.Pos));
             EndStatementTemps(null, r.Pos);
         }
         else
         {
-            if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
+            if (r.Value is null) throw Err(Li.ReturnTypeMismatch, r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
             var returned = r.Value;
             if (r.Value is ValueRef named && ReturnsSlotValue(named))
             {
@@ -783,7 +783,7 @@ public sealed partial class FunctionGen
             ReturnFailure(from, llvm, r.Pos);
             return;
         }
-        throw Err(r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
+        throw Err(Li.ThrowNotCrashable, r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
     }
 
     // ── A ticket's kept failure ─────────────────────────────────────────────
@@ -794,7 +794,7 @@ public sealed partial class FunctionGen
     private void EmitPutFailure(CallExpr c)
     {
         if (c.Args.Count != 2)
-            throw Err(c.Pos, "put_failure takes the failure and the room: put_failure(failure, room: at)");
+            throw Err(Li.FailureForm, c.Pos, "put_failure takes the failure and the room: put_failure(failure, room: at)");
         var failure = EvalAny(c.Args[0]);
         var room = Eval(c.Args[1], new PtrType(null));
         if (!Emitting || _cur.Terminated) return;
@@ -804,7 +804,7 @@ public sealed partial class FunctionGen
             return;
         }
         if (failure.Type is not VariantType union || !union.Leaves.All(Crashing.IsCrashable))
-            throw Err(c.Args[0].Pos, $"put_failure keeps a failure (a crashable, or the Crashables a check caught), not {failure.Type}");
+            throw Err(Li.FailureForm, c.Args[0].Pos, $"put_failure keeps a failure (a crashable, or the Crashables a check caught), not {failure.Type}");
         string llvm = TaggedLlvm(union);
         string from = NewSlot(union);
         Line($"store {llvm} {failure.Op}, ptr {from}");
@@ -820,7 +820,7 @@ public sealed partial class FunctionGen
     private void EmitThrowFailureFrom(CallExpr c)
     {
         if (c.Args.Count != 1)
-            throw Err(c.Pos, "throw_failure_from takes the room: throw_failure_from(room: at)");
+            throw Err(Li.FailureForm, c.Pos, "throw_failure_from takes the room: throw_failure_from(room: at)");
         var room = Eval(c.Args[0], new PtrType(null));
         if (!Emitting || _cur.Terminated || _inst.Env.Get(Compiler.FailsKey) is not VariantType { Leaves.Count: > 0 } union) return;
         string llvm = TaggedLlvm(union);
@@ -843,7 +843,7 @@ public sealed partial class FunctionGen
         if (!Emitting)
         {
             if (!Crashing.IsCrashable(v.Type) && v.Type is not ArchetypeType && v.Type is not VariantType)
-                throw Err(error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), not {v.Type}");
+                throw Err(Li.ThrowNotCrashable, error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), not {v.Type}");
             Terminate("unreachable");
             return;
         }
@@ -866,7 +866,7 @@ public sealed partial class FunctionGen
             StopOnFailure(slot, llvm, union.Leaves.ToList(), pos, inMold: false);
             return;
         }
-        throw Err(error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
+        throw Err(Li.ThrowNotCrashable, error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
     }
 
     /// The tag of a new failure of `leaf`: its type ID, and in a traced routine the failure's number in the high half
@@ -892,7 +892,7 @@ public sealed partial class FunctionGen
     private string? PassOnFailures(WhenStmt w, VariantType vt, List<DType> missing, string slot)
     {
         if (Crashing.IsCheck(vt) && missing.Any(m => !Crashing.IsCrashable(m)))
-            throw Err(w.Pos, $"a when on {vt} observes its value: is {Crashing.ValueOf(vt)} as value");
+            throw Err(Li.WhenObservation, w.Pos, $"a when on {vt} observes its value: is {Crashing.ValueOf(vt)} as value");
         var saved = _cur;
         _cur = NewLBlock("passon");
         string label = _cur.Label;

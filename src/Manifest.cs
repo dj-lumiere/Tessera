@@ -157,31 +157,31 @@ public sealed record Manifest(
         string dir = System.IO.Path.GetDirectoryName(path)!;
         var doc = Toml.Parse(File.ReadAllText(path), path);
         if (doc.HasErrors)
-            throw new ManifestError(path, string.Join("; ", doc.Diagnostics.Select(d => d.ToString())));
+            throw new ManifestError(Li.ManifestSyntax, path, string.Join("; ", doc.Diagnostics.Select(d => d.ToString())));
         var root = doc.ToModel();
 
         foreach (var (key, value) in root)
         {
             if (!Keys.TryGetValue(key, out var allowed))
-                throw new ManifestError(path, $"unknown section [{key}] (sections: {string.Join(", ", Keys.Keys.Select(k => $"[{k}]"))})");
-            if (value is not TomlTable table) throw new ManifestError(path, $"'{key}' must be a section: [{key}]");
+                throw new ManifestError(Li.ManifestUnknownKey, path, $"unknown section [{key}] (sections: {string.Join(", ", Keys.Keys.Select(k => $"[{k}]"))})");
+            if (value is not TomlTable table) throw new ManifestError(Li.ManifestValue, path, $"'{key}' must be a section: [{key}]");
             foreach (var field in table.Keys)
                 // An old link-script gets its own message below.
                 if (key == "package" && field == "tessera-version")
-                    throw new ManifestError(path, "[package] tessera-version is named lapila-version now: rename the key");
+                    throw new ManifestError(Li.ManifestRenamed, path, "[package] tessera-version is named lapila-version now: rename the key");
                 else if (!allowed.Contains(field) && !(key == "target" && field == "link-script"))
-                    throw new ManifestError(path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
+                    throw new ManifestError(Li.ManifestUnknownKey, path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
         }
 
         var package = Section(root, "package", path)
-                      ?? throw new ManifestError(path, "a manifest needs a [package] section with a name");
+                      ?? throw new ManifestError(Li.ManifestMissing, path, "a manifest needs a [package] section with a name");
         var target = Section(root, "target", path) ?? new TomlTable();
         var debug = Section(root, "debug", path) ?? new TomlTable();
 
-        string name = Str(package, "name", path) ?? throw new ManifestError(path, "[package] needs a name");
+        string name = Str(package, "name", path) ?? throw new ManifestError(Li.ManifestMissing, path, "[package] needs a name");
 
         if (target.ContainsKey("link-script"))
-            throw new ManifestError(path, "[target] takes no link-script: the builder writes the link script from the board's " +
+            throw new ManifestError(Li.ManifestTarget, path, "[target] takes no link-script: the builder writes the link script from the board's " +
                 "memory map, so name the board, board = \"raspi4b\" (one of Lapila's) or board = \"boards/my-board.toml\"");
         // board = "raspi4b": the board's triple, CPU, and features, which triple, cpu, and features below may refine.
         var board = Str(target, "board", path) is { } boardName ? Board.Load(boardName, dir) : null;
@@ -191,13 +191,13 @@ public sealed record Manifest(
             triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t)
                 : board?.Target ?? defaultTarget ?? BuildTarget.Host();
         }
-        catch (ArgumentException e) { throw new ManifestError(path, $"[target] triple: {e.Message}"); }
+        catch (ArgumentException e) { throw new ManifestError(Li.ManifestTarget, path, $"[target] triple: {e.Message}"); }
         if (board is not null && triple.LlvmTriple != board.Target.LlvmTriple)
-            throw new ManifestError(path, $"[target] triple is {triple.Arch}-{triple.Os}-{triple.Abi}, and the board {board.Name} " +
+            throw new ManifestError(Li.ManifestTarget, path, $"[target] triple is {triple.Arch}-{triple.Os}-{triple.Abi}, and the board {board.Name} " +
                 $"is {board.Target.Arch}-{board.Target.Os}-{board.Target.Abi}: leave triple out, the board gives it");
         if (board is not null) triple = triple with { Cpu = board.Target.Cpu, Features = board.Target.Features, Rtc = board.Target.Rtc, Serial = board.Target.Serial };
         if (board is null && !triple.HasOs)
-            throw new ManifestError(path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
+            throw new ManifestError(Li.ManifestTarget, path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
                 "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Lapila's) " +
                 "or board = \"boards/my-board.toml\" (a board file of the project)");
         // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as check's --cpu and --feature.
@@ -207,28 +207,28 @@ public sealed record Manifest(
 
         string modeName = Str(target, "mode", path) ?? "debug";
         var mode = BuildModes.Parse(modeName)
-                   ?? throw new ManifestError(path, $"[target] mode is {BuildModes.Names}, not \"{modeName}\"");
+                   ?? throw new ManifestError(Li.ManifestTarget, path, $"[target] mode is {BuildModes.Names}, not \"{modeName}\"");
 
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
         string? entryName = Str(target, "executable", path);
         string? entry = entryName is null ? null : Resolve(entryName);
-        if (entry is not null && !File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
+        if (entry is not null && !File.Exists(entry)) throw new ManifestError(Li.ManifestPath, path, $"[target] executable: no such file: {entryName}");
         if (entry is not null && Cli.OldSourceMessage(entryName!) is { } oldExtension)
-            throw new ManifestError(path, $"[target] executable: {oldExtension}");
+            throw new ManifestError(Li.ManifestRenamed, path, $"[target] executable: {oldExtension}");
         if (entry is not null && !entry.EndsWith(".li", StringComparison.OrdinalIgnoreCase))
-            throw new ManifestError(path,
+            throw new ManifestError(Li.ManifestTarget, path,
                 $"[target] executable: {entryName} is not a Lapila source (Lapila sources end in .li)");
 
         var roots = new List<string> { dir };
         // `module-paths` lists folders whose modules join the solution, found by import like the manifest's own folder.
         if (target.ContainsKey("library"))
-            throw new ManifestError(path, "[target] library is named module-paths: module-paths = [\"../shared\"] lists the " +
+            throw new ManifestError(Li.ManifestRenamed, path, "[target] library is named module-paths: module-paths = [\"../shared\"] lists the " +
                 "folders whose modules join the solution");
         foreach (var lib in Strs(target, "module-paths", path) ?? [])
         {
             string full = Resolve(lib);
-            if (!System.IO.Directory.Exists(full)) throw new ManifestError(path, $"[target] module-paths: no such directory: {lib}");
+            if (!System.IO.Directory.Exists(full)) throw new ManifestError(Li.ManifestPath, path, $"[target] module-paths: no such directory: {lib}");
             roots.Add(full);
         }
         // The entry and the files `sources` lists belong to the root module unless they have a `module` line.
@@ -240,11 +240,11 @@ public sealed record Manifest(
                 ? System.IO.Directory.GetFiles(full, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
                 : File.Exists(full) && full.EndsWith(".li", StringComparison.OrdinalIgnoreCase)
                     ? [full]
-                    : throw new ManifestError(path, $"[target] sources: no such .li file or directory: {extra}");
+                    : throw new ManifestError(Li.ManifestPath, path, $"[target] sources: no such .li file or directory: {extra}");
             rootFiles.AddRange(files.Select(System.IO.Path.GetFullPath));
         }
         if (entry is null && rootFiles.Count == 0)
-            throw new ManifestError(path, "[target] needs the entry file of a program, executable = \"main.li\", or the files of " +
+            throw new ManifestError(Li.ManifestMissing, path, "[target] needs the entry file of a program, executable = \"main.li\", or the files of " +
                 "a library linked into another program, sources = [\"src\"]");
         var sources = new List<string>();
         foreach (var start in entry is null ? rootFiles : [entry])
@@ -391,14 +391,14 @@ public sealed record Manifest(
     private static string? Str(TomlTable t, string key, string path) =>
         !t.TryGetValue(key, out var v) ? null
         : v is string s ? s
-        : throw new ManifestError(path, $"'{key}' is a string");
+        : throw new ManifestError(Li.ManifestValue, path, $"'{key}' is a string");
 
     /// A trace size: a count from 1 to 4096 (a power of two where the trace's ring needs one), or null when not given.
     private static int? TraceSize(TomlTable t, string key, string path, bool powerOfTwo)
     {
         if (!t.TryGetValue(key, out var v)) return null;
         if (v is not long n || n < 1 || n > 4096 || (powerOfTwo && (n & (n - 1)) != 0))
-            throw new ManifestError(path, powerOfTwo
+            throw new ManifestError(Li.ManifestValue, path, powerOfTwo
                 ? $"'{key}' is a power of two from 1 to 4096, the frames a trace keeps"
                 : $"'{key}' is a count from 1 to 4096");
         return (int)n;
@@ -409,20 +409,20 @@ public sealed record Manifest(
     {
         if (t is null || !t.TryGetValue("message-size", out var v)) return null;
         if (v is not long n || n < 16 || n > 65536)
-            throw new ManifestError(path, "'message-size' is a byte count from 16 to 65536, the room a crash's message has");
+            throw new ManifestError(Li.ManifestValue, path, "'message-size' is a byte count from 16 to 65536, the room a crash's message has");
         return (int)n;
     }
 
     private static bool? Bool(TomlTable t, string key, string path) =>
         !t.TryGetValue(key, out var v) ? null
         : v is bool b ? b
-        : throw new ManifestError(path, $"'{key}' is true or false");
+        : throw new ManifestError(Li.ManifestValue, path, $"'{key}' is true or false");
 
     private static List<string>? Strs(TomlTable t, string key, string path)
     {
         if (!t.TryGetValue(key, out var v)) return null;
         if (v is TomlArray a && a.All(x => x is string)) return a.Cast<string>().ToList();
-        throw new ManifestError(path, $"'{key}' is a list of strings: {key} = [\"...\"]");
+        throw new ManifestError(Li.ManifestValue, path, $"'{key}' is a list of strings: {key} = [\"...\"]");
     }
 
     /// Where the build writes the link script of its board: next to the executable, as `<name>.ld`.
@@ -452,4 +452,11 @@ public sealed record Manifest(
     public static IEnumerable<string> BoardLinkArguments(string script) => ["-T", script, "-nostdlib", "-fuse-ld=lld", "-static"];
 }
 
-public sealed class ManifestError(string path, string message) : Exception($"{path}: {message}");
+public sealed class ManifestError(Code code, string path, string message) : Exception($"{path}: {message}")
+{
+    /// The diagnostic code, printed as `error[LI-S1401]`.
+    public Code Code { get; } = code;
+
+    /// The whole report line: the code, the manifest's path, and what is wrong.
+    public string Report => $"{Code.Head}: {Message}";
+}

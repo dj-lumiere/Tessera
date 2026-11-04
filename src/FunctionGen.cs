@@ -235,7 +235,7 @@ public sealed partial class FunctionGen
         var ended = _memEvents.Values.SelectMany(list => list).OfType<MemoryRules.End>().Select(e => e.Name).ToHashSet();
         foreach (var key in _destructFields.Order(StringComparer.Ordinal))
             if (!ended.Contains(key))
-                throw Err(_decl.Pos, $"'{_decl.DisplayName}' never gives back '{key}', and a destruct gives back every BorrowedSlice, BorrowedCell, "
+                throw Err(Li.NeverGivenBack, _decl.Pos, $"'{_decl.DisplayName}' never gives back '{key}', and a destruct gives back every BorrowedSlice, BorrowedCell, "
                     + $"and entity the value holds: drop {key} here (or {key}.give_back()), or take it out with steal {key} as old "
                     + "and hand it on");
     }
@@ -381,7 +381,7 @@ public sealed partial class FunctionGen
             _hollowSeen = handedOn;
             // What may hold nothing goes only where nothing is allowed: a place that takes a Box (not a Box?) would keep a hollow one.
             if (!s.Place && !_c.Prechecking && _maybeHollow.TryGetValue(handedOn.Name, out var mayBeNothing) && expected?.Name == mayBeNothing)
-                throw Err(handedOn.Pos, $"'{handedOn.Name}' came out of a place that keeps a {mayBeNothing}?, so it may hold nothing, and the place you hand it to takes a {mayBeNothing}: "
+                throw Err(Li.HollowRead, handedOn.Pos, $"'{handedOn.Name}' came out of a place that keeps a {mayBeNothing}?, so it may hold nothing, and the place you hand it to takes a {mayBeNothing}: "
                     + $"look at it with when {handedOn.Name} (is None, is {mayBeNothing} as x) and hand it on inside the arm that has a {mayBeNothing}");
         }
         if (s.Place)
@@ -402,7 +402,7 @@ public sealed partial class FunctionGen
             // else's): only a value held in the place itself may have.
             bool duty = element is not PtrType && HasReleaseDuty(element);
             if (!duty && SourceTypeParams.Count == 0 && !_c.Prechecking)
-                throw Err(s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
+                throw Err(Li.NothingToGiveBack, s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
                     + "read it with peek() instead of steal");
             if (!duty || !Entities.Holds(element) && ManagedMemory(element) is null)
             {
@@ -410,7 +410,7 @@ public sealed partial class FunctionGen
                 return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos) { Builder = true }, expected);
             }
             if (Entities.Holds(element) && UnfollowedPlace(s.Value) is { } why)
-                throw Err(s.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
+                throw Err(Li.HollowRead, s.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
                     + $"Take the value out on its own line and put the new value in at once: steal {new Printer().Expr(s.Value, 0)} as old "
                     + "inject <new value>, or trade two elements with swap(first, second)");
             // The place's address once, its value out, then zeroed in place (a memset: a whole all-zero value of a big
@@ -429,11 +429,11 @@ public sealed partial class FunctionGen
             return taken;
         }
         if (s.Value is not ValueRef r)
-            throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
+            throw Err(Li.StealMisuse, s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
         var t = InferQuiet(r);
         if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_workNames.ContainsKey(r.Name) && !_c.Prechecking)
-            throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
+            throw Err(Li.NothingToGiveBack, s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
                 + $"write {r.Name} without steal");
         // The slot of something followed (an entity, memory), or a place borrowed with `x: &T <- ...` whatever it
         // holds, gives what it holds. A plain value, or a pointer that is a value of its own, is itself.
@@ -478,7 +478,7 @@ public sealed partial class FunctionGen
         {
             _maybeHollow.TryGetValue(from.Name, out var stillHollow);
             var stolen = new StealExpr(st.From, st.Pos);
-            var t = Infer(stolen) ?? throw Err(st.From.Pos, "cannot infer what steal takes here");
+            var t = Infer(stolen) ?? throw Err(Li.StealMisuse, st.From.Pos, "cannot infer what steal takes here");
             // The entity's stamps follow it into the new slot.
             _stampFollows = true;
             try
@@ -493,7 +493,7 @@ public sealed partial class FunctionGen
             return;
         }
         if (Infer(st.From) is not PtrType { Pointee: { } held } || !Entities.Holds(held))
-            throw Err(st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
+            throw Err(Li.StealMisuse, st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
         // What comes out of a place that keeps an `E?` is that E? again: hollow when the place held None.
         string? fromKept = KeptOptional(Infer(st.From))?.Held.Name;
         if (st.Inject is not null)
@@ -503,7 +503,7 @@ public sealed partial class FunctionGen
             return;
         }
         if (!st.LeavesEmpty && UnfollowedPlace(st.From) is { } why)
-            throw Err(st.From.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
+            throw Err(Li.HollowRead, st.From.Pos, $"steal would leave {why}, so a read of it would find it hollow without a build error. "
                 + $"Put the new value in at once: steal {new Printer().Expr(st.From, 0)} as {st.Name} inject <new value>, "
                 + "or trade two elements with swap(first, second). Where the place stays empty on purpose, write inject lateinit");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
@@ -547,11 +547,11 @@ public sealed partial class FunctionGen
         }
         if (Infer(f.Place) is not PtrType { Pointee: RecordType { Decl.Name: "BorrowedCell", Args: [var held] } cell }
             || cell.Decl.Module != Compiler.SystemModule)
-            throw Err(f.Pos, $"'<-' fills a field that keeps an E? (an entity or nothing) with a place from a manager, and "
+            throw Err(Li.ManagerFill, f.Pos, $"'<-' fills a field that keeps an E? (an entity or nothing) with a place from a manager, and "
                 + $"{spelled} is {DescribePlace(f.Place)}: write {spelled}.poke(value)");
         bool moved = f.Value is not AtExpr && InferQuiet(f.Value) is { } given && given.Equals(cell);
         if (f.Value is not AtExpr && !moved)
-            throw Err(f.Value.Pos, $"{spelled} keeps its {held.Name} in a place from a manager, and this line names none: "
+            throw Err(Li.ManagerFill, f.Value.Pos, $"{spelled} keeps its {held.Name} in a place from a manager, and this line names none: "
                 + $"{spelled} <- {printer.Expr(f.Value, 0)} from HEAP (or from STACK, a slot of this routine's frame)");
         CheckFillEmpty(f, cell, held);
         if (f.Value is AtExpr at && IsStackNamed(at.Manager))
@@ -626,7 +626,7 @@ public sealed partial class FunctionGen
     {
         string spelled = new Printer().Expr(f.Place, 0);
         if (_loops.Count > 0)
-            throw Err(at.Manager.Pos, $"a loop fills {spelled} from STACK on every pass, and every pass's {held.Name} would go "
+            throw Err(Li.ManagerFill, at.Manager.Pos, $"a loop fills {spelled} from STACK on every pass, and every pass's {held.Name} would go "
                 + $"into the same slot of the frame: {spelled} <- ... from HEAP");
         string name = $"$stack{_tmp++}";
         _stackFills[name] = spelled;
@@ -776,7 +776,7 @@ public sealed partial class FunctionGen
             Mem(new MemoryRules.Alias(name, of, pos));
             // A view of the place (`m: @BorrowedSlice[T] = me.m`) is no second handle.
             if (warn && type is not PtrType)
-                _c.NoteExpensiveCalls([(pos, $"{pos}: warning: '{name}' and '{of}' are the same memory, released once whichever one "
+                _c.NoteExpensiveCalls([(pos, $"{Li.MemoryReleasedOnce.Head}: {pos}: '{name}' and '{of}' are the same memory, released once whichever one "
                 + $"gives it back: keep memory of its own with {of}.duplicate(), or pass a view of it with {of}.getview()")]);
             return;
         }
@@ -821,7 +821,7 @@ public sealed partial class FunctionGen
     private Val MemUseView(ValueRef r)
     {
         if (_maybeHollow.TryGetValue(r.Name, out var hollowKind) && !ReferenceEquals(r, _hollowSeen))
-            throw Err(r.Pos, $"'{r.Name}' came out of a place that keeps a {hollowKind}?, so it may hold nothing: look at it with when "
+            throw Err(Li.HollowRead, r.Pos, $"'{r.Name}' came out of a place that keeps a {hollowKind}?, so it may hold nothing: look at it with when "
                 + $"(is None, is {hollowKind} as x) before you use it as a {hollowKind}, or hand it on with steal {r.Name}");
         return MemUseViewChecked(r);
     }
@@ -1014,11 +1014,11 @@ public sealed partial class FunctionGen
     {
         if (_decl.AnnotationNamed("reshaping") is not { } a) return;
         if (a.Args.Count == 0 && _decl.Params is not [{ Name: "me" }, ..])
-            throw Err(a.Pos, $"@reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
+            throw Err(Li.ReshapingProblem, a.Pos, $"@reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
                 + "name the parameters, @reshaping(items)");
         foreach (var (name, _) in DeclaredReshapes(_decl))
             if (_decl.Params.All(p => p.Name != name))
-                throw Err(a.Pos, $"@reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
+                throw Err(Li.ReshapingProblem, a.Pos, $"@reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
     }
 
     /// A call to a routine that may move memory: the views of the memory it may move no longer see it, and when that
@@ -1054,7 +1054,7 @@ public sealed partial class FunctionGen
             string moved = field is not null && (FieldOf(arg) is not null || !sig.Decl.IsLibrary) ? root + "." + field : root;
             // Rule 4 for the emitter a `for` holds: it views the memory it walks until the loop ends.
             if (_loops.FirstOrDefault(f => f.Walks is { } w && w.Root == root && SameMemory(w.Field, field))?.Walks is { } walk)
-                throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{moved}', which the "
+                throw Err(Li.ReshapingProblem, plan.Pos, $"'{plan.Decl.DisplayName}' may move the memory of '{moved}', which the "
                     + $"for loop on line {walk.Pos.Line} walks, so the loop's next element might not be where it was: collect the "
                     + $"changes and make them after the loop, or walk by position"
                     + (InferQuiet(walk.Source) is RecordType { Decl.Name: "List" } ? $" (for i in 0 til {Spelled(walk.Source)}.count())" : ""));
@@ -1093,7 +1093,7 @@ public sealed partial class FunctionGen
         var printer = new Printer();
         string spelledName = printer.Expr(named, 0);
         if (f.Value is AtExpr at)
-            throw Err(f.Pos, $"'{spelledName}' holds a value already, and 'from' borrows a new place, which would lose the "
+            throw Err(Li.ManagerFill, f.Pos, $"'{spelledName}' holds a value already, and 'from' borrows a new place, which would lose the "
                 + $"one it has: write over it without from, {spelledName} <- {printer.Expr(at.Value, 0)}");
         var placeType = Infer(named);
         if (placeType is PtrType { Pointee: RecordType { Decl.Name: "BorrowedSlice" } slice } && slice.Decl.Module == Compiler.SystemModule)
@@ -1102,7 +1102,7 @@ public sealed partial class FunctionGen
             return;
         }
         if (placeType is not PtrType { Pointee: { } pointee } || pointee is PtrType)
-            throw Err(f.Pos, $"'{spelledName}' is a value of {placeType?.Name ?? "unknown type"}, not a place, so '<-' has nothing "
+            throw Err(Li.ManagerFill, f.Pos, $"'{spelledName}' is a value of {placeType?.Name ?? "unknown type"}, not a place, so '<-' has nothing "
                 + $"to write into: bind it as a place, {spelledName}: &{placeType?.Name ?? "T"} <- value, to write over it later");
         Expr slot = pointee is RecordType { Decl.Name: "BorrowedCell" } cell && cell.Decl.Module == Compiler.SystemModule
             ? new MethodCallExpr(named, "getview", [], [], f.Pos)
@@ -1170,10 +1170,10 @@ public sealed partial class FunctionGen
         switch (plan.Decl.Name)
         {
             case "destruct" or "destruct_all" when !Compiler.IsEntryRoutine(_decl):
-                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory for the whole program, and the program's end gives "
+                throw Err(Li.GlobalMemoryOverwritten, plan.Pos, $"'{g.Name}' is a global that holds memory for the whole program, and the program's end gives "
                     + $"it back: change it with {g.Name}.replace(...), which gives the old memory back first");
             case "poke" or "poke_volatile":
-                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, and this overwrites it: "
+                throw Err(Li.GlobalMemoryOverwritten, plan.Pos, $"'{g.Name}' is a global that holds memory, and this overwrites it: "
                     + $"{g.Name}.replace(...) gives the old memory back and puts the new one in");
         }
     }
@@ -1285,7 +1285,7 @@ public sealed partial class FunctionGen
         // `return c` with c the slot of the entity returned hands over what the slot holds, not the slot.
         if (r.Value is ValueRef named && ReturnsSlotValue(named)) return;
         if (r.Value is { } value && FrameView(value) is { } sees)
-            throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
+            throw Err(Li.ViewReturned, value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
                 + "values themselves, or let the caller pass the memory in (a span or a slot) and write there");
     }
 
@@ -1303,7 +1303,7 @@ public sealed partial class FunctionGen
         Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || FrameView(value) is not { } sees) return;
         if (FrameView(into) is not null || MemName(into) is not null || IsOwnFrameValue(into)) return;
-        throw Err(plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
+        throw Err(Li.ViewReturned, plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
             + "routine returns. Keep the values there, or keep the view in this routine only");
     }
 
@@ -1419,7 +1419,7 @@ public sealed partial class FunctionGen
         _out = output;
     }
 
-    private CompileError Err(Pos pos, string msg) => new(pos, msg + InstantiationNote());
+    private CompileError Err(Code code, Pos pos, string msg) => new(code, pos, msg + InstantiationNote());
 
     /// Whether this routine's calls and values are recorded for the language server: it isn't generic, so they mean the
     /// same in every use.
@@ -1450,7 +1450,7 @@ public sealed partial class FunctionGen
     private void EmitBuildError(CallExpr call)
     {
         if (call.Args is not [StrLit text] || call.ArgNames is { Count: > 0 } && call.ArgNames.Any(n => n is not null))
-            throw Err(call.Pos, "build_error takes one text: build_error(\"what is wrong, and what to write\")");
+            throw Err(Li.BuildErrorCall, call.Pos, "build_error takes one text: build_error(\"what is wrong, and what to write\")");
         string message = System.Text.RegularExpressions.Regex.Replace(text.Value, @"\{([A-Za-z_][A-Za-z0-9_]*)\}", m =>
             _env.Get(m.Groups[1].Value) is ConstArg { StandIn: false } value
                 ? value.MemberName ?? value.Value.ToString(CultureInfo.InvariantCulture)
@@ -1486,7 +1486,7 @@ public sealed partial class FunctionGen
             while ((inst.Decl.IsLibrary || _c.IsGenericInstance(inst)) && seen.Add(inst.Symbol)
                    && _c.MadeBy.TryGetValue(inst.Symbol, out var made))
                 (at, inst) = made;
-            throw new CompileError(at, message);
+            throw new CompileError(Li.LibraryBuildError, at, message);
         }
     }
 
@@ -1504,13 +1504,13 @@ public sealed partial class FunctionGen
         {
             EmitRoutine();
             if (_memoryReady == false)
-                throw Err(_decl.Pos,
+                throw Err(Li.EntryPoint, _decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
                     + "(Unhosted), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
             // A board without a serial port has nowhere for the default report to go: the program says what a crash
             // does, so a crash never stops without a word by accident.
             if (_crashSlotSet == false && _c.Target.Serial is null)
-                throw Err(_decl.Pos,
+                throw Err(Li.EntryPoint, _decl.Pos,
                     "this board names no serial port, so a crash has nowhere to be reported, and when_power_on puts no "
                     + "reporting routine in the Crash service's slot: put one in after prepare_core(), "
                     + "Crash.report_with(report.to[Callable]()) with a routine of yours that writes to a UART or blinks an LED, "
@@ -1523,7 +1523,7 @@ public sealed partial class FunctionGen
     /// A build error inside something a `@source` names is reported at that place, with the generated line after it:
     /// the generator's input is what its author reads.
     private static CompileError FromSource(CompileError e, Pos source) =>
-        new(source, $"{e.Text} (in the generated Lapila at {e.Pos})") { Final = e.Final, FromSource = true };
+        new(e.Code, source, $"{e.Text} (in the generated Lapila at {e.Pos})") { Final = e.Final, FromSource = true };
 
     private void EmitRoutine()
     {
@@ -1551,20 +1551,20 @@ public sealed partial class FunctionGen
                 given = new Val(slot, new PtrType(held));
             }
             if (!_routineParams.TryAdd(p.Name, given))
-                throw Err(p.Pos, $"parameter '{p.Name}' is declared twice");
+                throw Err(Li.DuplicateParameter, p.Pos, $"parameter '{p.Name}' is declared twice");
             RecordValue(p.Pos, _inst.Params[i]);
         }
 
         foreach (var b in blocks)
         {
             if (!_blocks.TryAdd(b.Name, b))
-                throw Err(b.Pos, $"block '{b.Name}' is defined more than once in '{_decl.DisplayName}'");
+                throw Err(Li.BlockDeclaration, b.Pos, $"block '{b.Name}' is defined more than once in '{_decl.DisplayName}'");
             var types = new List<DType>();
             var seen = new HashSet<string>();
             foreach (var p in b.Params)
             {
                 var t = Resolve(p.Type);
-                if (!seen.Add(p.Name)) throw Err(p.Pos, $"block '{b.Name}' declares '{p.Name}' twice");
+                if (!seen.Add(p.Name)) throw Err(Li.DuplicateParameter, p.Pos, $"block '{b.Name}' declares '{p.Name}' twice");
                 types.Add(t);
             }
             _blockParamTypes[b.Name] = types;
@@ -1575,7 +1575,7 @@ public sealed partial class FunctionGen
         CheckReshapingAnnotation();
         // An entity is lent, never copied: its routines take me by its address, `routine @E.name(...)`.
         if (_decl.Params is [{ Name: "me" } me, ..] && me.Type.Name == "Me" && _inst.Params.Count > 0 && Entities.IsEntity(_inst.Params[0]))
-            throw Err(me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: "
+            throw Err(Li.EntityCopied, me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: "
                 + $"take it by its address, routine @{_decl.Owner}.{_decl.Name}(...)");
         if (!MemOn)
             for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
@@ -1626,7 +1626,7 @@ public sealed partial class FunctionGen
         bool accessLater = _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess or MemoryRules.KeptInto));
         if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet(),
                 FromOutside, leftChanged: leftChanged) is [var memoryError, ..] && !accessLater)
-            throw new CompileError(memoryError.Pos, memoryError.Text + InstantiationNote());
+            throw new CompileError(memoryError.Code, memoryError.Pos, memoryError.Text + InstantiationNote());
         // A call that may keep a view in a value of this routine is known once every routine is built: the check runs
         // again then, with what each callee keeps (Compiler.CheckKeptViews).
         if (MemOn && _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayHoldViewOf or MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess
@@ -1637,7 +1637,7 @@ public sealed partial class FunctionGen
             var wide = _routineValues.Keys.ToHashSet();
             var pos = _decl.Pos;
             _c.DeferMemoryCheck(effects => MemoryRules.Check(routine, pos, first, events, wide, FromOutside, effects)
-                .Select(e => new CompileError(e.Pos, e.Text + note)).ToList());
+                .Select(e => new CompileError(e.Code, e.Pos, e.Text + note)).ToList());
         }
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
@@ -1995,7 +1995,7 @@ public sealed partial class FunctionGen
         for (int i = 0; i < b.Params.Count; i++)
         {
             if (_values.ContainsKey(b.Params[i].Name))
-                throw Err(b.Params[i].Pos, $"block '{b.Name}' has a parameter named '{b.Params[i].Name}', like "
+                throw Err(Li.BlockDeclaration, b.Params[i].Pos, $"block '{b.Name}' has a parameter named '{b.Params[i].Name}', like "
                     + $"{RoutineValueKind(b.Params[i].Name)}, which every block already sees: use '{b.Params[i].Name}' itself, "
                     + "or give a value that changes its own name");
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
@@ -2017,7 +2017,7 @@ public sealed partial class FunctionGen
             StampCall("release_stamp", owner, new ValueRef("me", self.Pos), self.Pos);
         EmitLines(b.Stmts);
         if (!_cur.Terminated)
-            throw Err(b.Pos, b.Name == "entry"
+            throw Err(Li.ReturnForm, b.Pos, b.Name == "entry"
                 ? $"the lines of routine '{_decl.DisplayName}' can run off their end: end them with return (or a jump, or a call that never returns)"
                 : $"block '{b.Name}' can run off its end: end it with return, a jump, or a call that never returns");
     }
@@ -2031,7 +2031,7 @@ public sealed partial class FunctionGen
             if (_cur.Terminated)
             {
                 if (s is ReturnStmt { AtFileEnd: true }) continue;
-                throw Err(s.Pos, "this line can't run: every path through the line before it leaves (returns, jumps, breaks, continues, or never comes back)");
+                throw Err(Li.UnreachableStatement, s.Pos, "this line can't run: every path through the line before it leaves (returns, jumps, breaks, continues, or never comes back)");
             }
             EmitStmt(s);
         }
@@ -2100,15 +2100,15 @@ public sealed partial class FunctionGen
     private void Define(string name, Val v, Pos pos)
     {
         if (InHead && _values.ContainsKey(name))
-            throw Err(pos, _routineParams.ContainsKey(name)
+            throw Err(Li.NameBoundTwice, pos, _routineParams.ContainsKey(name)
                 ? $"'{name}' is a parameter of routine '{_decl.DisplayName}', which every block already sees: use the "
                   + "parameter itself, or share a value under a name of its own"
                 : $"'{name}' is local twice in routine '{_decl.DisplayName}': a name is bound once");
         if (_values.ContainsKey(name) && _routineValues.ContainsKey(name))
-            throw Err(pos, $"'{name}' is bound here again, and it is {RoutineValueKind(name)}, which the whole routine sees: "
+            throw Err(Li.NameBoundTwice, pos, $"'{name}' is bound here again, and it is {RoutineValueKind(name)}, which the whole routine sees: "
                 + "a name is bound once, so give this value its own name");
         if (_values.ContainsKey(name))
-            throw Err(pos, $"'{name}' is bound already where this line is: a name is bound once, so give this value its own name");
+            throw Err(Li.NameBoundTwice, pos, $"'{name}' is bound already where this line is: a name is bound once, so give this value its own name");
         _values[name] = v;
         RecordValue(pos, v.Type);
     }
@@ -2221,10 +2221,10 @@ public sealed partial class FunctionGen
                 _maybeHollow.Remove(b.Name);
                 var t = Resolve(b.Type);
                 CheckBareZero(b, t);
-                if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(b.Pos, borrowedWithEquals);
+                if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(Li.BorrowForm, b.Pos, borrowedWithEquals);
                 NoteMadeWork(b.Name, b.Value);
                 if (Entities.Holds(t))
-                    throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
+                    throw Err(Li.EntityCopied, b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
                         + $"{b.Name}: &{b.Type} <- ...");
                 // A routine value bound to a name points at the routine's recovering form when the routine can throw: the name
                 // takes the routine's list (a plain call through it passes the failure on, and put_callable hands it to the
@@ -2357,9 +2357,9 @@ public sealed partial class FunctionGen
                 var v = EvalAny(d.Value);
                 if (_cur.Terminated) break;
                 if (v.Type is not RecordType { IsTuple: true } tuple)
-                    throw Err(d.Value.Pos, $"only a tuple can be taken apart, and this is {v.Type}; read its fields by name");
+                    throw Err(Li.DestructuringArity, d.Value.Pos, $"only a tuple can be taken apart, and this is {v.Type}; read its fields by name");
                 if (tuple.Args.Count != d.Names.Count)
-                    throw Err(d.Pos, $"{tuple} has {tuple.Args.Count} items, and {d.Names.Count} names take them");
+                    throw Err(Li.DestructuringArity, d.Pos, $"{tuple} has {tuple.Args.Count} items, and {d.Names.Count} names take them");
                 var shape = _c.Shape(tuple);
                 for (int i = 0; i < d.Names.Count; i++)
                 {
@@ -2396,12 +2396,12 @@ public sealed partial class FunctionGen
                     && !_decl.IsLibrary && _decl.Name is not ("destruct" or "destruct_all"))
                 {
                     var printer = new Printer();
-                    throw Err(e.Pos, $"a value is given back with drop: drop {printer.Expr(direct.Receiver, 0)}");
+                    throw Err(Li.InvalidDropTarget, e.Pos, $"a value is given back with drop: drop {printer.Expr(direct.Receiver, 0)}");
                 }
                 // A call that hands back an entity (or a value holding one) has given it to this line: dropping it on
                 // the floor would leak what it holds.
                 if (e.Value is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(e.Value) is { } made && Entities.Holds(made))
-                    throw Err(e.Pos, $"this call hands you a {made.Name}, {HoldsWhat(made)}, and the line leaves it on the floor: "
+                    throw Err(Li.UnusedReturnValue, e.Pos, $"this call hands you a {made.Name}, {HoldsWhat(made)}, and the line leaves it on the floor: "
                         + "keep it in a place (x: &" + made.Name + " <- ...), drop it, or hand it over");
                 EvalAny(e.Value);
                 break;
@@ -2411,7 +2411,7 @@ public sealed partial class FunctionGen
                 if (d.Value is ValueRef givenBackName) _hollowSeen = givenBackName;
                 // A piece of work ends only on a ticket, which runs it and ends its arguments.
                 if (d.Value is ValueRef droppedWork && RunsOnce(droppedWork.Name, out var droppedOnce))
-                    throw Err(d.Pos, $"{droppedOnce}, so the work in '{droppedWork.Name}' runs once, and only the ticket that runs it "
+                    throw Err(Li.WorkRunsOnce, d.Pos, $"{droppedOnce}, so the work in '{droppedWork.Name}' runs once, and only the ticket that runs it "
                         + $"ends that argument, not drop: t.put_work(steal {droppedWork.Name})");
                 // Nothing to give back: in generic code (a T that is a record here, or a pointer a field written T
                 // holds) drop does nothing, in code that names its types it says so.
@@ -2428,7 +2428,7 @@ public sealed partial class FunctionGen
                     // error that says why, from evaluating it, before the build is stopped here.
                     if (InferQuiet(d.Value) == null)
                         EvalAny(d.Value);
-                    throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
+                    throw Err(Li.NothingToGiveBack, d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }
                 // An array has no destruct of its own: dropping it drops each element, the last first, and the array
@@ -2535,7 +2535,7 @@ public sealed partial class FunctionGen
                 break;
             case BreakStmt br:
             {
-                if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
+                if (_loops.Count == 0) throw Err(Li.BreakOutsideLoop, br.Pos, "break leaves a loop, and there is no loop here");
                 var loop = br.Target is null ? _loops.Peek() : NamedLoop(br.Target, br.TargetPos, "break");
                 loop.Breaks = true;
                 GiveBackStackPlaces(loop.BoxDepth, br.Pos);
@@ -2553,7 +2553,7 @@ public sealed partial class FunctionGen
             case BecomesStmt bc:
             {
                 if (_valueWhens.Count == 0)
-                    throw Err(bc.Pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
+                    throw Err(Li.BecomesOutsideArm, bc.Pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
                 var frame = _valueWhens.Peek();
                 var v = Eval(bc.Value, frame.Type);
                 if (_escape is not null) frame.Atoms.UnionWith(Atoms(bc.Value, frame.Type));
@@ -2626,7 +2626,7 @@ public sealed partial class FunctionGen
     {
         var fields = _c.Fields(s);
         int i = fields.FindIndex(f => f.Name == name);
-        if (i < 0) throw Err(pos, $"{s} has no field '{name}'");
+        if (i < 0) throw Err(Li.FieldNotFound, pos, $"{s} has no field '{name}'");
         CheckFieldVisible(s, s.Decl.Fields[i], pos);
         return (i, fields[i].Type);
     }
@@ -2635,7 +2635,7 @@ public sealed partial class FunctionGen
     private void CheckFieldVisible(RecordType s, FieldDecl field, Pos pos)
     {
         if (field.IsPrivate && !_c.PrivateReaches(s.Decl, _env.File))
-            throw Err(pos, $"field '{field.Name}' of {s} is secret to {Compiler.ShowModule(s.Decl.Module)}");
+            throw Err(Li.SecretField, pos, $"field '{field.Name}' of {s} is secret to {Compiler.ShowModule(s.Decl.Module)}");
     }
 
     /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found
@@ -2667,13 +2667,13 @@ public sealed partial class FunctionGen
                 {
                     var p = EvalAny(f.Base);
                     if (p.Type is not PtrType { Pointee: { } pointee })
-                        throw Err(f.Pos, $"'.{f.Name}' needs a record or a typed pointer to one, not {p.Type}");
+                        throw Err(Li.FieldAccess, f.Pos, $"'.{f.Name}' needs a record or a typed pointer to one, not {p.Type}");
                     (baseAddr, baseType) = (p.Op, pointee);
                 }
                 if (baseType is PtrType)
-                    throw Err(f.Pos, "this field holds a pointer; peek it into a value first");
+                    throw Err(Li.FieldAccess, f.Pos, "this field holds a pointer; peek it into a value first");
                 if (baseType is not RecordType s)
-                    throw Err(f.Pos, $"{baseType} has no fields");
+                    throw Err(Li.FieldAccess, f.Pos, $"{baseType} has no fields");
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
                 if (s.TransparentField is not null) return (baseAddr, ft);
                 _c.EnsureTypeDefined(s);
@@ -2693,9 +2693,9 @@ public sealed partial class FunctionGen
                 {
                     var (baseAddr, baseType) = PlaceAddress(ix.Base);
                     if (baseType is PtrType)
-                        throw Err(ix.Pos, "this field holds a pointer; peek it into a value before stepping it");
+                        throw Err(Li.FieldAccess, ix.Pos, "this field holds a pointer; peek it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .getview().getslot(i)");
+                        throw Err(Li.StrideUse, ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .getview().getslot(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -2709,8 +2709,8 @@ public sealed partial class FunctionGen
                     return (elemAddr, baseType);
                 }
                 var b = EvalAny(ix.Base);
-                if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers have stride; this is {b.Type}");
-                if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
+                if (b.Type is not PtrType bp) throw Err(Li.StrideUse, ix.Pos, $"only pointers have stride; this is {b.Type}");
+                if (bp.Pointee is null) throw Err(Li.StrideUse, ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
                 // `PointedCell[X].stride(i)` is the i-th X, whatever X is: on a PointedCell<Array<T, COUNT>> it steps over whole arrays
@@ -2727,7 +2727,7 @@ public sealed partial class FunctionGen
         DType literal = e is IntLit lit && lit.Value.Sign < 0 ? IntType.S(64) : _c.Count;
         var i = Eval(e, Infer(e) ?? literal);
         if (i.Type is not IntType { IsNumber: true } it || !(it.IsSize || it.Bits == 64))
-            throw Err(e.Pos, $"stride takes a U64 or an S64 (or C's CSize / CSSize), not {i.Type}");
+            throw Err(Li.StrideUse, e.Pos, $"stride takes a U64 or an S64 (or C's CSize / CSSize), not {i.Type}");
         // GEP reads its index as signed at the pointer width: a wider index is cut to it (a count past the address
         // space can't name memory), a narrower unsigned one is widened with zeros.
         int width = _c.Target.Size;
@@ -2742,7 +2742,7 @@ public sealed partial class FunctionGen
         if (AsStride(place) is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
         var v = EvalAny(place);
         if (v.Type is not PtrType p)
-            throw Err(place.Pos, $"this is {v.Type}, not a pointer; memory is only reached through PointedCell values");
+            throw Err(Li.PointerUse, place.Pos, $"this is {v.Type}, not a pointer; memory is only reached through PointedCell values");
         return (v.Op, p.Pointee ?? opaqueAs);
     }
 
@@ -2756,13 +2756,13 @@ public sealed partial class FunctionGen
             RecordValue(r.Pos, v.Type);
             return v;
         }
-        if (_hiddenPayloads.TryGetValue(r.Name, out var why)) throw Err(r.Pos, why);
+        if (_hiddenPayloads.TryGetValue(r.Name, out var why)) throw Err(Li.UnknownName, r.Pos, why);
         if (_c.LambdaOuter.TryGetValue(_decl, out var outer) && outer.Names.Contains(r.Name))
-            throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
+            throw Err(Li.LambdaCapture, r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
                 + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
-            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? OldSpellings.OldName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
-        throw Err(r.Pos, NotVisible(r.Name));
+            throw Err(Li.UnknownName, r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? OldSpellings.OldName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+        throw Err(Li.UnknownName, r.Pos, NotVisible(r.Name));
     }
 
     /// The message for a routine reading `name` that the file's top-level lines bind: those lines are the program's
@@ -2811,8 +2811,8 @@ public sealed partial class FunctionGen
             || _c.FindFree(owner.Name, _env.File, owner.Pos) is not null || _env.Get(owner.Name) is ConstArg)
             return;
         if (BoundInRoutine(owner.Name))
-            throw Err(owner.Pos, NotVisible(owner.Name, fromNextLine: true));
-        throw Err(owner.Pos, ScriptBinding(owner.Name) ?? OldConsoleName(owner.Name) ?? $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+            throw Err(Li.UnknownName, owner.Pos, NotVisible(owner.Name, fromNextLine: true));
+        throw Err(Li.UnknownName, owner.Pos, ScriptBinding(owner.Name) ?? OldConsoleName(owner.Name) ?? $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
     /// Whether some body of this routine binds `name`: a parameter, a block parameter, a carried value, or a binding.
@@ -2920,7 +2920,7 @@ public sealed partial class FunctionGen
         {
             case WhenExpr: return null;
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
-            case RangeExpr r: throw Err(r.Pos, "a range is walked by a for loop: for i in a til b");
+            case RangeExpr r: throw Err(Li.LoopSource, r.Pos, "a range is walked by a for loop: for i in a til b");
             case BinaryExpr { Op: "and" } fa when FlagsAnd(fa) is var (known, bare) && (known is not null || bare):
                 return known;
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" } or ChainedComparison: return BoolType.Instance;
@@ -2951,7 +2951,7 @@ public sealed partial class FunctionGen
                 if (baseType is RecordType s) return FieldOf(s, f.Name, f.Pos).Type;
                 // A value with a type of its own that has no fields (a variant, a choice, a number) says so here, where
                 // the author wrote the read, rather than through whatever the read goes into.
-                if (baseType is not null and not PtrType) throw Err(f.Pos, $"{baseType} has no fields");
+                if (baseType is not null and not PtrType) throw Err(Li.FieldAccess, f.Pos, $"{baseType} has no fields");
                 return null;
             }
             case PresetRef r:
@@ -3028,19 +3028,19 @@ public sealed partial class FunctionGen
     {
         if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall) e = placeCall;
         if (e is ImplicitCallExpr ic)
-            throw Err(ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
+            throw Err(Li.TypeNeeded, ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
         if (e is ImplicitMemberExpr im)
-            throw Err(im.Pos, $"'.{im.Name}' needs a known variant type here; write the type: Type.{im.Name}");
+            throw Err(Li.TypeNeeded, im.Pos, $"'.{im.Name}' needs a known variant type here; write the type: Type.{im.Name}");
         // A call to no routine at all says so, rather than that its type is unknown.
         if (e is CallExpr unknown && Infer(e) is null && PlanCall(e, null) is null)
-            throw Err(unknown.Pos, UnknownCall(unknown));
+            throw Err(Li.UnknownName, unknown.Pos, UnknownCall(unknown));
         if (e is RoutineRef overloaded && Infer(e) is null) return RoutineValue(overloaded, null);
         if (e is LambdaExpr lambda)
-            throw Err(lambda.Pos, "a lambda takes its parameter types from the Callable it becomes, and nothing here says which: bind it with a Callable type first");
+            throw Err(Li.TypeNeeded, lambda.Pos, "a lambda takes its parameter types from the Callable it becomes, and nothing here says which: bind it with a Callable type first");
         if (e is ArrayLit { IsTuple: false } && Infer(e) is null)
-            throw Err(e.Pos, "a bracket list has no type of its own, so there is nothing to walk or read from it: bind it with a type "
+            throw Err(Li.TypeNeeded, e.Pos, "a bracket list has no type of its own, so there is nothing to walk or read from it: bind it with a type "
                 + "first (xs: Items[S64, 3] = [1, 2, 3]), then use xs, and walk its positions with for i in 0 til 3");
-        var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
+        var t = Infer(e) ?? throw Err(Li.TypeNeeded, e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
 
@@ -3090,7 +3090,7 @@ public sealed partial class FunctionGen
             + (e.Fails.Count == 0 ? "no failure" : string.Join(", ", e.Fails.Select(t => t.Name))) + $", not {string.Join(", ", missing)}";
     }
 
-    private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
+    private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(Li.TypeMismatch, pos, $"expected {expected}, found {actual}");
 
     /// The one wording for an argument whose type isn't its parameter's, whichever path finds it (overload resolution,
     /// a single candidate, a Callable value, a variant payload, a preset).
@@ -3121,7 +3121,7 @@ public sealed partial class FunctionGen
         bool moving = _moving;
         _moving = false;
         if (FlagsOf(expected) is { } flagsExpected && e is BinaryExpr { Op: "|" or "&" or "^" } bitwise)
-            throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
+            throw Err(Li.FlagsUse, bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         if (e is FieldExpr narrowedField && NarrowedType(narrowedField) is { } narrowedType)
         {
@@ -3129,7 +3129,7 @@ public sealed partial class FunctionGen
             if (!Compatible(narrowedVal.Type, expected)) throw Mismatch(e.Pos, expected, narrowedVal.Type.ToString() ?? "");
             return narrowedVal;
         }
-        if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
+        if (!moving && CopiedEntity(e) is { } copied) throw Err(Li.EntityCopied, e.Pos, copied);
         // `None()` where an `E?` is kept (a `&E` of an entity): the hollow place, which holds nothing.
         if (e is CallExpr { Name: "None", Args.Count: 0 } or RecordLit { Fields.Count: 0 } && KeptOptional(new PtrType(expected)) is not null
             && Compiler.IsNoneRecord(InferQuiet(e)))
@@ -3139,7 +3139,7 @@ public sealed partial class FunctionGen
         }
         // An E where an `E?` is kept: the E goes in a place from a manager, which a `<-` line names.
         if (KeptOptional(new PtrType(expected)) is var (_, keptHeld) && InferQuiet(e) is { } keptGiven && keptGiven.Equals(keptHeld))
-            throw Err(e.Pos, $"a {keptHeld.Name}? is kept in a place from a manager, and this {keptHeld.Name} has none: put None() "
+            throw Err(Li.ManagerFill, e.Pos, $"a {keptHeld.Name}? is kept in a place from a manager, and this {keptHeld.Name} has none: put None() "
                 + $"here and fill it on a line of its own, x.field <- value from HEAP, or pass a &{keptHeld.Name} from one "
                 + $"(c: &{keptHeld.Name} <- value from HEAP, then steal c)");
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
@@ -3158,7 +3158,7 @@ public sealed partial class FunctionGen
         {
             IntLit { Base10: true } i when Compiler.WholeAsFloat(i.Value, expected, i.Pos) is { } whole =>
                 new Val(Compiler.ConstLlvm(whole), expected),
-            IntLit i when FlagsOf(expected) is { } flagsOfInt => throw Err(i.Pos,
+            IntLit i when FlagsOf(expected) is { } flagsOfInt => throw Err(Li.FlagsUse, i.Pos,
                 $"a {flagsOfInt.Name} value is made of its members ({string.Join(" and ", flagsOfInt.Decl.Members.Take(2).Select(m => m.Name))}), "
                 + "or none for no member on, not a number"),
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -3180,13 +3180,13 @@ public sealed partial class FunctionGen
             ChainedComparison chain => EvalChain(chain),
             UnaryExpr { Op: "not" } n => EvalNot(n),
             UnaryExpr { Op: "try" or "check" } rc => EvalRecover(rc, expected),
-            RangeExpr r => throw Err(r.Pos, "a range is walked by a for loop: for i in a til b"),
+            RangeExpr r => throw Err(Li.LoopSource, r.Pos, "a range is walked by a for loop: for i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
             ArrayLit a when LiteralView(a, expected) is { } literalView => literalView,
             ArrayLit a => EvalElementsLit(a, expected),
             AtExpr at => EvalAt(at, expected),
-            ImplicitMemberExpr m => throw Err(m.Pos,
+            ImplicitMemberExpr m => throw Err(Li.TypeMismatch, m.Pos,
                 $"'.{m.Name}' isn't a value of {expected}: a leading '.' starts a call on the type, .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
             NsCallExpr or MethodCallExpr when TemplateCall(e) is var (writer, template, shown) =>
@@ -3214,8 +3214,8 @@ public sealed partial class FunctionGen
             return new Val(EmitTmp($"select i1 {isNone}, {openOptional.Llvm} {none.Op}, {openOptional.Llvm} {some.Op}"), expected);
         }
         if (!Compatible(v.Type, expected))
-            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type, expected))
-                : FailuresMisfit(v.Type, expected) is { } failing ? Err(e.Pos, failing)
+            throw argument > 0 ? Err(Li.ArgumentTypeMismatch, e.Pos, ArgumentMismatch(argument, v.Type, expected))
+                : FailuresMisfit(v.Type, expected) is { } failing ? Err(Li.FailureCallable, e.Pos, failing)
                 : Mismatch(e.Pos, expected, v.Type.ToString());
         // A routine value that is not open goes into a place open to any failure with its kind beside its address.
         if (expected is CallableType { IsOpen: true } && v.Type is CallableType { IsOpen: false } given) return PackOpen(v, given, expected);
@@ -3240,7 +3240,7 @@ public sealed partial class FunctionGen
             if (f.IsWord && HexFloat.IsB128(expected)) return new Val(Compiler.ConstLlvm(new ConstVal(expected, f.WordB128Bits)), expected);
             if (f.IsWord) throw Mismatch(f.Pos, expected, $"{f.Text}, a float literal");
             if (HexFloat.IsB128(expected))
-                throw Err(f.Pos, $"a decimal float literal can't be a B128 yet: write it as a hex float (0x1.8p0), or convert a B64, "
+                throw Err(Li.LiteralNeedsType, f.Pos, $"a decimal float literal can't be a B128 yet: write it as a hex float (0x1.8p0), or convert a B64, "
                     + $"B64.to[B128]({new Printer().Expr(f)})");
             throw Mismatch(f.Pos, expected, "a float literal");
         }
@@ -3264,13 +3264,13 @@ public sealed partial class FunctionGen
             return Eval(new TempSlotExpr(e, e.Pos), expected, argument);
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
-            throw Err(e.Pos, argument > 0
+            throw Err(argument > 0 ? Li.ArgumentTypeMismatch : Li.TypeMismatch, e.Pos, argument > 0
                 ? $"{ArgumentMismatch(argument, $"the place {new PtrType(t)}", expected)}; read it first with .peek()"
                 : $"expected {expected}, found the place {new PtrType(t)}; read it first with .peek()");
         // A literal says why it can't be the parameter's type the way overload resolution does.
         bool preferred = true;
         if (argument > 0 && e is IntLit or FloatLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
-            throw Err(e.Pos, $"argument {argument}: {why}");
+            throw Err(Li.ArgumentTypeMismatch, e.Pos, $"argument {argument}: {why}");
         return Eval(e, expected, argument);
     }
 
@@ -3293,7 +3293,7 @@ public sealed partial class FunctionGen
     private Val ExtractField(FieldExpr f)
     {
         var b = EvalAny(f.Base);
-        if (b.Type is not RecordType s) throw Err(f.Pos, $"{b.Type} has no fields");
+        if (b.Type is not RecordType s) throw Err(Li.FieldAccess, f.Pos, $"{b.Type} has no fields");
         var (idx, ft) = FieldOf(s, f.Name, f.Pos);
         if (s.TransparentField is not null) return new Val(b.Op, ft);
         return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {_c.Shape(s).ValuePath(idx)}"), ft);
@@ -3304,9 +3304,9 @@ public sealed partial class FunctionGen
         // An integer literal is an address where an Addr goes: the number is the address, as wide as the target's.
         if (expected is PtrType { Pointee: null })
         {
-            if (Compiler.AddressLiteralError(new IntLit(value, pos, hexDigits)) is { } notHex) throw Err(pos, notHex);
+            if (Compiler.AddressLiteralError(new IntLit(value, pos, hexDigits)) is { } notHex) throw Err(Li.AddressLiteral, pos, notHex);
             string address = _c.Count.Literal(value, hexDigits, out var addressError)
-                             ?? throw Err(pos, $"{addressError}: an address on this target is {_c.Count.Bits} bits wide");
+                             ?? throw Err(Li.AddressLiteral, pos, $"{addressError}: an address on this target is {_c.Count.Bits} bits wide");
             return new Val($"inttoptr ({_c.Count.Llvm} {address} to ptr)", expected);
         }
         var it = expected switch
@@ -3315,7 +3315,7 @@ public sealed partial class FunctionGen
             ChoiceType en => en.Underlying,
             _ => throw Mismatch(pos, expected, "an integer literal"),
         };
-        string op = it.Literal(value, hexDigits, out var error) ?? throw Err(pos, error);
+        string op = it.Literal(value, hexDigits, out var error) ?? throw Err(Li.IntegerLiteralRange, pos, error);
         return new Val(op, expected);
     }
 
@@ -3338,7 +3338,7 @@ public sealed partial class FunctionGen
         if (expected is RecordType { Name: "CWStrView" } cw)
         {
             if (SourceText.HasRawByte(s.Value))
-                throw Err(s.Pos, "a wide string holds characters; a \\x escape above 7F is a raw byte");
+                throw Err(Li.StringLiteralSize, s.Pos, "a wide string holds characters; a \\x escape above 7F is a raw byte");
             _c.EnsureTypeDefined(cw);
             return new Val(EmitTmp($"insertvalue {cw.Llvm} poison, ptr {_c.WideStringGlobal(s.Value)}, 0"), cw);
         }
@@ -3375,7 +3375,7 @@ public sealed partial class FunctionGen
     /// A string literal's code points for a place of Chars, `where` naming that place: a `\x` byte above 7F is no
     /// character, so it is a build error there.
     private List<int> CharsOf(StrLit s, DType where) =>
-        Compiler.CodePoints(s.Value) ?? throw Err(s.Pos, $"{where} holds characters, and this string has a \\x byte "
+        Compiler.CodePoints(s.Value) ?? throw Err(Li.StringLiteralSize, s.Pos, $"{where} holds characters, and this string has a \\x byte "
             + "above 7F, which is no character: write the character itself or \\uXXXXXX, or keep the bytes in a @[Byte]");
 
     /// A string literal as the array literal it also is: its UTF-8 bytes where Bytes go, its code points where Chars
@@ -3392,7 +3392,7 @@ public sealed partial class FunctionGen
             string sizes = Compiler.CodePoints(s.Value) is { } cps
                 ? $"{bytes} byte{(bytes == 1 ? "" : "s")} in UTF-8 and {cps.Count} character{(cps.Count == 1 ? "" : "s")}"
                 : $"{bytes} byte{(bytes == 1 ? "" : "s")} (a \\x byte above 7F is no character)";
-            throw Err(s.Pos, $"{where} holds {n} {(chars ? "Char" : "Byte")}{(n == 1 ? "" : "s")}, and this string is {sizes}");
+            throw Err(Li.StringLiteralSize, s.Pos, $"{where} holds {n} {(chars ? "Char" : "Byte")}{(n == 1 ? "" : "s")}, and this string is {sizes}");
         }
         return new ArrayLit(values.Select(v => (Expr)new TypedIntLit(v, chars ? 32 : 8, s.Pos)).ToList(), s.Pos);
     }
@@ -3404,7 +3404,7 @@ public sealed partial class FunctionGen
     /// by FlushTemps when the statement is done.
     private Val EvalTempSlot(TempSlotExpr slot)
     {
-        var held = Infer(slot.Value) ?? throw Err(slot.Pos, "this value's type isn't known here: bind it in a slot first");
+        var held = Infer(slot.Value) ?? throw Err(Li.TypeNeeded, slot.Pos, "this value's type isn't known here: bind it in a slot first");
         string name = $"$temp{_tmp++}";
         var line = _lineSource;
         EmitStmtCore(new BindStmt(name, new TypeRef("$temp", [], slot.Pos) { Known = new PtrType(held) },
@@ -3549,7 +3549,7 @@ public sealed partial class FunctionGen
     private void CheckBareZero(BindStmt b, DType zeroed)
     {
         if (!b.Bare || b.Late || PointerIn(zeroed, zeroed.Name, []) is not { } where) return;
-        throw Err(b.Pos, $"{b.Name} has no value, and {zeroed} has no all-zero value: it holds a pointer, memory or a routine that is "
+        throw Err(Li.MissingValue, b.Pos, $"{b.Name} has no value, and {zeroed} has no all-zero value: it holds a pointer, memory or a routine that is "
             + $"never empty ({where}). Give it one ({b.Name}: {b.Type} <- value), or write lateinit {b.Name}: {b.Type} when it is "
             + "filled before it is read");
     }
@@ -3560,7 +3560,7 @@ public sealed partial class FunctionGen
         if (Compiler.IsCoreSpan(expected, out _) && a.Contents is ArrayLit lit)
             return FrameSpan(lit, expected);
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p: @T; found {expected}");
+            throw Err(Li.PointerUse, a.Pos, $"claim needs a typed pointer to fill, such as claim p: @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an unbroken
@@ -3582,7 +3582,7 @@ public sealed partial class FunctionGen
         }
         catch (CompileError) when (lit.Repeat is not null)
         {
-            throw Err(lit.Repeat.Pos,
+            throw Err(Li.ManagerFill, lit.Repeat.Pos,
                 "a &[T] from STACK has a count the build knows; for a count known only while running, "
                 + "borrow the memory from a manager: xs: &[T] <- [0] * n from manager");
         }
@@ -3613,12 +3613,12 @@ public sealed partial class FunctionGen
         // A place from the running flow's stack is a frame slot, which a `<-` line makes (LowerBorrow): `from STACK`
         // reaches here only where no line borrows (an argument, a field).
         if (IsStackNamed(a.Manager))
-            throw Err(a.Pos, "a place from STACK is borrowed on a line of its own, x: &T <- value (from STACK), and it stays "
+            throw Err(Li.ManagerFill, a.Pos, "a place from STACK is borrowed on a line of its own, x: &T <- value (from STACK), and it stays "
                 + "in its routine: memory that goes elsewhere comes from a manager the program gives it back to (from HEAP)");
         if (expected is RecordType { Decl.Name: "BorrowedSlice", Args: [_] } memory && memory.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
-                throw Err(a.Value.Pos, $"a {expected} from a manager is an array literal: [a, b] from manager, or [0] * n from manager");
+                throw Err(Li.ManagerFill, a.Value.Pos, $"a {expected} from a manager is an array literal: [a, b] from manager, or [0] * n from manager");
             var owner = new TypeRef("BorrowedSlice", [], a.Pos) { Known = memory };
             Expr times = lit.Repeat ?? new IntLit(1, lit.Pos);
             var call = new NsCallExpr(owner, "construct", [], [lit with { Repeat = null }, times, a.Manager], a.Pos)
@@ -3628,16 +3628,16 @@ public sealed partial class FunctionGen
         if (expected is RecordType { Decl.Name: "BorrowedCell", Args: [_] } box && box.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is ArrayLit { IsTuple: false })
-                throw Err(a.Value.Pos, $"an array literal from a manager is a BorrowedSlice[T], and this place takes {expected}");
+                throw Err(Li.ManagerFill, a.Value.Pos, $"an array literal from a manager is a BorrowedSlice[T], and this place takes {expected}");
             if (box.Args[0] is VariantType { IsAddressed: true } optional)
-                throw Err(a.Pos, Compiler.OptionalStaysInFrame(optional, "memory from a manager")
+                throw Err(Li.ManagerFill, a.Pos, Compiler.OptionalStaysInFrame(optional, "memory from a manager")
                     + $": keep it in a STACK place, x: &{optional.Name} <- value, or put the {optional.Leaves[0].Name} itself "
                     + $"in the manager's memory, x: &{optional.Leaves[0].Name} <- value from manager");
             var held = new TypeRef(box.Args[0].Name, [], a.Pos) { Known = box.Args[0] };
             var call = new MethodCallExpr(a.Manager, "borrow_and_fill", [held], [a.Value], a.Pos) { ArgNames = ["t"] };
             return EvalCall(call, expected);
         }
-        throw Err(a.Pos, $"'from' takes memory from a manager: [...] from manager is a BorrowedSlice[T], value from manager a BorrowedCell[T]; "
+        throw Err(Li.ManagerFill, a.Pos, $"'from' takes memory from a manager: [...] from manager is a BorrowedSlice[T], value from manager a BorrowedCell[T]; "
                          + $"this place takes {expected}");
     }
 
@@ -3793,7 +3793,7 @@ public sealed partial class FunctionGen
         // A flagged Optional's tag is its own flag, not a type ID: it moves only into the same type.
         if (from.IsFlagged || to.IsFlagged)
             return from.Equals(to) ? EmitTmp($"load {to.Llvm}, ptr {slot}")
-                : throw Err(_decl.Pos, $"{from} doesn't move into {to}: an Optional's flag isn't another variant's tag");
+                : throw Err(Li.TypeNotSupported, _decl.Pos, $"{from} doesn't move into {to}: an Optional's flag isn't another variant's tag");
         string tag = EmitTmp($"getelementptr inbounds {from.Llvm}, ptr {slot}, i32 0, i32 0");
         string id = EmitTmp($"load {VariantType.Tag.Llvm}, ptr {tag}");
         string tagged = EmitTmp($"insertvalue {to.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
@@ -3817,7 +3817,7 @@ public sealed partial class FunctionGen
     private (List<int> Leaves, ValueRef? Binding, DType Type) VariantPattern(Expr e, VariantType v)
     {
         if (e is not IsPattern p)
-            throw Err(e.Pos, $"a when on {v} observes its value as one of its branches: is {v.Branches[0]} as value");
+            throw Err(Li.WhenObservation, e.Pos, $"a when on {v} observes its value as one of its branches: is {v.Branches[0]} as value");
         var type = NamesCrashables(p.Type) && (Crashing.IsCheck(v) || Crashing.IsUnion(v)) ? CrashablesOf(v, p.Pos) : Resolve(p.Type);
         _c.CaseUses.Add(p.Pos);
         int index = v.LeafIndex(type);
@@ -3842,7 +3842,7 @@ public sealed partial class FunctionGen
             var held = grouped.Leaves.Where(l => v.LeafIndex(l) >= 0).ToList();
             return (held.Select(v.LeafIndex).ToList(), p.Binding, type);
         }
-        throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
+        throw Err(Li.VariantBranchNotFound, p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
     }
 
     // ── when ────────────────────────────────────────────────────────────────
@@ -3990,7 +3990,7 @@ public sealed partial class FunctionGen
             if (!_cur.Terminated)
             {
                 if (frame is not null)
-                    throw Err(arm.Body.Count > 0 ? arm.Body[^1].Pos : arm.Pos, "this arm of a when that is a value ends without giving one: end it with becomes v");
+                    throw Err(Li.WhenValueArm, arm.Body.Count > 0 ? arm.Body[^1].Pos : arm.Pos, "this arm of a when that is a value ends without giving one: end it with becomes v");
                 if (arm.Body.Count == 0 && bound.Count == 1 && _memTracked.Contains(bound[0]) == false)
                     continued = (bound[0], _values[bound[0]], arm.Pos);
                 else if (arm.Body.Count == 0 && bound.Count == 1)
@@ -4007,13 +4007,13 @@ public sealed partial class FunctionGen
 
         if (w.Value is null)
         {
-            if (!w.Arms[^1].IsElse) throw Err(w.Pos, "when needs a final else arm");
+            if (!w.Arms[^1].IsElse) throw Err(Li.NonExhaustiveWhen, w.Pos, "when needs a final else arm");
             for (int i = 0; i < w.Arms.Count; i++)
             {
                 var arm = w.Arms[i];
                 if (arm.IsElse)
                 {
-                    if (i != w.Arms.Count - 1) throw Err(arm.Pos, "the else arm must come last");
+                    if (i != w.Arms.Count - 1) throw Err(Li.WhenArms, arm.Pos, "the else arm must come last");
                     string label = Arm(arm, null);
                     MemEdge(_region, pos: arm.Pos);
                     Terminate($"br label %{label}");
@@ -4056,7 +4056,7 @@ public sealed partial class FunctionGen
             if (!MayBorrow(v.Type, null)) FlushTemps(subjectTemps);
             // The slot of a variant that holds an entity is observed by moving the value out of it: the when takes it.
             if (v.Type is PtrType { Pointee: VariantType held } && Entities.Holds(held))
-                throw Err(w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
+                throw Err(Li.WhenObservation, w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
                     + $"it, when steal {(w.Value is ValueRef slotName ? slotName.Name : "...")}");
             if (KeptOptional(v.Type) is { } kept)
                 EmitKeptOptionalWhen(w, v, kept.Cell, kept.Held, Arm, armNames);
@@ -4092,20 +4092,20 @@ public sealed partial class FunctionGen
     private void EmitSwitchWhen(WhenStmt w, Val v, Func<WhenArm, Action?, string> armBlock, bool known = false)
     {
         if (FlagsOf(v.Type) is { } flagsWhen)
-            throw Err(w.Value!.Pos, $"a {flagsWhen.Name} value can have several members on at once, so when has no one arm to pick: "
+            throw Err(Li.WhenObservation, w.Value!.Pos, $"a {flagsWhen.Name} value can have several members on at once, so when has no one arm to pick: "
                 + "test it with has, has_any or lacks in a condition when (x.has(A) => ...)");
         if (v.Type is not (IntType or ChoiceType))
         {
             // A name that came out of a place keeping an E? holds a Box? until it is looked at: say so, not the &Box it reads as.
             if ((w.Value is StealExpr { Value: ValueRef stolen } ? stolen : w.Value) is ValueRef subject && _maybeHollow.TryGetValue(subject.Name, out var kept))
-                throw Err(w.Value!.Pos, $"'{subject.Name}' is a {kept}?, which may hold nothing, and when v needs an integer, Byte, Char, choice, or variant value: "
+                throw Err(Li.HollowRead, w.Value!.Pos, $"'{subject.Name}' is a {kept}?, which may hold nothing, and when v needs an integer, Byte, Char, choice, or variant value: "
                     + $"look at it with when {subject.Name} (is None, is {kept} as x) and hand it on with steal {subject.Name} inside the arm that has a {kept}");
-            throw Err(w.Value!.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+            throw Err(Li.WhenSubject, w.Value!.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
         }
         if (w.ElseBinding is { } named)
-            throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
+            throw Err(Li.WhenArms, named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
         if (w.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
-            throw Err(observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
+            throw Err(Li.WhenSubject, observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
         known = known && long.TryParse(v.Op, out _);
         string? defaultLabel = null, takenLabel = null;
         var cases = new List<string>();
@@ -4114,7 +4114,7 @@ public sealed partial class FunctionGen
         {
             if (arm.IsElse)
             {
-                if (defaultLabel is not null) throw Err(arm.Pos, "when has two else arms");
+                if (defaultLabel is not null) throw Err(Li.WhenArms, arm.Pos, "when has two else arms");
                 defaultLabel = armBlock(arm, null);
                 continue;
             }
@@ -4123,10 +4123,10 @@ public sealed partial class FunctionGen
             foreach (var caseExpr in arm.Cases!)
             {
                 if (caseExpr is not (IntLit or TypedIntLit or PresetRef or UnaryExpr { Op: "-", Operand: IntLit }))
-                    throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
+                    throw Err(Li.WhenCase, caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
                 var cv = Eval(caseExpr, v.Type);
-                if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
-                if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
+                if (!long.TryParse(cv.Op, out _)) throw Err(Li.WhenCase, caseExpr.Pos, "when cases must be constant integers");
+                if (!seen.Add(cv.Op)) throw Err(Li.DuplicateWhenCase, caseExpr.Pos, $"duplicate when case {cv.Op}");
                 caseOps.Add(cv.Op);
             }
             string label = armBlock(arm, null);
@@ -4143,7 +4143,7 @@ public sealed partial class FunctionGen
             _cur = saved;
         }
         if (defaultLabel is null)
-            throw Err(w.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
+            throw Err(Li.NonExhaustiveWhen, w.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
         // The value known, the arm it picks is the one way on: the other arms are written but nothing reaches them.
         Terminate(known
             ? $"br label %{takenLabel ?? defaultLabel}"
@@ -4157,7 +4157,7 @@ public sealed partial class FunctionGen
             .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
             .Select(mem => mem.Name).ToList();
         if (missing.Count > 0)
-            throw Err(w.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
+            throw Err(Li.NonExhaustiveWhen, w.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
     }
 
     /// The answer to a condition that reads a value type parameter of this instance and nothing the builder doesn't
@@ -4217,12 +4217,12 @@ public sealed partial class FunctionGen
         {
             if (patterns is null)
             {
-                if (elseArm is not null) throw Err(arm.Pos, "when has two else arms");
+                if (elseArm is not null) throw Err(Li.WhenArms, arm.Pos, "when has two else arms");
                 elseArm = arm;
                 continue;
             }
             if (patterns.Count > 1 && patterns.Any(p => p.Binding is not null))
-                throw Err(arm.Pos, "an arm that names the value observes one type");
+                throw Err(Li.WhenArms, arm.Pos, "an arm that names the value observes one type");
             string label;
             if (patterns[0].Binding is { } binding)
             {
@@ -4233,32 +4233,32 @@ public sealed partial class FunctionGen
             {
                 // A branch that holds an entity is the arm's to end: an arm that doesn't name it would lose it.
                 if (patterns.Select(p => p.Type).FirstOrDefault(Entities.Holds) is { } lost)
-                    throw Err(arm.Pos, $"this arm observes {lost}, which {(Entities.IsEntity(lost) ? "is an entity" : "holds an entity")}, "
+                    throw Err(Li.WhenObservation, arm.Pos, $"this arm observes {lost}, which {(Entities.IsEntity(lost) ? "is an entity" : "holds an entity")}, "
                         + $"without naming it, and the arm is where it ends: name it (is {lost} as x) and drop it, return it, or hand it over");
                 label = armBlock(arm, FailureObserved(vt, patterns[0].Type, tag));
             }
             foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
-                if (!seen.Add(index)) throw Err(arm.Pos, $"two arms observe {vt.Leaves[index]}");
+                if (!seen.Add(index)) throw Err(Li.DuplicateWhenCase, arm.Pos, $"two arms observe {vt.Leaves[index]}");
                 cases.Add($"i32 {vt.LeafId(vt.Leaves[index])}, label %{label}");
             }
         }
         var missing = vt.Leaves.Where((_, i) => !seen.Contains(i)).ToList();
         // A `when` on a `Check` observes the value with an arm of its own.
         if (Crashing.IsCheck(vt) && missing.FirstOrDefault(m => !Crashing.IsCrashable(m)) is { } unobserved)
-            throw Err(w.Pos, $"a when on {vt} observes its value: is {unobserved} as value");
+            throw Err(Li.WhenObservation, w.Pos, $"a when on {vt} observes its value: is {unobserved} as value");
         // An open set of failures (a ticket in a field, a list or a parameter) can hold failures no arm names: an else arm takes
         // them, so they don't go on to the caller as one failure per crashable of the program.
         if (elseArm is null && (Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && missing.Any(Crashing.IsOpenMarker))
-            throw Err(w.Pos, "this when receives the failures of a ticket that can hold any failure the program throws: add an arm "
+            throw Err(Li.WhenObservation, w.Pos, "this when receives the failures of a ticket that can hold any failure the program throws: add an arm "
                 + "for each failure you handle (is NotFoundError as e) and an else arm for the rest (else as e)");
         if (elseArm is not null)
         {
-            if (missing.Count == 0) throw Err(elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
+            if (missing.Count == 0) throw Err(Li.WhenArms, elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
             string label;
             // What else takes is the arm's to end when it holds an entity: one such branch is named on its own.
             if (missing.FirstOrDefault(Entities.Holds) is { } heldByElse && (w.ElseBinding is null || missing.Count > 1))
-                throw Err(elseArm.Pos, $"else takes {heldByElse}, which {(Entities.IsEntity(heldByElse) ? "is an entity" : "holds an entity")}, "
+                throw Err(Li.WhenObservation, elseArm.Pos, $"else takes {heldByElse}, which {(Entities.IsEntity(heldByElse) ? "is an entity" : "holds an entity")}, "
                     + $"and the arm that takes it is where it ends: give it an arm of its own, is {heldByElse} as x");
             if (w.ElseBinding is { } rest)
             {
@@ -4287,7 +4287,7 @@ public sealed partial class FunctionGen
             foreach (var m in missing) cases.Add($"i32 {vt.LeafId(m)}, label %{passOn}");
         }
         else if (missing.Count > 0)
-            throw Err(w.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
+            throw Err(Li.NonExhaustiveWhen, w.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
         var saved = _cur;
         _cur = NewLBlock("hollow");
         string defaultLabel = _cur.Label;
@@ -4312,7 +4312,7 @@ public sealed partial class FunctionGen
         List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
         if (w.ElseBinding is { } rest)
-            throw Err(rest.Pos, $"else as {rest.Name} would name a hollow place: observe the {held.Name} with is {held.Name} as x");
+            throw Err(Li.HollowRead, rest.Pos, $"else as {rest.Name} would name a hollow place: observe the {held.Name} with is {held.Name} as x");
         _c.EnsureTypeDefined(cell);
         string atField = EmitTmp($"getelementptr inbounds {cell.Llvm}, ptr {v.Op}, i32 0, i32 0");
         string at = EmitTmp($"load ptr, ptr {atField}");
@@ -4323,28 +4323,28 @@ public sealed partial class FunctionGen
             if (arm.IsElse)
             {
                 if (presentLabel is not null && noneLabel is not null)
-                    throw Err(arm.Pos, $"is {held.Name} and is None have their arms, so else never runs");
+                    throw Err(Li.WhenArms, arm.Pos, $"is {held.Name} and is None have their arms, so else never runs");
                 string label = armBlock(arm, null);
                 presentLabel ??= label;
                 noneLabel ??= label;
                 continue;
             }
-            if (arm.Cases is null) throw Err(arm.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None");
+            if (arm.Cases is null) throw Err(Li.WhenObservation, arm.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None");
             var patterns = arm.Cases.Select(c => c is IsPattern p
                 ? (Pattern: p, Type: Resolve(p.Type))
-                : throw Err(c.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None")).ToList();
+                : throw Err(Li.WhenObservation, c.Pos, $"a when on a place that keeps a {held.Name}? observes it: is {held.Name} as x, is None")).ToList();
             if (patterns.Count > 1 && patterns.Any(p => p.Pattern.Binding is not null))
-                throw Err(arm.Pos, "an arm that names the value observes one type");
+                throw Err(Li.WhenArms, arm.Pos, "an arm that names the value observes one type");
             bool isNone(DType t) => t is RecordType { Decl.Name: "None" } none && none.Decl.Module == Compiler.SystemModule;
             foreach (var (p, type) in patterns)
             {
                 _c.CaseUses.Add(p.Pos);
                 if (!type.Equals(held) && !isNone(type))
-                    throw Err(p.Type.Pos, $"{type} isn't what this place keeps: it holds a {held.Name} or nothing (is {held.Name} as x, is None)");
+                    throw Err(Li.VariantBranchNotFound, p.Type.Pos, $"{type} isn't what this place keeps: it holds a {held.Name} or nothing (is {held.Name} as x, is None)");
                 if (isNone(type) && p.Binding is { } noneName)
-                    throw Err(noneName.Pos, "None holds nothing to name: is None =>");
+                    throw Err(Li.WhenObservation, noneName.Pos, "None holds nothing to name: is None =>");
                 if (type.Equals(held) ? presentLabel is not null : noneLabel is not null)
-                    throw Err(arm.Pos, $"two arms observe {type}");
+                    throw Err(Li.DuplicateWhenCase, arm.Pos, $"two arms observe {type}");
             }
             var binding = patterns[0].Pattern.Binding;
             string armLabel = armBlock(arm, binding is null ? null : () =>
@@ -4358,7 +4358,7 @@ public sealed partial class FunctionGen
                 else noneLabel = armLabel;
         }
         if (presentLabel is null || noneLabel is null)
-            throw Err(w.Pos, $"when on a place that keeps a {held.Name}? doesn't observe {(presentLabel is null ? held.Name : "None")}; "
+            throw Err(Li.NonExhaustiveWhen, w.Pos, $"when on a place that keeps a {held.Name}? doesn't observe {(presentLabel is null ? held.Name : "None")}; "
                 + "add an arm for it, or an else arm");
         Terminate($"br i1 {present}, label %{presentLabel}, label %{noneLabel}");
     }
@@ -4434,7 +4434,7 @@ public sealed partial class FunctionGen
     private Val EvalWhenValue(WhenExpr w, DType expected)
     {
         if (expected is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open))
-            throw Err(w.Pos, "a Check takes what can fail from the check that makes it, and a when's arms would each make "
+            throw Err(Li.WhenObservation, w.Pos, "a Check takes what can fail from the check that makes it, and a when's arms would each make "
                 + "their own: observe each check in its own when instead");
         var join = NewLBlock("whenvalue");
         var frame = new ValueFrame(join, NewRegion("whenvalue"), expected, _values.Keys.ToHashSet());
@@ -4493,14 +4493,14 @@ public sealed partial class FunctionGen
         if (call.Args.Count == 2)
         {
             if (call.ArgNames is not [null, "end"] || call.Args[1] is not StrLit endText)
-                throw Err(call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
+                throw Err(Li.ConsoleCall, call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
             // The end is written as it is: a brace in it is a brace, not a hole.
             end = endText.Value.Replace("{", "{{").Replace("}", "}}");
         }
         else if (call.Args.Count != 1)
-            throw Err(call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
+            throw Err(Li.ConsoleCall, call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
         if (call.ArgNames is [not null, ..])
-            throw Err(call.Pos, $"Console.{call.Name} takes the text, or a value to show, without a name");
+            throw Err(Li.ConsoleCall, call.Pos, $"Console.{call.Name} takes the text, or a value to show, without a name");
         var target = new NsCallExpr(call.Owner, stream, [], [], call.Pos);
         if (first is StrLit text) return (target, text with { Value = text.Value + end }, null);
         return (target, new StrLit(end, first.Pos), first);
@@ -4581,7 +4581,7 @@ public sealed partial class FunctionGen
         UntypedLiteral(shown, shown.Pos, $"{shower}(...)");
         if (InferQuiet(shown) is { } t and not PtrType && ManagedMemory(t) is null && !IsPointedSlice(t)
             && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
-            throw Err(shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
+            throw Err(Li.ShowNotAvailable, shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
         var outer = (_shownCell, _templateHole);
         _shownCell = shown;
         _templateHole = shown switch
@@ -4608,7 +4608,7 @@ public sealed partial class FunctionGen
         if (literal is not (IntLit or FloatLit) || Infer(value) is not null) return;
         string type = literal is FloatLit ? "B64" : "S64";
         string written = new Printer().Expr(value);
-        throw Err(at, $"nothing says this literal's type in {where}: name it, {type}({written}), or bind it with its type "
+        throw Err(Li.LiteralNeedsType, at, $"nothing says this literal's type in {where}: name it, {type}({written}), or bind it with its type "
             + $"first (x: {type} = {written}) and write that name");
     }
 
@@ -4627,7 +4627,7 @@ public sealed partial class FunctionGen
         if (literal is IntLit or FloatLit || literal is UnaryExpr { Op: "-", Operand: IntLit or FloatLit })
             return new TypedLit(literal, type, call.Pos);
         string shown = new Printer().Expr(literal);
-        throw Err(call.Pos, $"{call.Name}(...) types a number literal ({call.Name}(7)), and this is a value: convert it with "
+        throw Err(Li.LiteralNeedsType, call.Pos, $"{call.Name}(...) types a number literal ({call.Name}(7)), and this is a value: convert it with "
             + $"{shown}.to[{call.Name}]()");
     }
 
@@ -4718,7 +4718,7 @@ public sealed partial class FunctionGen
             bool slice = routine.EndsWith("slice", StringComparison.Ordinal);
             string meant = slice ? "its values" : "its value";
             string write = slice ? fix : $"write {fix}";
-            _c.NoteExpensiveCalls([(m.Receiver.Pos, $"{m.Receiver.Pos}: warning: this shows the cell '{name}' itself ({shows}): "
+            _c.NoteExpensiveCalls([(m.Receiver.Pos, $"{Li.ShowsCell.Head}: {m.Receiver.Pos}: this shows the cell '{name}' itself ({shows}): "
                 + $"if you meant {meant}, {write}")]);
         }
         return PlanCall(new CallExpr(routine, [], args, m.Pos) { ArgNames = argNames, Path = FormatModule }, expected);
@@ -4746,7 +4746,7 @@ public sealed partial class FunctionGen
                 i++;
                 continue;
             }
-            if (ch == '}') throw Err(template.Pos, "a '}' in a write string is written '}}'");
+            if (ch == '}') throw Err(Li.WriteTemplate, template.Pos, "a '}' in a write string is written '}}'");
             if (ch != '{')
             {
                 text.Append(ch);
@@ -4754,23 +4754,23 @@ public sealed partial class FunctionGen
             }
             // The hole ends at its matching '}'.
             int end = Lexer.HoleEnd(s, i);
-            if (end < 0) throw Err(template.Pos, "a '{' in a write string is never closed; a literal brace is '{{'");
+            if (end < 0) throw Err(Li.WriteTemplate, template.Pos, "a '{' in a write string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
-            if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
+            if (string.IsNullOrWhiteSpace(source)) throw Err(Li.WriteTemplate, template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
             var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
                 .ParseLoneExpr();
             // A name another block binds isn't seen here: say so, rather than what the name would be as a preset.
             if (value is PresetRef { Owner: null, Path: null } named && ResolvePreset(named) is null && BoundInRoutine(named.Name))
-                throw Err(at, NotVisible(named.Name, fromNextLine: true));
+                throw Err(Li.UnknownName, at, NotVisible(named.Name, fromNextLine: true));
             // A name nothing binds is said to be unknown: written to the writer, it would be read as a call with the
             // writer for its receiver, and the error would be about the writer.
             if (value is PresetRef { Owner: null, Path: null } unknown && ResolvePreset(unknown) is null
                 && _c.FindFree(unknown.Name, _env.File, at, null) is null)
-                throw Err(at, ScriptBinding(unknown.Name) ?? $"unknown name '{unknown.Name}'");
+                throw Err(Li.UnknownName, at, ScriptBinding(unknown.Name) ?? $"unknown name '{unknown.Name}'");
             // A call to no routine at all is reported as that, not as a missing method of the writer it would be handed to.
             if (value is CallExpr unknownCall && Infer(value) is null && PlanCall(value, null) is null)
-                throw Err(at, UnknownCall(unknownCall));
+                throw Err(Li.UnknownName, at, UnknownCall(unknownCall));
             UntypedLiteral(value, at, $"{{{source.Trim()}}}");
             Flush();
             _templateHole = source.Trim();
@@ -4798,21 +4798,21 @@ public sealed partial class FunctionGen
         if (t is RecordType { IsTuple: true } tuple)
             return lit.IsTuple
                 ? EvalTupleLit(lit, tuple)
-                : throw Err(lit.Pos, $"a tuple is written in parentheses: ({string.Join(", ", tuple.Args.Select(_ => "..."))})");
+                : throw Err(Li.ExpressionSyntax, lit.Pos, $"a tuple is written in parentheses: ({string.Join(", ", tuple.Args.Select(_ => "..."))})");
         if (lit.IsTuple && t is ArrayType or VectorType)
-            throw Err(lit.Pos, $"{(t is ArrayType at ? "an " + at.Kind : "a Vector")} is written in brackets: [a, b, ...]");
+            throw Err(Li.ExpressionSyntax, lit.Pos, $"{(t is ArrayType at ? "an " + at.Kind : "a Vector")} is written in brackets: [a, b, ...]");
         var (elem, count, insert) = t switch
         {
             ArrayType a => (a.Elem, a.Count, "insertvalue"),
             VectorType v => (v.Elem, v.Count, "insertelement"),
-            _ => throw Err(lit.Pos, lit.IsTuple
+            _ => throw Err(Li.TypeMismatch, lit.Pos, lit.IsTuple
                 ? $"(a, b) is a tuple, and a {t} isn't one"
                 : $"only an Items, a Slots or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
         };
-        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Items does: [a] * n");
+        if (lit.IsTuple && lit.Repeat is not null) throw Err(Li.ExpressionSyntax, lit.Repeat.Pos, "a tuple doesn't repeat; an Items does: [a] * n");
         var elements = _c.Elements(lit, _env);
         if (elements.Count != count)
-            throw Err(lit.Pos, $"{t} needs {count} element(s), got {elements.Count}");
+            throw Err(Li.ExpressionSyntax, lit.Pos, $"{t} needs {count} element(s), got {elements.Count}");
         _c.EnsureTypeDefined(t);
         // Each written element is evaluated once; its repeats reuse the value.
         var written = lit.Elements.Select(x => Eval(x, elem)).ToList();
@@ -4854,7 +4854,7 @@ public sealed partial class FunctionGen
     private Val EvalLogic(BinaryExpr l)
     {
         if (FlagsAnd(l) is ({ } flagsSide, _))
-            throw Err(l.Pos, l.Op == "or"
+            throw Err(Li.FlagsUse, l.Pos, l.Op == "or"
                 ? $"'or' is Bool's, and these are {flagsSide.Name} values: members combine with 'and' (A and B), and "
                   + "x.has_any(A and B) asks whether at least one of them is on"
                 : $"these are {flagsSide.Name} values, and a Bool is expected here: test them with has, has_any or lacks (x.has(A and B))");
@@ -5003,25 +5003,25 @@ public sealed partial class FunctionGen
                 return e;
             case BinaryExpr b:
             {
-                string name = Operators.Routine(b.Op) ?? throw Err(b.Pos, $"'{b.Op}' is not an operator Lapila has");
+                string name = Operators.Routine(b.Op) ?? throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' is not an operator Lapila has");
                 // `/` is true division: an integer divides with `//` (the Euclidean quotient) or `.div_trunc()` (toward zero).
                 if (b.Op == "/" && TryInfer(b.Left is IntLit or FloatLit ? b.Right : b.Left) is IntType)
-                    throw Err(b.Pos, "'/' is true division: integers divide with '//' (the Euclidean quotient, whose remainder is never negative), or '.div_trunc()' for the quotient toward zero");
+                    throw Err(Li.OperatorUse, b.Pos, "'/' is true division: integers divide with '//' (the Euclidean quotient, whose remainder is never negative), or '.div_trunc()' for the quotient toward zero");
 
                 // A pointer has no value comparison of its own: `==` on one would hide a load.
                 if (b.Op is "==" or "!=" && TryInfer(b.Left) is PtrType)
-                    throw Err(b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
+                    throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
 
                 // `===` / `!==` ask whether two names reach the same memory, which an address or a span has, or the same
                 // entity, which a stamp names: values compare with `==` / `!=`.
                 if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" or "Stamped" })
-                    throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
+                    throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
                 bool literalLeft = b.Left is IntLit or FloatLit;
                 var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
                 if (b.Op is "|" or "&" or "^" && (FlagsOf(operand) ?? FlagsOf(TryInfer(b.Right))) is { } bitFlags)
-                    throw Err(b.Pos, FlagsBitwise(b.Op, bitFlags));
+                    throw Err(Li.FlagsUse, b.Pos, FlagsBitwise(b.Op, bitFlags));
                 // `none == marks`: a bare member or none takes its type from the other side, so the flags value goes first.
                 if (b.Op is "==" or "!=" && operand is null && b.Left is PresetRef { Owner: null }
                     && FlagsOf(TryInfer(b.Right)) is not null)
@@ -5041,7 +5041,7 @@ public sealed partial class FunctionGen
                         return OwnComparison(operand, name) ? Call(name) : new UnaryExpr("not", Call("eq"), b.Pos);
                     }
                     if (FlagsOf(operand) is { } unordered)
-                        throw Err(b.Pos, $"a {unordered.Name} value is a set of members, which has no order: compare with == or !=, "
+                        throw Err(Li.OperatorUse, b.Pos, $"a {unordered.Name} value is a set of members, which has no order: compare with == or !=, "
                             + "or ask x.has(A) for a member");
                     CheckOperator("compare", operand, b.Pos);
                     if (OwnComparison(operand, name)) return Call(name);
@@ -5056,7 +5056,7 @@ public sealed partial class FunctionGen
             {
                 string name = u.Op == "-" ? "neg" : "bitnot";
                 if (u.Op == "~" && FlagsOf(TryInfer(u.Operand)) is { } notFlags)
-                    throw Err(u.Pos, $"'~' is for integers, and this is a {notFlags.Name} value: x.without(A) takes members off");
+                    throw Err(Li.OperatorUse, u.Pos, $"'~' is for integers, and this is a {notFlags.Name} value: x.without(A) takes members off");
                 if (TryInfer(u.Operand) is { } operand) CheckOperator(name, operand, u.Pos);
                 return new MethodCallExpr(u.Operand, name, [], [], u.Pos) { FromOperator = true };
             }
@@ -5078,7 +5078,7 @@ public sealed partial class FunctionGen
     /// Reports an operator on a type that doesn't obey the operator's protocol. A pointer's operator is its pointee's.
     private void CheckOperator(string routine, DType operand, Pos pos)
     {
-        if (_c.OperatorProtocolError(routine, OperatorOwner(operand), _env.File, pos) is { } error) throw Err(pos, error);
+        if (_c.OperatorProtocolError(routine, OperatorOwner(operand), _env.File, pos) is { } error) throw Err(Li.OperatorProtocol, pos, error);
     }
 
     /// Whether a type's comparisons give a mask, one routine per operator (LaneComparable).
@@ -5112,18 +5112,18 @@ public sealed partial class FunctionGen
     private Val EvalRecordLit(RecordLit lit, DType expected)
     {
         var t = lit.Type is null ? expected : Resolve(lit.Type);
-        if (t is not RecordType s) throw Err(lit.Pos, $"{t} is not a record");
+        if (t is not RecordType s) throw Err(Li.TypeMismatch, lit.Pos, $"{t} is not a record");
         var fields = _c.Fields(s);
         _c.EnsureTypeDefined(s);
         var given = new Dictionary<string, Expr>();
         foreach (var (name, value, pos) in lit.Fields)
         {
-            if (fields.All(f => f.Name != name)) throw Err(pos, $"{s} has no field '{name}'");
+            if (fields.All(f => f.Name != name)) throw Err(Li.FieldNotFound, pos, $"{s} has no field '{name}'");
             CheckFieldVisible(s, s.Decl.Fields.First(f => f.Name == name), pos);
-            if (!given.TryAdd(name, value)) throw Err(pos, $"field '{name}' is given twice");
+            if (!given.TryAdd(name, value)) throw Err(Li.FieldNotFound, pos, $"field '{name}' is given twice");
         }
         var missing = fields.Where(f => !given.ContainsKey(f.Name)).Select(f => f.Name).ToList();
-        if (missing.Count > 0) throw Err(lit.Pos, $"{s} literal is missing field(s): {string.Join(", ", missing)}");
+        if (missing.Count > 0) throw Err(Li.FieldNotFound, lit.Pos, $"{s} literal is missing field(s): {string.Join(", ", missing)}");
 
         if (s.TransparentField is not null)
         {
@@ -5166,7 +5166,7 @@ public sealed partial class FunctionGen
                 return new PresetInfo(ca.Kind ?? _c.Count, exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
-                throw Err(r.Pos,
+                throw Err(Li.EntryPoint, r.Pos,
                     $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Unhosted) "
                     + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
@@ -5177,14 +5177,14 @@ public sealed partial class FunctionGen
         if (ownerType is ChoiceType et)
         {
             var member = et.Decl.Members.FirstOrDefault(m => m.Name == r.Name);
-            if (member.Name is null) throw Err(r.Pos, $"choice '{et.Name}' has no member '{r.Name}'");
-            if (member.Value is not IntLit lit) throw Err(r.Pos, "choice member values must be integer literals");
+            if (member.Name is null) throw Err(Li.ChoiceMemberNotFound, r.Pos, $"choice '{et.Name}' has no member '{r.Name}'");
+            if (member.Value is not IntLit lit) throw Err(Li.ChoiceMemberNotFound, r.Pos, "choice member values must be integer literals");
             return new PresetInfo(et, _ => IntConst(lit.Value, r.Pos, et));
         }
         string ownerName = ownerType?.OwnerName ?? r.Owner.Name;
         if (ownerType is null && r.Owner is { Args.Count: 0, Path: null }) UnknownReceiver(r.Owner);
         var oc = _c.FindPreset(ownerName, r.Name, file, r.Pos)
-                 ?? throw Err(r.Pos, ownerName is "B16" or "BF16" or "B32" or "B64" or "B128" && r.Name is "INFINITY" or "NEG_INFINITY" or "NAN"
+                 ?? throw Err(Li.RemovedSpelling, r.Pos, ownerName is "B16" or "BF16" or "B32" or "B64" or "B128" && r.Name is "INFINITY" or "NEG_INFINITY" or "NAN"
                      ? $"'{r.Owner}.{r.Name}' is gone: write the literal {(r.Name switch { "INFINITY" => "inf", "NEG_INFINITY" => "-inf", _ => "nan" })}, "
                        + "typed by where it goes"
                      : $"unknown preset '{r.Owner}.{r.Name}'");
@@ -5260,19 +5260,19 @@ public sealed partial class FunctionGen
 
         // A bare name is a value, or else a preset or a global: a routine becomes a value only when the code says so.
         if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos, r.Path) is not null)
-            throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to[Callable]()");
+            throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to[Callable]()");
         // A name a when arm gave its value (`is S64 as n`) reads like a preset after the when: say where it lives.
         if (r.Owner is null && r.Path is null && _hiddenPayloads.TryGetValue(r.Name, out var hidden))
-            throw Err(r.Pos, hidden);
+            throw Err(Li.UnknownName, r.Pos, hidden);
         if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
-            throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
+            throw Err(Li.UnknownName, r.Pos, NotVisible(r.Name, fromNextLine: true));
         if (r.Owner is null && r.Path is null && ScriptBinding(r.Name) is { } fromScript)
-            throw Err(r.Pos, fromScript);
+            throw Err(Li.UnknownName, r.Pos, fromScript);
         if (r.Owner is null && r.Path is null && HostedTable(r.Name) is { } hosted)
-            throw Err(r.Pos, hosted);
+            throw Err(Li.UnknownName, r.Pos, hosted);
         if (r.Owner is null && FlagsOf(expected) is { } flags)
-            throw Err(r.Pos, $"{flags.Name} has no member '{r.Name}': its members are {string.Join(", ", flags.Decl.Members.Select(m => m.Name))}");
-        throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
+            throw Err(Li.ChoiceMemberNotFound, r.Pos, $"{flags.Name} has no member '{r.Name}': its members are {string.Join(", ", flags.Decl.Members.Select(m => m.Name))}");
+        throw Err(Li.UnknownName, r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
     /// `name.to[Callable]()`: the routine as a function pointer, typed by its own signature, or by the Callable
@@ -5280,16 +5280,16 @@ public sealed partial class FunctionGen
     private Val RoutineValue(RoutineRef r, DType? expected)
     {
         var set = _c.FreeCandidates(r.Name, _env.File, r.Pos, r.Path);
-        if (set.Count == 0) throw Err(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
+        if (set.Count == 0) throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         if (r.TypeArgs.Count > 0) return GenericRoutineValue(r, set, expected);
         var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
         // An @inline routine is inlined at every call, so there's no call of its own for a pointer to name.
         if (routine.AnnotationNamed("inline") is not null)
-            throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call, "
+            throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call, "
                              + "and a call through a pointer can't be; wrap it in a routine without @inline");
         if (routine.TypeParams.Count != 0)
-            throw Err(r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
+            throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
         // Handed where a routine value's failure passes on (a recovering routine's Callable parameter), the value is the
         // routine's recovering form, so its failure reaches the try or check above.
         if (expected is CallableType { Failable: true } && _c.CanRecover(routine)) routine = _c.RecoveringOf(routine);
@@ -5297,11 +5297,11 @@ public sealed partial class FunctionGen
         if (_reportingArgument) _c.NoteReportingRoutine(inst, r.Pos);
         var own = OwnCallable(inst);
         if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
-            throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
+            throw Err(Li.RoutineValue, r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
         // A call through a Callable passes BF16 (and on 32-bit x86 a returned B32 or B64) as its integer bits, as
         // Lapila routines do. An external C routine takes the real float, so it can't sit behind one.
         if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, _c.Target))
-            throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
+            throw Err(Li.RoutineValue, r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
         // The first routine at a place is the one written there: `f.to[Work](...)` also names the block's runner at the
         // place of `f`, which isn't what the work runs.
         _routineValueSymbols.TryAdd(r.Pos, inst.Symbol);
@@ -5328,7 +5328,7 @@ public sealed partial class FunctionGen
     {
         var fitting = set.Where(o => TakesTypeArgs(o, r.TypeArgs.Count) && o.Fixed.Count == 0).ToList();
         if (fitting.Count == 0)
-            throw Err(r.Pos, $"no overload of '{r.Name}' takes {r.TypeArgs.Count} type argument(s)");
+            throw Err(Li.RoutineValue, r.Pos, $"no overload of '{r.Name}' takes {r.TypeArgs.Count} type argument(s)");
         var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
         (RoutineDecl Decl, Instance Inst)? chosen = null;
         foreach (var plainDecl in fitting)
@@ -5346,17 +5346,17 @@ public sealed partial class FunctionGen
             if (fitting.Count > 1 && want is CallableType wanted && !new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(wanted.Plain))
                 continue;
             if (chosen is not null)
-                throw Err(r.Pos, $"'{r.Name}' has more than one overload with {r.TypeArgs.Count} type argument(s); name the one "
+                throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' has more than one overload with {r.TypeArgs.Count} type argument(s); name the one "
                                  + $"you mean by its Callable type: {r.Name}[...].to[Callable[(...), R]]()");
             chosen = (o, inst);
         }
-        if (chosen is not { } c) throw Err(r.Pos, $"no overload of '{r.Name}' is {want}");
+        if (chosen is not { } c) throw Err(Li.RoutineValue, r.Pos, $"no overload of '{r.Name}' is {want}");
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
         if (c.Decl.AnnotationNamed("inline") is not null)
-            throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
+            throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
         var own = OwnCallable(c.Inst);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
-            throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
+            throw Err(Li.RoutineValue, r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
         _routineValueSymbols.TryAdd(r.Pos, c.Inst.Symbol);
         return new Val($"@{Compiler.Quote(c.Inst.Symbol)}", own);
     }
@@ -5367,9 +5367,9 @@ public sealed partial class FunctionGen
     private Val EvalLambda(LambdaExpr l, DType expected)
     {
         if (expected is not CallableType ct)
-            throw Err(l.Pos, $"a lambda becomes a Callable, and {expected} is expected here");
+            throw Err(Li.LambdaShape, l.Pos, $"a lambda becomes a Callable, and {expected} is expected here");
         if (ct.Params.Count != l.Params.Count)
-            throw Err(l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {ct} takes {ct.Params.Count}");
+            throw Err(Li.LambdaShape, l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {ct} takes {ct.Params.Count}");
         var decl = _c.LambdaRoutine(l, ct, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
         var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
         _routineValueSymbols[l.Pos] = inst.Symbol;
@@ -5381,7 +5381,7 @@ public sealed partial class FunctionGen
     private CallableType FailableLambdaType(LambdaExpr l, CallableType open)
     {
         if (open.Params.Count != l.Params.Count)
-            throw Err(l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {open} takes {open.Params.Count}");
+            throw Err(Li.LambdaShape, l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {open} takes {open.Params.Count}");
         var decl = _c.LambdaRoutine(l, open, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
         var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
         return OwnCallable(inst);
@@ -5439,7 +5439,7 @@ public sealed partial class FunctionGen
     private void NotThroughAddress(RoutineDecl r, Pos pos)
     {
         if (Compiler.IsTrackCaller(r))
-            throw Err(pos, $"'{r.DisplayName}' is @track_caller: each call passes the place it's made from, so it has no address to call through");
+            throw Err(Li.TrackCallerProblem, pos, $"'{r.DisplayName}' is @track_caller: each call passes the place it's made from, so it has no address to call through");
     }
 
     private (Expr Callee, CallableType Callable)? AddrOfCallable(Expr e)
@@ -5460,7 +5460,7 @@ public sealed partial class FunctionGen
         if (Infer(m.Receiver) is CallableType ct)
         {
             if (ct.Failable)
-                throw Err(m.Pos, "addr() gives the routine's address to C, and this Callable can fail, which C has no way to receive: "
+                throw Err(Li.FailureCallable, m.Pos, "addr() gives the routine's address to C, and this Callable can fail, which C has no way to receive: "
                     + "hand C a routine that receives the failure itself (with check or try)");
             return (m.Receiver, ct);
         }
@@ -5497,7 +5497,7 @@ public sealed partial class FunctionGen
         if (_c.MethodsNamed(s, m.Name).Count > 0 || _c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)
-            throw Err(m.Pos, $"'{m.Name}' is a Callable field: peek it (.{m.Name}.peek()) and call the value "
+            throw Err(Li.FailureCallable, m.Pos, $"'{m.Name}' is a Callable field: peek it (.{m.Name}.peek()) and call the value "
                 + $"with .call(...)");
         return null;
     }
@@ -5514,26 +5514,26 @@ public sealed partial class FunctionGen
         if (plan?.Decl.AnnotationNamed("unavailable") is { } unavailable)
         {
             if (!plan.Decl.IsLibrary)
-                throw Err(unavailable.Pos, "@unavailable marks a standard library routine that can't run on a target");
-            throw Err(plan.Pos, $"{plan.Decl.DisplayName} can't run here: {unavailable.First}");
+                throw Err(Li.UnavailableRoutine, unavailable.Pos, "@unavailable marks a standard library routine that can't run on a target");
+            throw Err(Li.UnavailableRoutine, plan.Pos, $"{plan.Decl.DisplayName} can't run here: {unavailable.First}");
         }
         // `@refused("why")` keeps a standard library routine whose every call is a build error: the routine says why the
         // call can't be right and what to write instead.
         if (plan?.Decl.AnnotationNamed("refused") is { } refused)
         {
             if (!plan.Decl.IsLibrary)
-                throw Err(refused.Pos, "@refused marks a standard library routine whose every call is a build error");
-            throw Err(plan.Pos, refused.First ?? $"{plan.Decl.DisplayName} can't be called");
+                throw Err(Li.UnavailableRoutine, refused.Pos, "@refused marks a standard library routine whose every call is a build error");
+            throw Err(Li.UnavailableRoutine, plan.Pos, refused.First ?? $"{plan.Decl.DisplayName} can't be called");
         }
         if (plan is { Decl: { Name: "inttoptr", IsLibrary: true, Module: Compiler.SystemModule } toPointer }
             && plan.Env.Get(toPointer.TypeParams.LastOrDefault() ?? "") is { } pointerTarget and not PtrType { Pointee: null })
-            throw Err(plan.Pos, $"inttoptr gives an address, an Addr, not {pointerTarget}: a number is turned into a view through "
+            throw Err(Li.DangerousConversion, plan.Pos, $"inttoptr gives an address, an Addr, not {pointerTarget}: a number is turned into a view through "
                 + "an address. Write the address as an Addr (a literal such as base: Addr = 0x30010000, or inttoptr[U64, Addr](n) for "
                 + "one worked out), then convert it with .to[@T]() (a crash on zero) or .to[@T?]() (None for zero)");
         if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
             && !_decl.IsLibrary && !Lapila.Derive.IsImplicit(_decl)
             && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
-            throw Err(plan.Pos, $"bitcast doesn't check that every bit on is one of {flags.Name}'s members: convert the "
+            throw Err(Li.FlagsUse, plan.Pos, $"bitcast doesn't check that every bit on is one of {flags.Name}'s members: convert the "
                 + $"bitmask with to[{flags.Name}](), which throws UnknownBitsError for a bit no member has "
                 + $"(bits.to[{flags.Name}](), or try bits.to[{flags.Name}]() to handle it)");
         return plan;
@@ -5550,7 +5550,7 @@ public sealed partial class FunctionGen
             {
                 var set = _c.FreeCandidates(c.Name, _env.File, c.Pos, c.Path);
                 if (_blocks.ContainsKey(c.Name) && set.Count == 0)
-                    throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
+                    throw Err(Li.JumpArguments, c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
                 if (set.Count == 0) return null;
                 if (c.WrittenTypeArgs is not null) c = c with { TypeArgs = c.WrittenTypeArgs.Select(a => ValueTypeArg(a, c.Pos)).ToList(), WrittenTypeArgs = null };
                 if (set.Count > 1)
@@ -5568,10 +5568,10 @@ public sealed partial class FunctionGen
             case ImplicitCallExpr ic:
             {
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
-                var owner = expected ?? throw Err(ic.Pos,
+                var owner = expected ?? throw Err(Li.TypeNeeded, ic.Pos,
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
                 var set = _c.MethodCandidates(owner, ic.Name, _env.File, ic.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, ic.TypeArgs, ic.Pos));
-                if (set.Count == 0) throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
+                if (set.Count == 0) throw Err(Li.MethodNotFound, ic.Pos, $"{owner} has no routine '{ic.Name}'");
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, ic.Pos)))], ic.TypeArgs, ic.Args, 0,
@@ -5596,7 +5596,7 @@ public sealed partial class FunctionGen
                     return PlanCall(asMethod, expected);
                 }
                 var set = _c.MethodCandidates(owner, n.Name, _env.File, n.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, n.TypeArgs, n.Pos));
-                if (set.Count == 0) throw Err(n.Pos, $"{owner} has no routine '{n.Name}'");
+                if (set.Count == 0) throw Err(Li.MethodNotFound, n.Pos, $"{owner} has no routine '{n.Name}'");
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, n.Pos)))], n.TypeArgs, n.Args, 0,
@@ -5636,9 +5636,9 @@ public sealed partial class FunctionGen
         var taking = fits.Where(f => f.Why is null).ToList();
         string shown = string.Join(", ", args.Select(DescribeArg));
         if (taking.Count == 0 && MissingArguments(set.Select(c => c.Decl), args.Count, firstArgParam, names, what) is { } missing)
-            throw Err(pos, missing);
+            throw Err(Li.NoMatchingOverload, pos, missing);
         if (taking.Count == 0)
-            throw Err(pos, $"no overload of '{what}' takes ({shown}); it has:"
+            throw Err(Li.NoMatchingOverload, pos, $"no overload of '{what}' takes ({shown}); it has:"
                 + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}"))
                 + _c.HiddenOverloadHint(set[0].Decl, args.Count, _env.File));
         var tier = taking.Where(f => !f.Generic).ToList() is { Count: > 0 } concrete ? concrete : taking;
@@ -5669,7 +5669,7 @@ public sealed partial class FunctionGen
             : tier.All(f => f.Generic)
                 ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
                 : "give the arguments the types of the overload you mean") + naming;
-        throw Err(pos, $"the call of '{what}' with ({shown}) is ambiguous; these overloads all take it:"
+        throw Err(Li.AmbiguousOverload, pos, $"the call of '{what}' with ({shown}) is ambiguous; these overloads all take it:"
             + string.Concat(tier.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}")) + $"\n{hint}");
     }
 
@@ -5994,7 +5994,7 @@ public sealed partial class FunctionGen
         string list = string.Concat(set.Select(o => $"\n    {Compiler.ShowSignature(o)} at {o.Pos}"));
         var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
         if (want is not CallableType ct)
-            throw Err(r.Pos, $"'{r.Name}' is overloaded, so its value names the overload by its Callable type: "
+            throw Err(Li.RoutineValue, r.Pos, $"'{r.Name}' is overloaded, so its value names the overload by its Callable type: "
                 + $"{r.Name}.to[Callable[(...), R]](), or a place that expects that Callable; its overloads are:{list}");
         foreach (var o in set.Where(o => o.TypeParams.Count == 0))
         {
@@ -6003,7 +6003,7 @@ public sealed partial class FunctionGen
             catch (CompileError) { continue; }
             if (new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(ct)) return o;
         }
-        throw Err(r.Pos, $"no overload of '{r.Name}' is {ct}; its overloads are:{list}");
+        throw Err(Li.RoutineValue, r.Pos, $"no overload of '{r.Name}' is {ct}; its overloads are:{list}");
     }
 
     /// `f.addr()` has no Callable type to say which overload of `f` it means.
@@ -6011,7 +6011,7 @@ public sealed partial class FunctionGen
     {
         var set = _c.FreeCandidates(name, _env.File, pos, path);
         if (set.Count > 1)
-            throw Err(pos, $"'{name}' is overloaded, so {name}.addr() doesn't say which one; name it by its type: "
+            throw Err(Li.RoutineValue, pos, $"'{name}' is overloaded, so {name}.addr() doesn't say which one; name it by its type: "
                 + $"{name}.to[Callable[(...), R]]().addr(); its overloads are:"
                 + string.Concat(set.Select(o => $"\n    {Compiler.ShowSignature(o)} at {o.Pos}")));
     }
@@ -6052,7 +6052,7 @@ public sealed partial class FunctionGen
             catch (CompileError) { }
         }
         if (ManagedMemory(TryInfer(m.Receiver)) is { Decl.Name: "BorrowedSlice" } && OldMemoryElementCall(m) is { } older)
-            throw Err(m.Pos, older);
+            throw Err(Li.RemovedMethod, m.Pos, older);
         if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
 
         // `elems : @@S32 = arr.to()`: a conversion without its type takes the type its value goes to.
@@ -6083,7 +6083,7 @@ public sealed partial class FunctionGen
                     FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
                 };
-                throw Err(m.Receiver.Pos,
+                throw Err(Li.LiteralNeedsType, m.Receiver.Pos,
                     $"nothing says this literal's type (its arguments are untyped too); name the type: {fix}");
             }
         }
@@ -6166,7 +6166,7 @@ public sealed partial class FunctionGen
         if (ManagedMemory(rt) is { } lending && m.Name != LendName(lending))
         {
             if (lending.Decl.Name == "BorrowedSlice" && OldMemoryElementCall(m) is { } newer)
-                throw Err(m.Pos, newer);
+                throw Err(Li.RemovedMethod, m.Pos, newer);
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, LendName(lending), [], [], m.Receiver.Pos) }, expected);
         }
 
@@ -6180,7 +6180,7 @@ public sealed partial class FunctionGen
         if (rt is ChoiceType en && m.Name is "eq" or "ne")
         {
             var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos, Compiler.SystemModule)
-                    ?? throw Err(m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
+                    ?? throw Err(Li.RemovedMethod, m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
             var env = new Compiler.TypeEnv(r.File);
             env.Bind(r.TypeParams[0], en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
@@ -6188,7 +6188,7 @@ public sealed partial class FunctionGen
         // `x.to[S64]()`: the routines are defined per type argument, and none is for these.
         foreach (var (owner, _) in candidates)
             if (m.Name == "to" && OldSpellings.OldConversion(owner, m.TypeArgs) is { } gone)
-                throw Err(m.Pos, gone);
+                throw Err(Li.RemovedMethod, m.Pos, gone);
         foreach (var (owner, _) in candidates)
             if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
             {
@@ -6201,17 +6201,17 @@ public sealed partial class FunctionGen
                     string spelled = new Printer().Expr(m.Receiver, 0);
                     string read = place ? "load" : "peek";
                     string what = place ? $"a place, &{heldValue.Name}" : $"a view, @{heldValue.Name}";
-                    throw Err(m.Pos, $"{spelled} is {what}, and a call on it never reads the {heldValue.Name} it holds, so "
+                    throw Err(Li.MethodNotFound, m.Pos, $"{spelled} is {what}, and a call on it never reads the {heldValue.Name} it holds, so "
                         + $"{m.Name}[{string.Join(", ", m.TypeArgs)}] isn't found on it (to see the memory as another type, "
                         + $"{spelled}.{m.Name}[@U]()): for the value, read it first, "
                         + $"{spelled}.{read}().{m.Name}[{string.Join(", ", m.TypeArgs)}]()");
                 }
-                throw Err(m.Pos, m.TypeArgs.Count == 0
+                throw Err(Li.MethodNotFound, m.Pos, m.TypeArgs.Count == 0
                     ? $"{owner}.{m.Name} takes the type it goes to: {forms}"
                     : $"{owner} has no {m.Name}[{string.Join(", ", m.TypeArgs)}]; it has {forms}");
             }
         if (typewise is not null)
-            throw Err(m.Pos, $"'{typewise.DisplayName}' doesn't take me, so it isn't a method; call it by its type: "
+            throw Err(Li.RoutineValue, m.Pos, $"'{typewise.DisplayName}' doesn't take me, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
         // Generic code reaches elements through their places: a `@T` element of a record T writes the value it points
         // at there (a List's represent_into). Anywhere else a pointer writes what it is (MemoryCellWrite).
@@ -6231,17 +6231,17 @@ public sealed partial class FunctionGen
                     ? new MethodCallExpr(x, "peek", [], [], x.Pos) { Builder = true } : x;
                 return PlanMethod(m with { Receiver = Load(m.Receiver), Args = m.Args.Select(Load).ToList() }, expected);
             }
-            throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; peek it: .peek().{m.Name}(...)");
+            throw Err(Li.FailureCallable, m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; peek it: .peek().{m.Name}(...)");
         }
         // Memory is read through a typed pointer only; an Addr says where, not what.
         if (rt is PtrType { Pointee: null } && m.Name is "peek" or "poke" or "peek_volatile" or "poke_volatile")
-            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to[@T]().{m.Name}(...)");
+            throw Err(Li.MethodNotFound, m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to[@T]().{m.Name}(...)");
         // A value of a type parameter has the routines its constraints give it, and the error says which would.
         if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
             throw _c.PrecheckNoMethod(param, m.Name, DescribeReceiver(m.Receiver, rt), rt, m.Pos);
         // A Bool is combined with words, which also read left to right and stop early.
         if (rt is BoolType && m.Name is "bitand" or "bitor" or "bitxor" or "bitnot")
-            throw Err(m.Pos, m.Name switch
+            throw Err(Li.RemovedMethod, m.Pos, m.Name switch
             {
                 "bitand" => "a Bool takes `and`, not `&`",
                 "bitor" => "a Bool takes `or`, not `|`",
@@ -6250,33 +6250,33 @@ public sealed partial class FunctionGen
             });
         // The range checks are chained comparisons.
         if (m.Name is "between" or "in_range" && m.Args.Count == 2)
-            throw Err(m.Pos, m.Name == "between"
+            throw Err(Li.RemovedMethod, m.Pos, m.Name == "between"
                 ? "a range check is a chained comparison: `lo <= x <= hi`"
                 : "a range check is a chained comparison: `lo <= x < end`");
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone: receive the failure of "
+            throw Err(Li.RemovedMethod, m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone: receive the failure of "
                 + $"'{m.Name[..^"_result".Length]}' with check or try in front of the call");
         if (m.Name.EndsWith("_checked", StringComparison.Ordinal))
         {
             string plain = m.Name[..^"_checked".Length];
             string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone: write try in front of "
+            throw Err(Li.RemovedMethod, m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone: write try in front of "
                 + $"a call of '{plain}' for an Optional, {example}");
         }
         if (m.Name == "stride" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } strided } ? strided : rt, out DType element))
         {
             string view = m.Receiver is ValueRef named ? named.Name : "xs";
-            throw Err(m.Pos, $"{rt} has no method 'stride': a view is read with {view}[i], and "
+            throw Err(Li.StrideUse, m.Pos, $"{rt} has no method 'stride': a view is read with {view}[i], and "
                 + $"{view}.to[@{element}]().stride(i) gives a pointer when one is needed");
         }
         if (m.Name == "setitem" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } spanned } ? spanned : rt, out _))
-            throw Err(m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");
+            throw Err(Li.RemovedMethod, m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");
         if (m.Name == "unmap" && (rt is PtrType { Pointee: { } mapped } ? mapped : rt) is RecordType { Decl.Name: "FileStorage" })
-            throw Err(m.Pos, $"{rt} has no method 'unmap': a FileStorage is given back with drop, which writes changed pages "
+            throw Err(Li.MethodNotFound, m.Pos, $"{rt} has no method 'unmap': a FileStorage is given back with drop, which writes changed pages "
                 + "back and unmaps it");
         if (OldSpellings.OldRoutineName(m.Name) is { } renamed)
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': {renamed}");
-        throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
+            throw Err(Li.MethodNotFound, m.Pos, $"{rt} has no method '{m.Name}': {renamed}");
+        throw Err(Li.MethodNotFound, m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
     /// A receiver as an error names it: `'key'`, `'node.key'`, or what it is (`a value`, `a pointer`).
@@ -6322,9 +6322,9 @@ public sealed partial class FunctionGen
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
             VectorType v => [v.Elem, new ConstArg(v.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
-            _ => throw Err(pos, $"{owner} does not match '{o}'"),
+            _ => throw Err(Li.ProtocolRoutineMismatch, pos, $"{owner} does not match '{o}'"),
         };
-        if (actual.Count != o.Args.Count) throw Err(pos, $"{owner} does not match '{o}'");
+        if (actual.Count != o.Args.Count) throw Err(Li.ProtocolRoutineMismatch, pos, $"{owner} does not match '{o}'");
         // An argument written as a type's own name (`Fiber[None].put_work`) is that type, not a parameter to bind.
         for (int i = 0; i < o.Args.Count; i++)
             if (o.Args[i] is TypeArgType { Type: { Args.Count: 0, Member: null } } ta && !PrimitiveOrRecordName(ta.Type.Name))
@@ -6364,7 +6364,7 @@ public sealed partial class FunctionGen
     private void BindFixed(RoutineDecl r, Compiler.TypeEnv env, List<DType> given)
     {
         int i = FixedMismatch(r, env, given);
-        if (i >= 0) throw new CompileError(r.Fixed[i].Pos, $"'{r.DisplayName}' isn't for {given[i]}");
+        if (i >= 0) throw new CompileError(Li.CallTypeArguments, r.Fixed[i].Pos, $"'{r.DisplayName}' isn't for {given[i]}");
     }
 
     /// BindFixed without the error: the first fixed type argument that isn't the type given, or -1 when all are. Overload
@@ -6388,7 +6388,7 @@ public sealed partial class FunctionGen
         }
         if (typeArgs.Count == 0) return;
         if (!TakesTypeArgs(r, typeArgs.Count))
-            throw Err(pos, $"'{r.DisplayName}' takes {TypeArgCounts(r)} type argument(s), got {typeArgs.Count}");
+            throw Err(Li.CallTypeArguments, pos, $"'{r.DisplayName}' takes {TypeArgCounts(r)} type argument(s), got {typeArgs.Count}");
         for (int i = 0; i < typeArgs.Count; i++)
             env.Bind(r.TypeParams[i], ExplicitTypeArg(r, r.TypeParams[i], typeArgs[i]));
     }
@@ -6415,7 +6415,7 @@ public sealed partial class FunctionGen
         TypeArgType t => t.Type,
         TypeArgInt n => new TypeRef(n.Value.ToString(CultureInfo.InvariantCulture), [], pos) { Known = new ConstArg(n.Value) },
         TypeArgExpr x when _c.EvalConstArg(x.Expr, _env) is var folded => new TypeRef(folded.Name, [], x.Expr.Pos) { Known = folded },
-        _ => throw Err(pos, "a call's type arguments are types and values"),
+        _ => throw Err(Li.CallTypeArguments, pos, "a call's type arguments are types and values"),
     };
 
     /// Infers unbound type parameters by matching parameter types against argument types, then the return type
@@ -6554,7 +6554,7 @@ public sealed partial class FunctionGen
             Val v;
             try { v = EvalAny(held); }
             finally { _dropping = outer; }
-            if (v.Type is not VariantType) throw Err(held.Pos, $"failure_of takes a Result, not {v.Type}");
+            if (v.Type is not VariantType) throw Err(Li.FailureForm, held.Pos, $"failure_of takes a Result, not {v.Type}");
             return FailureOf(v);
         }
         // `diagnose_or_name(value: v, out: w)`: writes v the way a programmer reads it when its type is Diagnosable,
@@ -6589,7 +6589,7 @@ public sealed partial class FunctionGen
         if (plan is null)
         {
             var c = (CallExpr)e;
-            throw Err(c.Pos, UnknownCall(c));
+            throw Err(Li.UnknownName, c.Pos, UnknownCall(c));
         }
         if (_memoryReady == false && plan.Decl is { IsLibrary: true } ready
             && (ready is { Module: Compiler.UnhostedModule, Owner: null, Name: "prepare_core" }
@@ -6600,7 +6600,7 @@ public sealed partial class FunctionGen
         // x86_64 without an operating system has no vector table the CpuEventManager points the CPU at.
         if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: Compiler.UnhostedModule, Owner.Name: "CpuEventManager" }
             && _c.Target is { Arch: "x86_64", HasOs: false })
-            throw Err(e.Pos, $"CpuEventManager.{plan.Decl.Name} isn't there yet on x86_64 without an operating system: the standard "
+            throw Err(Li.TypeNotSupported, e.Pos, $"CpuEventManager.{plan.Decl.Name} isn't there yet on x86_64 without an operating system: the standard "
                 + "library sets up no interrupt descriptor table for it, so a program that takes interrupts or faults there "
                 + "sets up its own");
         CheckArgNames(e, plan);
@@ -6640,7 +6640,7 @@ public sealed partial class FunctionGen
                 : all.Skip(plan.Args.Count).ToList();
             string list = string.Join(", ", left.Select(p => $"'{p.Name}'"));
             string shape = $"{r.DisplayName}({string.Join(", ", all.Select(p => $"{p.Name}: ..."))})";
-            throw Err(e.Pos, $"missing argument{(left.Count == 1 ? "" : "s")} {list} in the call of '{r.DisplayName}', "
+            throw Err(Li.TooFewArguments, e.Pos, $"missing argument{(left.Count == 1 ? "" : "s")} {list} in the call of '{r.DisplayName}', "
                 + $"which takes {all.Count}: {shape}" + _c.HiddenOverloadHint(r, plan.Args.Count, _env.File));
         }
         for (int i = 0; i < plan.Args.Count; i++)
@@ -6651,14 +6651,14 @@ public sealed partial class FunctionGen
             if (p.Name == "me")
             {
                 if (label is not null)
-                    throw Err(arg.Pos, $"the value '{r.DisplayName}' is called on goes first, without a name");
+                    throw Err(Li.UnknownNamedArgument, arg.Pos, $"the value '{r.DisplayName}' is called on goes first, without a name");
                 continue;
             }
             if (label is not null && label != p.Name)
-                throw Err(arg.Pos, $"argument {i + 1} of '{r.DisplayName}' is named '{label}', but the parameter there is "
+                throw Err(Li.UnknownNamedArgument, arg.Pos, $"argument {i + 1} of '{r.DisplayName}' is named '{label}', but the parameter there is "
                     + $"'{p.Name}'; the names follow the parameters' order: {Shape()}");
             if (label is null && !inOrder && arg is ValueRef v && v.Name != p.Name && named.Any(q => q.Name == v.Name))
-                throw Err(arg.Pos, $"'{v.Name}' is the name of another parameter of '{r.DisplayName}', and this argument sits in the place of "
+                throw Err(Li.NamedArgumentRequired, arg.Pos, $"'{v.Name}' is the name of another parameter of '{r.DisplayName}', and this argument sits in the place of "
                     + $"'{p.Name}': label it so the call says which it is, {p.Name}: {v.Name} ({Shape()})");
         }
     }
@@ -6697,9 +6697,9 @@ public sealed partial class FunctionGen
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
         if (!arityOk && plan.Decl.Owner is { Name: "BorrowedSlice" } && plan.Decl.IsLibrary
             && OldMemoryElementCall(new MethodCallExpr(plan.Receiver ?? new ValueRef("m", plan.Pos), plan.Decl.Name, [], plan.Args, plan.Pos)) is { } newer)
-            throw Err(plan.Pos, newer);
+            throw Err(Li.RemovedMethod, plan.Pos, newer);
         if (!arityOk)
-            throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}"
+            throw Err(plan.Args.Count < fixedCount ? Li.TooFewArguments : Li.TooManyArguments, plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}"
                 + _c.HiddenOverloadHint(plan.Decl, plan.Args.Count, _env.File));
         CheckWorkHandOver(plan);
 
@@ -6814,7 +6814,7 @@ public sealed partial class FunctionGen
         if (plan.Args is [var filled] && ReferenceEquals(filled, _claimContents)) return;
         for (int i = offset; i < args.Count; i++)
             if (args[i].Type is VariantType { IsAddressed: true } optional)
-                throw Err(plan.Pos, $"{plan.Decl.Name} stores {optional.Name} into a place, and an Optional is bound where it is "
+                throw Err(Li.FailureForm, plan.Pos, $"{plan.Decl.Name} stores {optional.Name} into a place, and an Optional is bound where it is "
                     + $"made: x: &{optional.Name} <- f(). Take the {optional.Leaves[0].Name} out with when (is "
                     + $"{optional.Leaves[0].Name} as x) and keep it in a place of its own");
     }
@@ -6874,7 +6874,7 @@ public sealed partial class FunctionGen
     private Val CallerLocation(Pos pos)
     {
         if (!_inst.IsTrackCaller)
-            throw Err(pos, $"caller_location() is the place a @track_caller routine was called from, and '{_decl.DisplayName}' isn't one");
+            throw Err(Li.TrackCallerProblem, pos, $"caller_location() is the place a @track_caller routine was called from, and '{_decl.DisplayName}' isn't one");
         return new Val(CallerParam, SourceLocationPtr(pos));
     }
 
@@ -6951,7 +6951,7 @@ public sealed partial class FunctionGen
             IntLit => IntType.S(32),
             FloatLit => FloatType.B64,
             StrLit => new PtrType(IntType.Byte),
-            _ => throw Err(e.Pos, "cannot infer the type of this variadic argument; bind it with a type first"),
+            _ => throw Err(Li.TypeNeeded, e.Pos, "cannot infer the type of this variadic argument; bind it with a type first"),
         };
         var v = Eval(e, t);
         return v.Type.Repr switch
@@ -6970,7 +6970,7 @@ public sealed partial class FunctionGen
     private Val EmitIndirect(Expr callee, CallableType ct, List<Expr> argExprs, Pos pos)
     {
         if (argExprs.Count != ct.Params.Count)
-            throw Err(pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
+            throw Err(argExprs.Count < ct.Params.Count ? Li.TooFewArguments : Li.TooManyArguments, pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
         Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i], i + 1)).ToList();
         RecordIndirectCall(callee, ct, argExprs, pos);
@@ -7170,7 +7170,7 @@ public sealed partial class FunctionGen
             if (ch != '{') { sb.Append(ch); continue; }
 
             int close = MatchingBrace(text, i);
-            if (close < 0) throw Err(pos, $"unterminated placeholder in the template of '{sig.Decl.DisplayName}'");
+            if (close < 0) throw Err(Li.WriteTemplate, pos, $"unterminated placeholder in the template of '{sig.Decl.DisplayName}'");
             string key = text[(i + 1)..close];
 
             // `{by T|float|signed|unsigned}`: the text for T's kind (its lanes', for a vector), expanded in turn. One
@@ -7183,7 +7183,7 @@ public sealed partial class FunctionGen
                 if (sig.Env.Get(parts[0].Trim()) is ConstArg { Kind: ChoiceType choice } member)
                 {
                     if (parts.Count != choice.Decl.Members.Count + 1)
-                        throw Err(sig.Decl.Pos, $"'{{by {parts[0].Trim()}|...}}' needs one text per member of {choice.Name} "
+                        throw Err(Li.TemplateProblem, sig.Decl.Pos, $"'{{by {parts[0].Trim()}|...}}' needs one text per member of {choice.Name} "
                             + $"({Compiler.Members(choice)}), in '{sig.Decl.DisplayName}'");
                     int index = choice.Decl.Members.FindIndex(m => m.Value is IntLit lit && lit.Value == member.Value);
                     text = text[..i] + parts[index + 1] + text[(close + 1)..];
@@ -7191,7 +7191,7 @@ public sealed partial class FunctionGen
                     continue;
                 }
                 if (parts.Count != 4 || sig.Env.Get(parts[0].Trim()) is not { } kindOf)
-                    throw Err(sig.Decl.Pos, $"'{{by T|float|signed|unsigned}}' needs a type parameter and three texts, in '{sig.Decl.DisplayName}'");
+                    throw Err(Li.TemplateProblem, sig.Decl.Pos, $"'{{by T|float|signed|unsigned}}' needs a type parameter and three texts, in '{sig.Decl.DisplayName}'");
                 var lane = kindOf.Repr is VectorType vt ? vt.Elem.Repr : kindOf.Repr;
                 string chosen = lane switch
                 {
@@ -7213,7 +7213,7 @@ public sealed partial class FunctionGen
 
             if (key == "result")
             {
-                sb.Append(result ?? throw Err(sig.Decl.Pos, "a Void template cannot use {result}"));
+                sb.Append(result ?? throw Err(Li.TemplateProblem, sig.Decl.Pos, "a Void template cannot use {result}"));
                 continue;
             }
             // `{t0}`, `{t1}`, ...: fresh names for the intermediate values of a multi-instruction template.
@@ -7253,7 +7253,7 @@ public sealed partial class FunctionGen
                 sb.Append(_c.Target.ResolveTargetType(key)!.Llvm);
                 continue;
             }
-            throw Err(sig.Decl.Pos, $"unknown placeholder '{{{key}}}' in the template of '{sig.Decl.DisplayName}'");
+            throw Err(Li.WriteTemplate, sig.Decl.Pos, $"unknown placeholder '{{{key}}}' in the template of '{sig.Decl.DisplayName}'");
         }
 
         var lines = sb.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -7357,7 +7357,7 @@ public sealed partial class FunctionGen
             return;
         }
         if (_decl.AnnotationNamed("noreturn") is not null)
-            throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or a throw, or drop the annotation");
+            throw Err(Li.ReturnForm, r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or a throw, or drop the annotation");
         if (r.Value is { } handedBack) CheckViewedCopy(handedBack, InferQuiet(handedBack), handedBack.Pos);
         if (_inst.IsFailable)
         {
@@ -7367,12 +7367,12 @@ public sealed partial class FunctionGen
         MemReturn(r);
         if (_inst.Ret is VoidType)
         {
-            if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
+            if (r.Value is not null) throw Err(Li.ReturnForm, r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
             EndStatementTemps(null, r.Pos);
             Return("ret void");
             return;
         }
-        if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
+        if (r.Value is null) throw Err(Li.ReturnForm, r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
         // `return c` with c the slot of the entity the routine returns: what it holds goes to the caller, and c ends
         // (the return takes its group along).
         var returned = r.Value;
@@ -7440,14 +7440,14 @@ public sealed partial class FunctionGen
     private void EmitJump(JumpStmt j)
     {
         if (!_blocks.TryGetValue(j.Block, out var target))
-            throw Err(j.Pos, _c.FindFree(j.Block, _env.File, j.Pos) is not null
+            throw Err(Li.JumpArguments, j.Pos, _c.FindFree(j.Block, _env.File, j.Pos) is not null
                 ? $"'{j.Block}' is a routine, and jump goes to a block of this routine: call it as a line of its own"
                 : $"no block named '{j.Block}' in '{_decl.DisplayName}'");
         if (j.ArgNames?.FirstOrDefault(n => n is not null) is { } named)
-            throw Err(j.Pos, $"block '{j.Block}' takes its arguments in order, without names ('{named}:' here)");
+            throw Err(Li.JumpArguments, j.Pos, $"block '{j.Block}' takes its arguments in order, without names ('{named}:' here)");
         var types = _blockParamTypes[j.Block];
         if (j.Args.Count != types.Count)
-            throw Err(j.Pos, $"block '{j.Block}' takes {types.Count} argument(s), got {j.Args.Count}");
+            throw Err(Li.JumpArguments, j.Pos, $"block '{j.Block}' takes {types.Count} argument(s), got {j.Args.Count}");
         string? outer = _arm;
         _arm = j.Block;
         Mem(new MemoryRules.ArmBegin(j.Pos));
@@ -7484,11 +7484,11 @@ public sealed partial class FunctionGen
     private void EmitNoReturnCall(Expr call, Pos pos)
     {
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
-            throw Err(pos, _blocks.ContainsKey(c.Name)
+            throw Err(Li.RemovedMethod, pos, _blocks.ContainsKey(c.Name)
                 ? $"'{c.Name}' is a block: jump {c.Name}(...)"
                 : OldSpellings.OldRoutineName(c.Name) is { } renamed ? $"no routine named '{c.Name}': {renamed}" : $"no routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a @noreturn routine (such as Crash.stop) or a throw can end a body; this one returns");
+            throw Err(Li.ReturnForm, pos, "only a @noreturn routine (such as Crash.stop) or a throw can end a body; this one returns");
         EvalAny(call);
         Terminate("unreachable");
     }
@@ -7537,8 +7537,8 @@ public sealed partial class FunctionGen
         foreach (var c in l.With)
         {
             if (_values.ContainsKey(c.Name))
-                throw Err(c.Pos, $"'{c.Name}' is already bound here: a carried value takes a name of its own (a name is bound once)");
-            if (l.With.Count(o => o.Name == c.Name) > 1) throw Err(c.Pos, $"the loop carries '{c.Name}' twice");
+                throw Err(Li.NameBoundTwice, c.Pos, $"'{c.Name}' is already bound here: a carried value takes a name of its own (a name is bound once)");
+            if (l.With.Count(o => o.Name == c.Name) > 1) throw Err(Li.LoopCarried, c.Pos, $"the loop carries '{c.Name}' twice");
             var t = Resolve(c.Type);
             var v = Eval(c.Init, t);
             if (MemName(c.Init) is { } handle) passed.Add((c.Name, handle));
@@ -7555,13 +7555,13 @@ public sealed partial class FunctionGen
                 var indexType = l.VarType is { } written
                     ? Resolve(written)
                     : Infer(range.From) ?? Infer(range.To) ?? IntType.S(64);
-                if (indexType is not IntType it) throw Err(range.Pos, $"a range walks integers, and this one is over {indexType}");
+                if (indexType is not IntType it) throw Err(Li.TypeMismatch, range.Pos, $"a range walks integers, and this one is over {indexType}");
                 var from = Eval(range.From, it);
                 var to = Eval(range.To, it);
                 bool literalStep = range.Step is null or IntLit or UnaryExpr { Op: "-", Operand: IntLit };
                 bool descending = range.Step is UnaryExpr { Op: "-", Operand: IntLit } or IntLit { Value.Sign: < 0 };
                 if (range.Step is IntLit { Value.IsZero: true } or UnaryExpr { Op: "-", Operand: IntLit { Value.IsZero: true } })
-                    throw Err(range.Step.Pos, "you wrote `by 0`, but a step of 0 never moves, so the range would never reach its end. "
+                    throw Err(Li.RangeStepZero, range.Step.Pos, "you wrote `by 0`, but a step of 0 never moves, so the range would never reach its end. "
                         + "Give it a step that moves: `by 1` (or leave `by` out) to count up, `by -1` to count down");
                 var step = range.Step is null ? new Val("1", it) : Eval(range.Step, it);
                 if (!literalStep)
@@ -7572,7 +7572,7 @@ public sealed partial class FunctionGen
                     if (!it.IsUnsigned) frame.DownwardOp = EmitTmp($"icmp slt {it.Llvm} {step.Op}, 0");
                 }
                 if (_values.ContainsKey(l.Var!))
-                    throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's index takes a name of its own (a name is bound once)");
+                    throw Err(Li.NameBoundTwice, l.VarPos, $"'{l.Var}' is already bound here: the loop's index takes a name of its own (a name is bound once)");
                 frame.Carried.Add((l.Var!, it));
                 firstOps.Add(from.Op);
                 if (range.Inclusive || range.Step is not null)
@@ -7604,16 +7604,16 @@ public sealed partial class FunctionGen
                     _values.Remove("$emitter");
                 }
                 if (emitPlan is null || !(emitPlan.Decl.IsFailable || _c.CanRecover(emitPlan.Decl)) || emitted is null || emitted is VoidType)
-                    throw Err(l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose emit gives "
+                    throw Err(Li.LoopSource, l.Source!.Pos, "a for loop walks a range (a til b) or an emitter in memory (one whose emit gives "
                         + $"the next item and throws AbsentValueError past the end); this is {emitter.Type}");
                 itemType = emitted!;
                 // An entity lives in a place and is not handed out by value: said at the loop, not inside the emitter's own body.
                 if (Entities.Holds(itemType) && !_decl.IsLibrary)
-                    throw Err(l.Source!.Pos, $"{emitter.Type.ToString().TrimStart('@')}.emit hands out each item by value, and a {itemType} is an entity or holds one, which lives in a place "
+                    throw Err(Li.LoopSource, l.Source!.Pos, $"{emitter.Type.ToString().TrimStart('@')}.emit hands out each item by value, and a {itemType} is an entity or holds one, which lives in a place "
                         + $"and is not copied out: walk it by hand with the emitter's next(), which gives the place (@{itemType}): "
                         + $"iter: &{emitter.Type.ToString().TrimStart('@')} <- ...emitter(), then when try iter.next()");
                 if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
-                    throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this emitter hands out {itemType}");
+                    throw Err(Li.LoopSource, l.VarPos, $"'{l.Var}' is written as {declared}, and this emitter hands out {itemType}");
             }
         }
 
@@ -7728,7 +7728,7 @@ public sealed partial class FunctionGen
                 value = EmitTmp($"load {itemType!.Llvm}, ptr {at}");
             }
             if (_values.ContainsKey(l.Var!))
-                throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's element takes a name of its own (a name is bound once)");
+                throw Err(Li.NameBoundTwice, l.VarPos, $"'{l.Var}' is already bound here: the loop's element takes a name of its own (a name is bound once)");
             Define(l.Var!, new Val(value, itemType!), l.VarPos);
             DescribeValue(l.Var!, value, itemType!, l.VarPos);
             if (MemOn && ManagedValue(itemType!)) _memTracked.Add(l.Var!);
@@ -7743,7 +7743,7 @@ public sealed partial class FunctionGen
             if (!_cur.Terminated)
             {
                 if (frame.HasWith)
-                    throw Err(l.Body[^1].Pos, "the body of a loop that carries values ends here without passing them on: "
+                    throw Err(Li.LoopCarried, l.Body[^1].Pos, "the body of a loop that carries values ends here without passing them on: "
                         + $"end every path with continue with {string.Join(", ", l.With.Select(c => $"{c.Name}: ..."))} (or break, or return)");
                 EmitContinue(new ContinueStmt(null, l.Body[^1].Pos));
             }
@@ -7809,32 +7809,32 @@ public sealed partial class FunctionGen
     /// The frame of the loop a `break to` or `continue to` names.
     private LoopFrame NamedLoop(string name, Pos at, string verb) =>
         _loops.FirstOrDefault(f => f.Name == name)
-        ?? throw Err(at, $"'{verb} to {name}' names no loop around it");
+        ?? throw Err(Li.LoopName, at, $"'{verb} to {name}' names no loop around it");
 
     private void EmitContinue(ContinueStmt c)
     {
-        if (_loops.Count == 0) throw Err(c.Pos, "continue goes on with the next round of a loop, and there is no loop here");
+        if (_loops.Count == 0) throw Err(Li.ContinueOutsideLoop, c.Pos, "continue goes on with the next round of a loop, and there is no loop here");
         var loop = c.Target is null ? _loops.Peek() : NamedLoop(c.Target, c.TargetPos, "continue");
         var with = loop.Carried.Where(v => (loop.Range is not { } r || v.Name != r.Name) && v.Name != loop.LiveFlag).ToList();
         var given = c.With ?? [];
         if (with.Count > 0 && c.With is null)
-            throw Err(c.Pos, $"the loop carries values, so each round says what the next one gets: continue with {string.Join(", ", with.Select(v => $"{v.Name}: ..."))}");
+            throw Err(Li.LoopCarried, c.Pos, $"the loop carries values, so each round says what the next one gets: continue with {string.Join(", ", with.Select(v => $"{v.Name}: ..."))}");
         if (with.Count == 0 && c.With is not null)
-            throw Err(c.Pos, "this loop carries no values (no with), so continue takes none");
+            throw Err(Li.LoopCarried, c.Pos, "this loop carries no values (no with), so continue takes none");
         var ops = new List<string>();
         var passed = new List<(string Param, string Arg)>();
         foreach (var (name, type) in with)
         {
             var matches = given.Where(g => g.Name == name).ToList();
-            if (matches.Count == 0) throw Err(c.Pos, $"continue with doesn't say what '{name}' is in the next round");
-            if (matches.Count > 1) throw Err(matches[1].Pos, $"continue with names '{name}' twice");
+            if (matches.Count == 0) throw Err(Li.LoopCarried, c.Pos, $"continue with doesn't say what '{name}' is in the next round");
+            if (matches.Count > 1) throw Err(Li.LoopCarried, matches[1].Pos, $"continue with names '{name}' twice");
             var v = Eval(matches[0].Value, type);
             if (MemName(matches[0].Value) is { } handle) passed.Add((name, handle));
             ops.Add(v.Op);
         }
         foreach (var (name, _, pos) in given)
             if (with.All(v => v.Name != name))
-                throw Err(pos, loop.Range is { } r && r.Name == name
+                throw Err(Li.LoopCarried, pos, loop.Range is { } r && r.Name == name
                     ? $"'{name}' is the loop's index, which the range steps by itself"
                     : $"the loop carries no value named '{name}'");
         if (loop.Range is { } range)

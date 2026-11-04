@@ -314,7 +314,7 @@ public sealed partial class Compiler
                 // `PF <ret> <params> E`, each written the way the routine declares it.
                 var parts = t.Args.Where(a => a is not TypeArgAnnotation).ToList();
                 if (parts is not [TypeArgTuple ps, TypeArgType ret])
-                    throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
+                    throw new CompileError(Li.TypeForm, t.Pos, "Callable is written Callable[(Params...), Ret]");
                 string fkey = "FREF:" + t;
                 if (Index("P" + fkey) is { } p)
                 {
@@ -351,7 +351,7 @@ public sealed partial class Compiler
             else
             {
                 var d = c.TypeDeclQuiet(t.Name, env.File, t.Path)
-                        ?? throw new CompileError(t.Pos, $"unknown type '{t}'");
+                        ?? throw new CompileError(Li.UnknownType, t.Pos, $"unknown type '{t}'");
                 steps = ModuleSteps(d.Module);
                 qualified = DType.DeclKey(d, t.Name, []);
                 steps.Add(new Step(c.UnqualifiedName(t.Name, d), "TP:" + qualified, null, null));

@@ -18,7 +18,7 @@ public static class BlockRule
         var jump = blocks.SelectMany(b => Bodies.Jumps(b.Stmts)).FirstOrDefault();
         if (blocks.Count <= 1 && jump is null) return;
         var at = blocks.Count > 1 ? blocks[1].Pos : jump!.Pos;
-        throw new CompileError(at, $"'{r.DisplayName}' is written with blocks and jumps, which belong to assembly routines "
+        throw new CompileError(Li.RoutineHeaderSyntax, at, $"'{r.DisplayName}' is written with blocks and jumps, which belong to assembly routines "
             + "(@external(\"asm\")) and generated code (@generated): write it with if, when, and loops");
     }
 }

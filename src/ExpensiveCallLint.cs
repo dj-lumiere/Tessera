@@ -40,7 +40,7 @@ public static class ExpensiveCallLint
     {
         if (r.AnnotationNamed(Annotation) is not { } a) return;
         if (a.Args.Count > 1 || a.Args is [{ Key: not null } or { Negated: true } or { Expr: not null } or { Values: not null }])
-            throw new CompileError(a.Pos,
+            throw new CompileError(Li.ExpensiveCallInLoop, a.Pos,
                 "@expensive takes nothing, or one string that says why the routine is expensive: @expensive(\"allocates\")");
     }
 
@@ -56,14 +56,14 @@ public static class ExpensiveCallLint
         {
             if (call.InLoop)
             {
-                warnings.Add((call.Pos, $"{call.Pos}: warning: {What(call)}, and this call is in a loop, so it runs on every round. Move it "
+                warnings.Add((call.Pos, $"{Li.ExpensiveCallInLoop.Head}: {call.Pos}: {What(call)}, and this call is in a loop, so it runs on every round. Move it "
                     + "out of the loop, reuse one result across the rounds (a buffer made once, before the loop), or keep it here if each round needs its own"));
                 continue;
             }
             if (BlockGraph.LoopOf(call.Block, blocks[0].Name, successors, loops) is not { } loop) continue;
             // An arm's arguments run only when the arm is taken: once, when the arm leaves the loop.
             if (call.Arm is { } arm && loops.GetValueOrDefault(arm, -1) != loops[call.Block]) continue;
-            warnings.Add((call.Pos, $"{call.Pos}: warning: {Message(call, loop.Head, loop.Closing)}"));
+            warnings.Add((call.Pos, $"{Li.ExpensiveCallInLoop.Head}: {call.Pos}: {Message(call, loop.Head, loop.Closing)}"));
         }
         return warnings;
     }

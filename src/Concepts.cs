@@ -64,9 +64,9 @@ public sealed partial class Compiler
     private ConceptDecl FindConcept(TypeRef c, string file)
     {
         var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"protocol '{c.Name}'", c.Path)
-                   ?? throw new CompileError(c.Pos, $"unknown protocol '{c.Name}'");
+                   ?? throw new CompileError(Li.ProtocolReference, c.Pos, $"unknown protocol '{c.Name}'");
         if (decl.TypeParams.Count != c.Args.Count)
-            throw new CompileError(c.Pos, $"protocol '{c.Name}' takes {decl.TypeParams.Count} argument(s), got {c.Args.Count}");
+            throw new CompileError(Li.ProtocolReference, c.Pos, $"protocol '{c.Name}' takes {decl.TypeParams.Count} argument(s), got {c.Args.Count}");
         return decl;
     }
 
@@ -82,7 +82,7 @@ public sealed partial class Compiler
     /// call at `at`.
     public void CheckRoutineRequirements(RoutineDecl r, TypeEnv env, Pos at)
     {
-        if (RecordKindMisfit(r.Clauses, env, $"'{r.DisplayName}'") is { } misfit) throw new CompileError(at, misfit);
+        if (RecordKindMisfit(r.Clauses, env, $"'{r.DisplayName}'") is { } misfit) throw new CompileError(Li.RecordKindMisfit, at, misfit);
         var constraints = r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
         if (constraints.Count == 0) return;
         string key = r.Pos + "|" + string.Join(",", env.All.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value.Key}"));
@@ -106,7 +106,7 @@ public sealed partial class Compiler
         if (!_checkedRequirements.Add(key)) return;
         var env = new TypeEnv(file);
         for (int i = 0; i < typeParams.Count && i < args.Count; i++) env.Bind(typeParams[i], args[i]);
-        if (RecordKindMisfit(clauses, env, shown) is { } misfit) throw new CompileError(at, misfit);
+        if (RecordKindMisfit(clauses, env, shown) is { } misfit) throw new CompileError(Li.RecordKindMisfit, at, misfit);
         foreach (var c in constraints)
             RequireConformance(c, env, at, shown);
     }
@@ -162,9 +162,9 @@ public sealed partial class Compiler
             why = $"a pointer isn't {decl.Name}; write the value with .peek(), or the address with .to[Addr]()";
         // In a generic body being checked, the constraint is missing from the routine's (or its record's) require.
         else if (_precheck is { } scope && args.Any(MentionsArchetype))
-            throw new CompileError(at, $"{scope.What} needs {Show(decl.Name, args)}, which {neededBy} requires: {why}"
+            throw new CompileError(Li.ProtocolNotHeld, at, $"{scope.What} needs {Show(decl.Name, args)}, which {neededBy} requires: {why}"
                 + PrecheckFix(decl, args));
-        throw new CompileError(at, $"{Show(decl.Name, args)} doesn't hold, which {neededBy} requires: {why}");
+        throw new CompileError(Li.ProtocolNotHeld, at, $"{Show(decl.Name, args)} doesn't hold, which {neededBy} requires: {why}");
     }
 
     private List<DType> ConceptArgs(TypeRef concept, TypeEnv env) =>
@@ -172,7 +172,7 @@ public sealed partial class Compiler
         {
             TypeArgType t => ResolveType(t.Type, env),
             TypeArgInt i => (DType)new ConstArg(i.Value),
-            _ => throw new CompileError(concept.Pos, $"invalid argument for protocol '{concept.Name}'"),
+            _ => throw new CompileError(Li.ProtocolReference, concept.Pos, $"invalid argument for protocol '{concept.Name}'"),
         }).ToList();
 
     // ── Satisfaction ───────────────────────────────────────────────────────
@@ -577,7 +577,7 @@ public sealed partial class Compiler
             if (wanted.Count > 0) methods = methods.Where(m => m.Fixed.Count > 0).ToList();
             string shownName = wanted.Count == 0 ? req.Name : $"{req.Name}[{string.Join(", ", wanted.Select(w => w.Name))}]";
             if (methods.Count == 0)
-                throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{shownName}', which doesn't exist");
+                throw new CompileError(Li.MissingProtocolRoutine, conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{shownName}', which doesn't exist");
             // A type conforms through the one overload whose full signature is the requirement's.
             var misses = new List<(RoutineDecl Method, CompileError Why)>();
             foreach (var method in methods)
@@ -593,7 +593,7 @@ public sealed partial class Compiler
             }
             if (misses.Count == 1) throw misses[0].Why;
             if (misses.Count > 1)
-                throw new CompileError(conf.Source.Pos, $"{claim}: none of the {misses.Count} routines '{owner.Name}.{req.Name}' has the "
+                throw new CompileError(Li.ProtocolRoutineMismatch, conf.Source.Pos, $"{claim}: none of the {misses.Count} routines '{owner.Name}.{req.Name}' has the "
                     + $"signature the protocol wants ({ShowSignature(req)}):"
                     + string.Concat(misses.Select(m => $"\n    {ShowSignature(m.Method)} at {m.Method.Pos}: {Reason(m.Why.Text, claim)}")));
         }
@@ -623,19 +623,19 @@ public sealed partial class Compiler
         string where = $"routine '{owner.Name}.{req.Name}' at {method.Pos}";
 
         if (method.Params.Count != req.Params.Count)
-            throw new CompileError(at, $"{claim}: {where} takes {method.Params.Count} parameter(s); the protocol wants {req.Params.Count}");
+            throw new CompileError(Li.ProtocolRoutineMismatch, at, $"{claim}: {where} takes {method.Params.Count} parameter(s); the protocol wants {req.Params.Count}");
         // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
         if (HasReceiver(req) != HasReceiver(method))
-            throw new CompileError(at, HasReceiver(req)
+            throw new CompileError(Li.ProtocolRoutineMismatch, at, HasReceiver(req)
                 ? $"{claim}: {where} doesn't take me; the protocol calls it as a method, x.{req.Name}(...)"
                 : $"{claim}: {where} takes me; the protocol calls it by its type, {owner.Name}.{req.Name}(...)");
         // A call through the concept takes the failure the way the requirement says: an infallible requirement wants a
         // routine that promises not to fail too.
         if (req.IsInfallible && !method.IsInfallible && method.Blocks is not null)
-            throw new CompileError(at, $"{claim}: the protocol's {req.Name} is infallible, and {where} isn't: write it infallible routine");
+            throw new CompileError(Li.ProtocolRoutineMismatch, at, $"{claim}: the protocol's {req.Name} is infallible, and {where} isn't: write it infallible routine");
         bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
         if (req.TypeParams.Count != method.TypeParams.Count)
-            throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the protocol wants {req.TypeParams.Count}");
+            throw new CompileError(Li.ProtocolRoutineMismatch, at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the protocol wants {req.TypeParams.Count}");
         for (int i = 0; i < req.Params.Count; i++)
         {
             if (ownTypeParams) continue;
@@ -645,13 +645,13 @@ public sealed partial class Compiler
             // place, `@Me` for `Me`.
             if (Entities.Holds(want) && have is PtrType { Pointee: { } lent } && lent.Equals(want)) continue;
             if (!want.Equals(have))
-                throw new CompileError(at, $"{claim}: parameter {i + 1} of {where} is {have}; the protocol wants {want}");
+                throw new CompileError(Li.ProtocolRoutineMismatch, at, $"{claim}: parameter {i + 1} of {where} is {have}; the protocol wants {want}");
         }
         if (ownTypeParams) return;
         var wantRet = ResolveType(req.ReturnType, renv, allowVoid: true);
         var haveRet = ResolveType(method.ReturnType, menv, allowVoid: true);
         if (!wantRet.Equals(haveRet))
-            throw new CompileError(at, $"{claim}: {where} returns {haveRet}; the protocol wants {wantRet}");
+            throw new CompileError(Li.ProtocolRoutineMismatch, at, $"{claim}: {where} returns {haveRet}; the protocol wants {wantRet}");
     }
 
     /// The environment of a method called on `owner`: its owner's type parameters bound from `owner`, and Me.
@@ -672,7 +672,7 @@ public sealed partial class Compiler
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
             VectorType v => [v.Elem, new ConstArg(v.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
-            _ => throw new CompileError(pos, $"{owner} does not match '{o}'"),
+            _ => throw new CompileError(Li.ProtocolRoutineMismatch, pos, $"{owner} does not match '{o}'"),
         };
         for (int i = 0; i < o.Args.Count && i < actual.Count; i++)
             if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta) env.Bind(ta.Type.Name, actual[i]);
@@ -697,7 +697,7 @@ public sealed partial class Compiler
                         conf.Source.Pos) is not null))
                     continue;
                 if (Conforms(decl, args, conf.Source.File, conf.Source.Pos) is { } why)
-                    throw new CompileError(conf.Source.Pos, $"{Show(decl.Name, args)} doesn't hold: {why}");
+                    throw new CompileError(Li.ProtocolNotHeld, conf.Source.Pos, $"{Show(decl.Name, args)} doesn't hold: {why}");
             }
             catch (CompileError e) { errors.Add(e); }
         }

@@ -101,25 +101,25 @@ public sealed partial class FunctionGen
                 if (value is StrLit text && Resolve(elem) is IntType { Kind: IntKind.Byte or IntKind.Char } textElem)
                     value = StringAsArray(text, textElem, null, Resolve(written));
                 if (value is not ArrayLit { IsTuple: false })
-                    throw Err(value.Pos, $"a &[{elem}] from STACK is an array literal, whose count the build knows: {b.Name}: "
+                    throw Err(Li.BorrowForm, value.Pos, $"a &[{elem}] from STACK is an array literal, whose count the build knows: {b.Name}: "
                         + $"&[{elem}] <- [0] * 64, or [0] * n from HEAP for a count known only while running"
                         + (Resolve(elem) is IntType { Kind: IntKind.Byte or IntKind.Char }
                             ? $", and a string literal is one too: {b.Name}: &[{elem}] <- \"text\"" : ""));
                 var span = new TypeRef("PointedSlice", [new TypeArgType(elem)], written.Pos);
                 if (HasReleaseDuty(Resolve(elem)))
-                    throw Err(b.Pos, $"a &[{elem}] from STACK holds values with nothing to give back: values of {elem} go in "
+                    throw Err(Li.BorrowForm, b.Pos, $"a &[{elem}] from STACK holds values with nothing to give back: values of {elem} go in "
                         + $"memory from a manager that the program gives back, {b.Name}: &[{elem}] <- [...] from HEAP");
                 _stackSpans.Add(b.Name);
                 return (new BindStmt(b.Name, span, new ClaimExpr(b.Pos) { Contents = value }, b.Pos) { Source = b.Source }, false);
             }
             if (IsBorrowedType(InferQuiet(value)) || IsBorrowedType(Resolve(elem)))
-                throw Err(b.Pos, $"a {elem} is borrowed from its own manager and given back with drop: bind it with "
+                throw Err(Li.BorrowForm, b.Pos, $"a {elem} is borrowed from its own manager and given back with drop: bind it with "
                     + $"<- from the call that borrows it, {b.Name}: {elem} <- ..., not in a STACK place");
             var slot = new TypeRef("PointedCell", [new TypeArgType(elem)], written.Pos);
             return (new BindStmt(b.Name, slot, new ClaimExpr(b.Pos) { Contents = value }, b.Pos) { Source = b.Source }, true);
         }
         if (written is { Name: "PointedCell" or "PointedSlice", Path: null })
-            throw Err(written.Pos, $"{written} only views memory, and '<-' borrows a place: {b.Name}: "
+            throw Err(Li.BorrowForm, written.Pos, $"{written} only views memory, and '<-' borrows a place: {b.Name}: "
                 + (written.Args is [TypeArgType inner] ? (written.Name == "PointedCell" ? $"&{inner}" : $"&[{inner}]") : "&T") + " <- value");
         // `x: &T? <- try value from m` and `x: Check[&T] <- check value from m`: the try or check covers the whole line,
         // the making of the value and the manager's borrow, and the name holds what it gives in a frame slot.
@@ -135,28 +135,28 @@ public sealed partial class FunctionGen
         {
             string shown = written.ToString();
             if (fromManager.Value is UnaryExpr { Op: "try" or "check" } wrong)
-                throw Err(fromManager.Pos, wrong.Op == "try"
+                throw Err(Li.BorrowForm, fromManager.Pos, wrong.Op == "try"
                     ? $"try on a line that borrows from a manager gives a &T?, None when making the value fails or the manager "
                       + $"has no memory: {b.Name}: &{BareShown(written)}? <- try ... from manager"
                     : $"check on a line that borrows from a manager gives a Check[&T], the failure when making the value fails or "
                       + $"the manager has no memory: {b.Name}: Check[&{BareShown(written)}] <- check ... from manager");
             if (RecoveredPlace(written, "try") is { } maybe)
-                throw Err(fromManager.Pos, $"a line that borrows from a manager gives a &{maybe}, and a &{maybe}? comes from try "
+                throw Err(Li.BorrowForm, fromManager.Pos, $"a line that borrows from a manager gives a &{maybe}, and a &{maybe}? comes from try "
                     + $"in front of the value, None when making it fails or the manager has no memory: {b.Name}: &{maybe} <- ... "
                     + $"from manager, or {b.Name}: &{maybe}? <- try ... from manager");
-            throw Err(fromManager.Pos, $"a place borrowed from a manager is a &T or a &[T]: {b.Name}: "
+            throw Err(Li.BorrowForm, fromManager.Pos, $"a place borrowed from a manager is a &T or a &[T]: {b.Name}: "
                 + (shown.StartsWith('&') ? shown : $"&{shown}") + " <- ... from manager");
         }
         var type = Resolve(written);
         // `back: &Job? <- f()`: `&Job?` is an Optional of a place from a manager, and the place that holds a `Job?` is `&(Job?)`.
         if (!IsBorrowedType(type) && RecoveredPlace(written, "try") is { } optionalHeld)
-            throw Err(b.Pos, $"&{optionalHeld}? is an Optional of a place borrowed from a manager, which only try on a line with "
+            throw Err(Li.BorrowForm, b.Pos, $"&{optionalHeld}? is an Optional of a place borrowed from a manager, which only try on a line with "
                 + $"from gives: a place that holds a {optionalHeld}? is written with parentheses, {b.Name}: &({optionalHeld}?) <- value");
         if (!IsBorrowedType(type))
-            throw Err(b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
+            throw Err(Li.BorrowForm, b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
                 + $"{b.Name}: {written} = value binds a value");
         if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr))
-            throw Err(value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
+            throw Err(Li.BorrowForm, value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
                 + $"{new Printer().Expr(value, 0)}: a second name for one borrowed {type.Name} would give it back twice");
         // A ticket made again from its fields (`Thread[Byte].construct(worker: lent, ...)`) is a view of one lent
         // elsewhere, which is given back there.
@@ -379,7 +379,7 @@ public sealed partial class FunctionGen
         if (m is { Name: "peek" or "poke", Builder: false } && slotType is PtrType)
         {
             string spelled = new Printer().Expr(m.Receiver, 0);
-            throw Err(m.Pos, m.Name == "peek"
+            throw Err(Li.BorrowForm, m.Pos, m.Name == "peek"
                 ? $"{spelled} is a &T place, which is read with load(): {spelled}.load()"
                 : $"{spelled} is a &T place, which is written with store(v) or with '<-': {spelled}.store({(m.Args.Count == 1 ? new Printer().Expr(m.Args[0], 0) : "value")})");
         }

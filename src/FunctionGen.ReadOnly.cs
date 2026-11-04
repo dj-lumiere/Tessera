@@ -41,11 +41,11 @@ public sealed partial class FunctionGen
         {
             int count;
             try { count = _c.Elements(lit, _env).Count; }
-            catch (CompileError) { throw Err(lit.Pos, LiteralViewMessage(elem, expected)); }
+            catch (CompileError) { throw Err(Li.ReadOnlyWrite, lit.Pos, LiteralViewMessage(elem, expected)); }
             array = new ArrayType(elem, count, isSlots: false);
         }
         else return null;
-        if (!IsConstant(lit)) throw Err(lit.Pos, LiteralViewMessage(array.Elem, expected));
+        if (!IsConstant(lit)) throw Err(Li.ReadOnlyWrite, lit.Pos, LiteralViewMessage(array.Elem, expected));
         string data = _c.LiteralData(lit, array, _env);
         return expected is PtrType ? new Val(data, expected) : SpanOver(data, array.Count, expected);
     }
@@ -114,14 +114,14 @@ public sealed partial class FunctionGen
     /// The build error for a write through `place`, which sees read-only data.
     private CompileError ReadOnlyWrite(Pos pos, Expr root, string origin) => root switch
     {
-        PresetRef r => Err(pos, $"'{r.Name}' is a preset; its memory is read-only: to change the values, copy them into "
+        PresetRef r => Err(Li.ReadOnlyWrite, pos, $"'{r.Name}' is a preset; its memory is read-only: to change the values, copy them into "
             + $"a place first, copy: &{(ResolvePresetQuiet(r)?.Type is { } t ? (t is PtrType { Pointee: { } held } ? held : t).ToString() : "T")} <- {r.Name}"),
         // A text literal is a preset place without a name: its memory is read-only like a preset's.
-        StrLit text => Err(pos, $"{Quoted(text.Value)} is a text literal, a preset without a name; its memory is read-only: to "
+        StrLit text => Err(Li.ReadOnlyWrite, pos, $"{Quoted(text.Value)} is a text literal, a preset without a name; its memory is read-only: to "
             + $"change the bytes, copy them into a place first, copy: &[Byte] <- {Quoted(text.Value)}"),
-        ValueRef v => Err(pos, $"'{v.Name}' views {origin}, which is read-only data: a view taken with '=' of a literal or "
+        ValueRef v => Err(Li.ReadOnlyWrite, pos, $"'{v.Name}' views {origin}, which is read-only data: a view taken with '=' of a literal or "
             + $"a preset only reads. To change the values, copy them into a place first, {CopyHint(v)}"),
-        _ => Err(pos, $"this writes into {origin}, which is read-only data"),
+        _ => Err(Li.ReadOnlyWrite, pos, $"this writes into {origin}, which is read-only data"),
     };
 
     /// The place read-only data handed as `handed` is copied into, so a routine can write there: `copy: &[Byte] <- "hi"`
@@ -179,7 +179,7 @@ public sealed partial class FunctionGen
         if (_c.Prechecking || type is null or PtrType || value is not (ValueRef or FieldExpr or IndexExpr or MethodCallExpr)
             || !ReadOnlyView(value) || WayToChange(type) is not { } way) return;
         string what = name ?? Spelled(value);
-        throw Err(pos, $"'{what}' holds a way to change an entity ({way}) and is read through the view of a shared read access, "
+        throw Err(Li.SharedAccessWrite, pos, $"'{what}' holds a way to change an entity ({way}) and is read through the view of a shared read access, "
             + "which reads only: copying it out would hand out a way to change what that view reaches. Read the stamp where "
             + "it is (peek it in the view and fetch() it: it gives a view that reads only), or take exclusive access "
             + "(get_exclusive_access) to keep it");

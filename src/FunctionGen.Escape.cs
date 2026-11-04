@@ -670,7 +670,7 @@ public sealed partial class FunctionGen
         string where = entity is not null
             ? $"a field of the entity {entity}, which any routine that reaches the entity may use later"
             : $"the global '{global}', which every routine reaches";
-        throw Err(plan.Pos, $"{Spelled(new MethodCallExpr(plan.Receiver!, sig.Decl.Name, [], plan.Args, plan.Pos))} keeps a view "
+        throw Err(Li.ViewOutlives, plan.Pos, $"{Spelled(new MethodCallExpr(plan.Receiver!, sig.Decl.Name, [], plan.Args, plan.Pos))} keeps a view "
             + $"of '{source}' in {where}, and the build can't compare those later uses with where that view's place is given "
             + "back: keep a Stamped of the entity there (its stamp(), read back with fetch(), which fails once the entity has "
             + "ended), make the field an &E? when one holder keeps the value, or hand the view as an argument to the routines "

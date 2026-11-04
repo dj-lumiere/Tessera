@@ -132,7 +132,7 @@ public sealed partial class Compiler
     {
         foreach (var a in d.Annotations.Concat(d is RecordDecl r ? r.Fields.SelectMany(f => f.Annotations) : []))
             if (!KnownAnnotations.Contains(a.Name) && !TypeAnnotations.Contains(a.Name))
-                throw new CompileError(a.Pos,
+                throw new CompileError(Li.AnnotationTarget, a.Pos,
                     $"'@{a.Name}' is not an annotation the builder knows. Remove it, or check its spelling against the annotations in the language reference.");
     }
 
@@ -156,10 +156,10 @@ public sealed partial class Compiler
         bool asm = IsAsm(r);
         foreach (var a in r.Annotations)
             if (!asm && AsmAnnotations.Contains(a.Name))
-                throw new CompileError(a.Pos, $"@{a.Name} describes an assembly routine, and '{r.DisplayName}' is not @external(\"asm\")");
+                throw new CompileError(Li.AsmRoutineForm, a.Pos, $"@{a.Name} describes an assembly routine, and '{r.DisplayName}' is not @external(\"asm\")");
         foreach (var p in r.Params)
             if (p.Register is { } placed && !asm)
-                throw new CompileError(placed.Pos,
+                throw new CompileError(Li.AsmRoutineForm, placed.Pos,
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not @external(\"asm\")");
         BlockRule.Check(r);
         EmitterReuseRule.Check(r);
@@ -174,7 +174,7 @@ public sealed partial class Compiler
         BindDefaults(r, env);
         foreach (var n in needed)
             if (!env.Has(n))
-                throw new CompileError(r.Pos, $"type parameter '{n}' of '{r.DisplayName}' could not be inferred; pass it explicitly");
+                throw new CompileError(Li.CannotInferTypeArgument, r.Pos, $"type parameter '{n}' of '{r.DisplayName}' could not be inferred; pass it explicitly");
         // A value parameter is a value of the integer type or the choice its needs line declares, in the signature and
         // the body alike.
         foreach (var n in needed)
@@ -193,7 +193,7 @@ public sealed partial class Compiler
         if (IsTrackCaller(r))
         {
             if (r.Blocks is null || r.AnnotationNamed("external") is not null)
-                throw new CompileError(r.AnnotationNamed("track_caller")!.Pos, $"@track_caller needs a routine with a body, and '{r.DisplayName}' has none");
+                throw new CompileError(Li.TrackCallerProblem, r.AnnotationNamed("track_caller")!.Pos, $"@track_caller needs a routine with a body, and '{r.DisplayName}' has none");
             ps.Add(new PtrType(null));
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
@@ -215,13 +215,13 @@ public sealed partial class Compiler
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.AnnotationNamed("export") is { } export)
         {
-            symbol = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
+            symbol = export.First ?? throw new CompileError(Li.ExportProblem, export.Pos, "@export needs a symbol name");
             if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
-                throw new CompileError(export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
+                throw new CompileError(Li.ExportProblem, export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
             // C reads a value or a value and a code: a variant (an Optional, a Check, an A | B) is nothing C can take apart,
             // except an `@T?` or `Callable?`, which is one address, null for None.
             if (ret is VariantType { IsNullable: false } returned)
-                throw new CompileError(export.Pos, $"'{r.DisplayName}' is @export, and C can't read the {returned.Name} it returns: "
+                throw new CompileError(Li.ExportProblem, export.Pos, $"'{r.DisplayName}' is @export, and C can't read the {returned.Name} it returns: "
                     + "an exported routine returns a T, or a Result[T, TErrorCode] that tells C what went wrong with a code");
         }
         else symbol = MangleRoutine(r, env, ps, ret);
@@ -235,15 +235,15 @@ public sealed partial class Compiler
     {
         var external = r.AnnotationNamed("external");
         if (external is not null && external.First is not ("c" or "llvm" or "asm"))
-            throw new CompileError(external.Pos, "only @external(\"c\"), @external(\"llvm\") and @external(\"asm\") are supported");
+            throw new CompileError(Li.ExternalProblem, external.Pos, "only @external(\"c\"), @external(\"llvm\") and @external(\"asm\") are supported");
         if (asm && r.Blocks is null)
-            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
+            throw new CompileError(Li.ExternalProblem, r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
         if (external is { First: "llvm" } && r.AnnotationNamed("template") is null)
-            throw new CompileError(r.Pos, $"@external(\"llvm\") routine '{r.DisplayName}' needs a @template");
+            throw new CompileError(Li.ExternalProblem, r.Pos, $"@external(\"llvm\") routine '{r.DisplayName}' needs a @template");
         if (external is not null && !asm && r.Blocks is not null)
-            throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
+            throw new CompileError(Li.ExternalProblem, r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
         if (external is null && r.Blocks is null)
-            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it @external to declare it)");
+            throw new CompileError(Li.ExternalProblem, r.Pos, $"routine '{r.DisplayName}' has no body (mark it @external to declare it)");
     }
 
     /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List[T].push`).
@@ -260,12 +260,12 @@ public sealed partial class Compiler
         {
             if (r.Params[i].Name != "me") continue;
             if (r.Owner is null)
-                throw new CompileError(r.Params[i].Pos, $"me is the receiver of a routine on a type; '{r.Name}' is on none");
+                throw new CompileError(Li.AnnotationTarget, r.Params[i].Pos, $"me is the receiver of a routine on a type; '{r.Name}' is on none");
             if (i != 0)
-                throw new CompileError(r.Params[i].Pos, "me is the receiver, so it's the first parameter");
+                throw new CompileError(Li.AnnotationTarget, r.Params[i].Pos, "me is the receiver, so it's the first parameter");
             var self = env.Get("Me") ?? env.Get(r.Owner.Name);
             if (self is not null && !ps[0].Equals(self) && !(ps[0] is PtrType { Pointee: { } pointee } && pointee.Equals(self)))
-                throw new CompileError(r.Params[i].Pos, $"me is Me or @Me ({self} or @{self}), not {ps[0]}");
+                throw new CompileError(Li.AnnotationTarget, r.Params[i].Pos, $"me is Me or @Me ({self} or @{self}), not {ps[0]}");
         }
     }
 
@@ -282,7 +282,7 @@ public sealed partial class Compiler
         if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.AnnotationNamed("export") is not null))
         {
             if (existing.Decl != r && !sig.IsExternalC)
-                throw new CompileError(r.Pos, $"'{sig.Symbol}' is defined more than once (also at {existing.Decl.Pos})");
+                throw new CompileError(Li.DuplicateRoutine, r.Pos, $"'{sig.Symbol}' is defined more than once (also at {existing.Decl.Pos})");
             if (existing.Decl != r) CheckSameCSignature(existing, sig);
             return sig.IsExternalC ? sig : existing;
         }
@@ -328,7 +328,7 @@ public sealed partial class Compiler
         string a = Shape(first), b = Shape(second);
         if (a == b) return;
         string Spelled(Instance i) => $"({string.Join(", ", i.Params)}) -> {i.Ret}";
-        throw new CompileError(second.Decl.Pos, $"'{first.Symbol}' is declared at {first.Decl.Pos} as {Spelled(first)}, and "
+        throw new CompileError(Li.ExternalSignatureMismatch, second.Decl.Pos, $"'{first.Symbol}' is declared at {first.Decl.Pos} as {Spelled(first)}, and "
             + $"here as {Spelled(second)}: one C routine has one signature, so declare it once with the types its C "
             + "declaration has and call that one");
     }
@@ -340,10 +340,10 @@ public sealed partial class Compiler
         if (sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.AnnotationNamed("export") is null)) return;
         foreach (var t in sig.Params.Append(sig.Ret))
             if (t.Repr is VectorType)
-                throw new CompileError(sig.Decl.Pos,
+                throw new CompileError(Li.ExternalProblem, sig.Decl.Pos,
                     $"{t} can't cross the C ABI yet: C passes vectors by rules that depend on the CPU's features");
             else if (!AggregateAbiKnown && IsAggregate(t))
-                throw new CompileError(sig.Decl.Pos,
+                throw new CompileError(Li.TypeNotSupported, sig.Decl.Pos,
                     $"passing {t} by value across the C ABI isn't implemented for {Target.Arch} yet; pass a @{t}");
     }
 

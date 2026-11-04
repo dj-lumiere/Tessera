@@ -28,7 +28,7 @@ they check one tree for many targets.
 
 Sources end in `.li`. A `.te` file given to the builder (or named by `executable`) is a build error that says to
 rename it to `.li`, and `[package] tessera-version` is a build error that names `lapila-version`: Lapila has no
-`migrate` command. A build error is printed as `file:line:col: error[LI]: message`.
+`migrate` command. A build error is printed as `error[LI-S007]: file:line:col: message`, a warning as `warning[LI-W305]: file:line:col: message` (see Diagnostics).
 
 A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Hosted)
 before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
@@ -2651,6 +2651,268 @@ predicates, a guard that returns instead of a nested `if`, and helper routines i
 start the name of a type that keeps memory from a manager and gives it back with `Managed` (`ManagedTables`, with
 `BorrowedSlice[T]` fields), and leave the prefix off the type that only views it (`Tables`, with `@[T]` fields). Don't add
 syntax sugar to shorten code; readability comes from decomposition and naming.
+
+## Diagnostics
+
+Every build error and warning has a code. The builder prints it in front of the place and the message:
+
+```
+error[LI-S007]: main.li:2:14: unknown name 'y'
+warning[LI-W305]: main.li:1:1: routine 'start' has no doc comment: write ### lines above it ...
+```
+
+A code is `LI-`, a family letter and a number. `G` is a source that does not read (lexer and parser), `S` is a source
+that reads but is wrong (the checks, `config.toml`, board files, the command line), `W` is a warning, which does not stop
+the build. A number names one diagnostic and keeps its meaning: it is never reused. Numbers below 1000 are the numbers of
+common checks (an unknown name is `LI-S007`, a missing doc comment is `LI-W305`). The checks only Lapila has use 1000 and up,
+grouped by kind: S1000 modules and names, S1030 types, S1050 annotations, S1070 buildtime values, S1090 protocols,
+S1100 memory and access, S1120 work, S1130 failures, S1150 control flow, S1180 expressions, S1200 assembly, S1400
+`config.toml`, boards and the command line. One code covers a kind of error, and the message says which one. A test's
+`<name>.error` holds text the error output must contain, such as the message.
+
+### Grammar errors (`LI-G`)
+
+- `LI-G001`: A string literal is not closed on its line.
+- `LI-G003`: A character that cannot stand here (outside text and comments a source is ASCII).
+- `LI-G004`: A number that is malformed: a bad digit for its base, or a stray character in it.
+- `LI-G005`: An escape sequence that does not exist or is malformed.
+- `LI-G006`: A float literal that is malformed.
+- `LI-G009`: A name between backticks that is not closed on its line or is empty.
+- `LI-G112`: An expression is needed and something else was found.
+- `LI-G115`: A declaration is needed at the top of a file and something else was found.
+- `LI-G150`: A token other than the one the grammar needs here (expected X, found Y).
+- `LI-G216`: and with or, or two different bitwise operators, side by side without parentheses.
+- `LI-G229`: A loop written with each, which is not a keyword.
+- `LI-G230`: The word failable, which no longer exists.
+- `LI-G1000`: The source file is not valid UTF-8.
+- `LI-G1001`: A Bool operator spelled with a symbol (| or & instead of or and and, ! instead of not).
+- `LI-G1002`: A closing bracket with no opening one.
+- `LI-G1003`: A duration or byte-size literal that is fractional or negative.
+- `LI-G1004`: A byte or character literal of the wrong form.
+- `LI-G1010`: A spelling the language no longer has (the message says what to write instead).
+- `LI-G1011`: A keyword used as a name, or a name that may not be used (me).
+- `LI-G1020`: A module line that is misplaced, repeated, or not in the module of the file's folder.
+- `LI-G1021`: A module or define name that is not PascalCase, or a path that starts no known module.
+- `LI-G1022`: A module or import line that is not at the top of the file.
+- `LI-G1030`: Annotation arguments of the wrong form (not literals, a bad list, a bad @source).
+- `LI-G1031`: An annotation on the wrong line or before the wrong thing.
+- `LI-G1040`: A needs, when or obeys clause written wrongly.
+- `LI-G1041`: A type parameter written wrongly, or a default that is not allowed.
+- `LI-G1050`: A routine header written wrongly (common, @, me, infallible, a missing body).
+- `LI-G1051`: A block of an assembly or block routine written wrongly (entry, parameters, running off the end).
+- `LI-G1060`: A choice or flags declaration written wrongly (member spelling, bits, no members).
+- `LI-G1061`: A variant declaration written wrongly.
+- `LI-G1062`: A preset, global or lateinit declaration written wrongly.
+- `LI-G1063`: A type written wrongly (inline variant, Callable, tuple size, crashable parameters).
+- `LI-G1070`: A statement written wrongly (binding, steal, inject, drop, claim, tuple binding).
+- `LI-G1071`: An if, else, when or arm written wrongly or with no body.
+- `LI-G1072`: A loop written wrongly (for, until, loop, naming, then).
+- `LI-G1073`: A break, continue, becomes, throw or return written wrongly.
+- `LI-G1074`: A value if or a branch written wrongly.
+- `LI-G1080`: A comparison chain that mixes directions or chains <=>.
+- `LI-G1081`: An expression written wrongly (list repeat, generic arguments, record literal, trailing comma).
+
+### Build errors (`LI-S`)
+
+- `LI-S007`: A name that is not defined here, or is not visible from here.
+- `LI-S009`: A name bound again where it is already bound.
+- `LI-S010`: A number literal outside the range of its type.
+- `LI-S011`: A number beyond the largest value of its float type.
+- `LI-S017`: A hex float literal given a type that is not a binary float.
+- `LI-S018`: A hex float literal that is not exactly the type's value.
+- `LI-S100`: A type that is not defined.
+- `LI-S101`: Generic arguments given to a type that takes none.
+- `LI-S102`: The wrong number of generic arguments.
+- `LI-S114`: An import or module line after other declarations.
+- `LI-S150`: A type does not satisfy a protocol a generic or conformance needs.
+- `LI-S161`: A type argument that cannot be inferred from the call.
+- `LI-S207`: A break with no loop around it.
+- `LI-S208`: A continue with no loop around it.
+- `LI-S210`: A call whose result is left unused.
+- `LI-S220`: A tuple taken apart into the wrong number of names.
+- `LI-S258`: A value that is not a buildtime constant where one is needed.
+- `LI-S301`: A return that does not match the routine's return type.
+- `LI-S353`: A type that is not a branch of the variant.
+- `LI-S355`: A name that is not a member of the choice.
+- `LI-S356`: A when that does not cover every case.
+- `LI-S358`: Two arms or cases of a when that match the same thing.
+- `LI-S403`: A field that is secret to its module, used from outside.
+- `LI-S406`: Two routines with the same signature, or one symbol defined twice.
+- `LI-S407`: A field declared twice.
+- `LI-S409`: A record or tuple that holds an entity by value.
+- `LI-S413`: An entity copied instead of reached through a pointer.
+- `LI-S421`: A drop of something that is not a call.
+- `LI-S433`: A variant or flags type with no members.
+- `LI-S448`: A routine run on another thread uses a global that changes.
+- `LI-S452`: A field given twice in a literal.
+- `LI-S453`: A record with no such field.
+- `LI-S455`: A literal that leaves out a field.
+- `LI-S458`: A type with no such routine or method.
+- `LI-S500`: A call with arguments missing.
+- `LI-S501`: A call with more arguments than the routine takes.
+- `LI-S502`: An argument whose type does not match its parameter.
+- `LI-S505`: An argument label that names no parameter.
+- `LI-S506`: An argument given twice.
+- `LI-S510`: An argument that is the name of another parameter, in the wrong place, and needs its label.
+- `LI-S516`: A range with a step of 0.
+- `LI-S517`: A for loop over an emitter that an earlier loop already used up.
+- `LI-S600`: A view returned from the routine that owns the memory it shows.
+- `LI-S601`: A view kept where it outlives the memory it shows.
+- `LI-S700`: A throw of something that is not a crashable.
+- `LI-S702`: A conformance whose routine does not exist.
+- `LI-S703`: A routine that does not have the shape the protocol wants.
+- `LI-S712`: A @throws list that leaves out a crashable the routine can throw.
+- `LI-S713`: A @throws list on a routine that cannot fail, or naming a type that is not a crashable.
+- `LI-S786`: A line that can never run.
+- `LI-S811`: Two declarations of one C symbol that disagree.
+- `LI-S960`: A type that contains itself by value.
+- `LI-S1000`: A module of the program that has the path of a standard library module.
+- `LI-S1001`: A name that exists in a module this file does not import, or on the other side of a target.
+- `LI-S1002`: A name defined in more than one module or place.
+- `LI-S1003`: A define that names neither a module nor a type, or clashes with a type.
+- `LI-S1004`: A name declared twice in one scope.
+- `LI-S1010`: No overload of a routine takes these arguments.
+- `LI-S1011`: More than one overload takes these arguments, or an overload needs its type to be named.
+- `LI-S1012`: Overloads that share one C symbol, or an overloaded @export without a symbol.
+- `LI-S1020`: The program's start, script or when_power_on routine is missing, duplicated or the wrong shape.
+- `LI-S1021`: A routine the builder calls that does not have the shape it calls.
+- `LI-S1030`: A generic argument that is the wrong kind (a type for a number, a choice member for a type).
+- `LI-S1031`: A type written with a name the language does not use (Void, Unit, Mapping, a renamed type).
+- `LI-S1032`: A built-in type written with the wrong arguments (Items, Vector, Check, Callable, pointers).
+- `LI-S1033`: A choice whose type is not an integer type.
+- `LI-S1034`: A flags type with a member outside the bits of its type or two members on one bit.
+- `LI-S1035`: A tuple with too few or too many items.
+- `LI-S1037`: A variant the builder cannot build because the library's union is missing.
+- `LI-S1050`: An annotation given arguments it does not take.
+- `LI-S1051`: An annotation on a declaration it does not belong on, or two annotations that cannot go together.
+- `LI-S1052`: An @export that cannot be done (generic, unreadable return type, a name C cannot use).
+- `LI-S1053`: An @external declaration of the wrong form.
+- `LI-S1054`: A @threadlocal on something that cannot be one.
+- `LI-S1055`: A @layout or @aligned that cannot be done.
+- `LI-S1056`: A @reshaping that names the wrong thing or a routine that moves memory the caller holds.
+- `LI-S1057`: A @template with an unknown or unfinished placeholder.
+- `LI-S1058`: A @target, @feature, @heap_check, @race_check or @trace written wrongly.
+- `LI-S1059`: A @track_caller or caller_location() used where it cannot be.
+- `LI-S1060`: A type that holds something to release without saying how it is released.
+- `LI-S1061`: A routine marked @unavailable or @refused called on a target it does not run on.
+- `LI-S1062`: A build_error call that is not given one text.
+- `LI-S1063`: A build error a library routine raises with build_error.
+- `LI-S1070`: A call that cannot run at build time, in a preset.
+- `LI-S1071`: A preset whose value or type cannot be a preset (an entity, an address, itself).
+- `LI-S1072`: A buildtime calculation that divides by zero, overflows or does not fit.
+- `LI-S1073`: A number literal that nothing gives a type.
+- `LI-S1074`: A global or preset initializer of the wrong form.
+- `LI-S1075`: A string literal that does not fit the array or the character width it fills.
+- `LI-S1076`: An address literal that is malformed or too wide for the target.
+- `LI-S1090`: A protocol that is unknown or given the wrong number of arguments.
+- `LI-S1091`: A type of the wrong kind for a protocol's record or entity requirement.
+- `LI-S1092`: A derive that cannot be done for this type.
+- `LI-S1093`: An operator used on a type that does not obey the protocol behind it.
+- `LI-S1100`: A steal or inject that would leave a place hollow or take from the wrong place.
+- `LI-S1101`: A value that may hold nothing, used without looking at it with when.
+- `LI-S1102`: A place filled from a manager the wrong way.
+- `LI-S1103`: A borrow written wrongly (<-, from STACK, &T forms).
+- `LI-S1104`: A global that holds memory, overwritten or never given back.
+- `LI-S1105`: A value with something to give back that the routine never gives back.
+- `LI-S1106`: A write into memory that is read-only (a preset, a text literal, a view of one).
+- `LI-S1107`: A write or a reshaping through a shared read access.
+- `LI-S1108`: The address of a thread-local variable kept or handed to another thread.
+- `LI-S1109`: A view handed to work that runs on another thread.
+- `LI-S1110`: A routine with too many paths for the memory check to follow.
+- `LI-S1111`: A lateinit place read before it is filled.
+- `LI-S1112`: A stamp taken of something that has no stamp slot.
+- `LI-S1113`: A drop of a value that has nothing to give back.
+- `LI-S1114`: A channel that hands out a value it cannot hand over safely.
+- `LI-S1115`: Access to something taken again while it is already held.
+- `LI-S1116`: Memory or access given back twice, or a value that ended already ended again.
+- `LI-S1117`: A value used or changed while a piece of work holds it.
+- `LI-S1118`: A view used after the memory it shows was given back or moved.
+- `LI-S1119`: A place left hollow and then read, taken or returned.
+- `LI-S1120`: A to[Work] written on something that is not a routine, or an ambiguous one.
+- `LI-S1121`: The arguments of to[Work] that do not match the routine's parameters.
+- `LI-S1122`: A piece of work that runs once and is used twice.
+- `LI-S1123`: A work that can throw something its ticket does not take.
+- `LI-S1130`: A failure that has to cross to C, which cannot receive one.
+- `LI-S1131`: A throw, put_failure or throw_failure_from written wrongly.
+- `LI-S1132`: A crashable that does not fit the room a failure has.
+- `LI-S1133`: The failures of routines that call each other do not settle.
+- `LI-S1134`: A failure that takes memory from a general memory manager.
+- `LI-S1135`: A routine value that may fail given where a plain one is needed.
+- `LI-S1136`: A @throws list that is not a list of crashables.
+- `LI-S1140`: Memory that is overwritten or left behind without being given back.
+- `LI-S1150`: The arms of a when are in the wrong order or repeat (else twice, else first, else that never runs).
+- `LI-S1151`: A when over a value it cannot take (several flags on at once, a type with no branches).
+- `LI-S1152`: A when case that is not a constant integer, preset or choice member.
+- `LI-S1153`: An arm of a when that gives a value ends without one.
+- `LI-S1154`: A when that observes a variant, an optional place or a failure the wrong way.
+- `LI-S1155`: A jump or branch with the wrong arguments.
+- `LI-S1156`: A block declared twice or with a clashing name or parameter.
+- `LI-S1157`: A loop that carries values and does not pass them on.
+- `LI-S1158`: A for loop over something it cannot walk.
+- `LI-S1159`: A break or continue that names no loop around it.
+- `LI-S1160`: A return that does not match the routine (noreturn, None, an empty return).
+- `LI-S1161`: A parameter declared twice.
+- `LI-S1162`: A becomes that is not in an arm of a when that gives a value.
+- `LI-S1180`: An operator used on types it does not take (/ on integers, comparing addresses).
+- `LI-S1181`: A flags value used with an operator or a number it does not take.
+- `LI-S1182`: A field read on something that has no fields, or through a pointer.
+- `LI-S1183`: A stride on something that is not a pointer, or with a wrong index type.
+- `LI-S1184`: A value used as a pointer that is not one, or a claim of a wrong type.
+- `LI-S1185`: A lambda that uses a value of the routine around it.
+- `LI-S1186`: A place where the type cannot be inferred and must be written.
+- `LI-S1187`: A value of one type where another is expected.
+- `LI-S1188`: A routine used as a value (Callable) that cannot be one.
+- `LI-S1189`: A lambda that does not fit the Callable it becomes.
+- `LI-S1190`: A method that no longer exists (the message says what replaces it).
+- `LI-S1191`: Type arguments of a call that are wrong or too many.
+- `LI-S1192`: A Console call written wrongly.
+- `LI-S1193`: A write string with an unbalanced brace or an empty one.
+- `LI-S1194`: A conversion (inttoptr, bitcast) the build refuses without care.
+- `LI-S1195`: A routine value, global or binding that has no value where one is needed.
+- `LI-S1196`: A value shown with a routine its type does not have.
+- `LI-S1198`: A type that cannot be used here (C ABI by value, generic precheck, pointer rules).
+- `LI-S1199`: The target's CPU or features cannot be resolved.
+- `LI-S1200`: An assembly operand or register whose type does not fit the register.
+- `LI-S1201`: Two values in one register, or a register that cannot be named here.
+- `LI-S1202`: A @naked routine that takes or returns something registers cannot carry.
+- `LI-S1203`: An assembly routine of the wrong form (type parameters, annotations, architecture).
+- `LI-S1204`: An assembly block written wrongly (names, jumps, ends).
+- `LI-S1205`: An instruction written wrongly or with the wrong operands.
+- `LI-S1206`: A memory operand written wrongly or not available on this architecture.
+- `LI-S1207`: The condition of an if in an assembly block written wrongly.
+- `LI-S1208`: A @clobbers list that names what it cannot.
+- `LI-S1209`: The return of an assembly routine that does not match its result.
+- `LI-S1400`: A config.toml that is not valid TOML.
+- `LI-S1401`: A section or key the manifest does not have.
+- `LI-S1402`: A section or key the manifest needs.
+- `LI-S1403`: A manifest value of the wrong type or outside its range.
+- `LI-S1404`: A [target] that does not fit its board, mode or operating system.
+- `LI-S1405`: A file or directory the manifest names that does not exist.
+- `LI-S1406`: A manifest key that was renamed or removed (the message names the new one).
+- `LI-S1410`: A board file that is wrong (unknown board, memory map, devices).
+- `LI-S1450`: An input file or directory that does not exist.
+- `LI-S1451`: A command line option that is unknown, missing its value, or belongs in config.toml.
+- `LI-S1452`: A request for a target the board or this machine cannot do.
+- `LI-S1453`: A tool the build needs (clang, the standard library) that was not found or failed.
+- `LI-S1454`: A source file that still has the old extension .te.
+- `LI-S1455`: A command called without what it needs.
+
+### Warnings (`LI-W`)
+
+- `LI-W010`: A loop named but not used by any break or continue.
+- `LI-W057`: A loop whose body never runs (until true).
+- `LI-W303`: A routine that still has todo blocks.
+- `LI-W304`: An until false that never ends by itself.
+- `LI-W305`: A routine with no doc comment.
+- `LI-W306`: A doc comment with no :param line for a parameter.
+- `LI-W307`: A :param line naming no parameter.
+- `LI-W308`: A doc comment with no :returns: line for a routine that returns a value.
+- `LI-W1000`: A chain of calls on one line with too many calls.
+- `LI-W1001`: A return inside a block that should end with a jump.
+- `LI-W1002`: A routine with so many parameters that a record should carry them.
+- `LI-W1003`: Two names for the same memory, which is released once.
+- `LI-W1004`: A value shown as the cell itself instead of what it holds.
+- `LI-W1005`: A call to a routine marked #expensive on a loop, or a loop-carried cost.
 
 ## Tests
 

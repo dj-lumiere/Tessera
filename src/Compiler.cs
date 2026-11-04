@@ -171,7 +171,7 @@ public sealed partial class Compiler
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
-                throw new CompileError(imp.Pos, IsUnder(imp.Path, StandardLibrary.IngridRoot)
+                throw new CompileError(Li.NameInOtherModule, imp.Pos, IsUnder(imp.Path, StandardLibrary.IngridRoot)
                     && !_modules.Contains(StandardLibrary.IngridRoot)
                     ? $"unknown module '{imp.Path}': Ingrid's library wasn't found (an Ingrid folder next to the standard "
                       + "library, or Ingrid/lapila above it); set LAPILA_INGRID to its folder"
@@ -180,14 +180,14 @@ public sealed partial class Compiler
             // start nobody asked for.
             if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)
                 is { } imported)
-                throw new CompileError(imported.Pos,
+                throw new CompileError(Li.EntryPoint, imported.Pos,
                     $"this file has top-level lines, and {Path.GetFileName(imp.File)} imports it (line {imp.Pos.Line}): only "
                     + "the program's entry file runs top-level lines, so put these in a routine the importer calls");
             // A file that runs on both kinds of target imports both sides, and the target keeps one: each name then
             // means the target's side. Importing only the other side is a build error.
             if (!imp.IsLibrary && IsOtherSide(imp.Path)
                 && !(_fileImports.TryGetValue(imp.File, out var both) && both.Any(m => IsUnder(m, SideModule))))
-                throw new CompileError(imp.Pos, OtherSide(imp.Path));
+                throw new CompileError(Li.NameInOtherModule, imp.Pos, OtherSide(imp.Path));
         }
         // A routine on a declared type names the type as its own file sees it; the lookups say why it can't.
         foreach (var m in _methods.Values.SelectMany(g => g))
@@ -237,7 +237,7 @@ public sealed partial class Compiler
         {
             // `drop x` is `x.destruct()`: what a value gives back is reached from its fields, a manager included.
             if (r is { Name: "destruct", Params.Count: > 1 })
-                throw new CompileError(r.Params[1].Pos, $"a destruct takes no arguments, and {r.Owner}.destruct takes "
+                throw new CompileError(Li.ReleaseDutyDeclared, r.Params[1].Pos, $"a destruct takes no arguments, and {r.Owner}.destruct takes "
                     + $"'{r.Params[1].Name}': drop x calls x.destruct(), so keep what it needs in a field");
             if (OwnerDeclQuiet(r) is { } owner) has.Add((owner, r.Name));
         }
@@ -252,7 +252,7 @@ public sealed partial class Compiler
             {
                 foreach (var f in crashable.Fields)
                     if (OwnsMemory(f.Type, crashable.File, []) is { } owned)
-                        throw new CompileError(f.Pos, $"crashable '{name}' holds {owned} in '{f.Name}', memory of its own, and a failure is "
+                        throw new CompileError(Li.ReleaseDutyDeclared, f.Pos, $"crashable '{name}' holds {owned} in '{f.Name}', memory of its own, and a failure is "
                             + "a plain value a throw copies and nothing gives back: hold numbers, choices, and views (@[Byte], @T)");
                 continue;
             }
@@ -261,7 +261,7 @@ public sealed partial class Compiler
                 foreach (var f in plain.Fields)
                     if (!(f.Type.Args.Count == 0 && plain.TypeParams.Contains(f.Type.Name)) && f.Type.Name is not ("PointedCell" or "Addr")
                         && EntityNamed(f.Type, plain.File) is not null)
-                        throw new CompileError(f.Pos, $"record '{plain.Name}' holds {f.Type} in '{f.Name}', and an entity is never copied, "
+                        throw new CompileError(Li.RecordHoldsEntity, f.Pos, $"record '{plain.Name}' holds {f.Type} in '{f.Name}', and an entity is never copied, "
                             + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{f.Type}");
             // A record can be a value (bound once, a preset, copied when passed), so it holds nothing with a release
             // duty: a type parameter it holds by value is declared `record`, and a tuple follows its items.
@@ -272,7 +272,7 @@ public sealed partial class Compiler
                         var loose = NamesInType(f.Type).Where(n => valueRecord.TypeParams.Contains(n)
                             && !DeclaresRecordKind(valueRecord.Clauses, n) && !DeclaresValue(valueRecord.Clauses, n)).Distinct().ToList();
                         string what = loose.Count > 0 ? string.Join(" and ", loose) : f.Type.ToString();
-                        throw new CompileError(f.Pos, $"record '{valueRecord.Name}' holds {f.Type} in '{f.Name}', and a record "
+                        throw new CompileError(Li.RecordHoldsEntity, f.Pos, $"record '{valueRecord.Name}' holds {f.Type} in '{f.Name}', and a record "
                             + $"holds nothing with a release duty, while {what} may be an entity or hold one: "
                             + (loose.Count > 0 ? $"declare needs {string.Join(", ", loose.Select(n => "RecordType " + n))}, or " : "")
                             + $"declare it entity {valueRecord.Name}");
@@ -283,7 +283,7 @@ public sealed partial class Compiler
             // Only a type that holds something to release says how it is made and has a destruct.
             if (needs.Why(d) is not { } why) continue;
             if (!construct)
-                throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
+                throw new CompileError(Li.ReleaseDutyDeclared, d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
                     + $"made: common routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
             if (!destruct) walked.Add(d);
         }
@@ -377,12 +377,12 @@ public sealed partial class Compiler
             // A variant written inline is checked where it is used.
             if (a.Target is { Name: TypeRef.UnionName, Path: null }) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
-                throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
+                throw new CompileError(Li.DefineProblem, a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
                 .FirstOrDefault(d => d.Module == a.Module);
             if (clash is not null)
-                throw new CompileError(a.Pos, $"define '{a.Name}' is already declared as a type at {clash.Pos}");
+                throw new CompileError(Li.DefineProblem, a.Pos, $"define '{a.Name}' is already declared as a type at {clash.Pos}");
         }
     }
 
@@ -401,7 +401,7 @@ public sealed partial class Compiler
         if (aliases is not { Count: > 0 }) return path;
         var nearest = Nearest(aliases, file);
         if (nearest.Count > 1)
-            throw new CompileError(nearest[1].Pos, $"'{head}' is ambiguous: defined at {string.Join(", ", nearest.Select(a => a.Pos))}");
+            throw new CompileError(Li.AmbiguousName, nearest[1].Pos, $"'{head}' is ambiguous: defined at {string.Join(", ", nearest.Select(a => a.Pos))}");
         string target = FullPath(nearest[0].Target);
         return cut < 0 ? target : target + path[cut..];
     }
@@ -419,7 +419,7 @@ public sealed partial class Compiler
         var nearest = Nearest(aliases.Cast<Decl>().Concat(types.Where(d => Visible(d, file, t.Path))).ToList(), file);
         if (nearest is [AliasDecl only]) return only;
         if (nearest.All(d => d is not AliasDecl)) return null;
-        throw new CompileError(t.Pos, $"type '{t.Name}' is ambiguous: defined at {string.Join(", ", nearest.Select(d => d.Pos))}");
+        throw new CompileError(Li.AmbiguousName, t.Pos, $"type '{t.Name}' is ambiguous: defined at {string.Join(", ", nearest.Select(d => d.Pos))}");
     }
 
     /// The type an alias names, with the use's generic arguments if the alias has none of its own. The target is
@@ -429,7 +429,7 @@ public sealed partial class Compiler
         if (a.Target.Args.Count > 0)
         {
             if (use.Args.Count > 0)
-                throw new CompileError(use.Pos, $"{a.Name} already has its generic arguments: define {a.Name} = {a.Target}");
+                throw new CompileError(Li.DefineProblem, use.Pos, $"{a.Name} already has its generic arguments: define {a.Name} = {a.Target}");
             return ResolveTypeInner(a.Target, new TypeEnv(a.File));
         }
         var d = TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path)!;
@@ -452,7 +452,7 @@ public sealed partial class Compiler
                     if ((a.IsPrivate || b.IsPrivate) && a.Module != b.Module) continue;
                     if (!sameParent(a, b)) continue;
                     if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
-                    throw new CompileError(b.Pos, $"{what(b)} is already declared at {a.Pos}");
+                    throw new CompileError(Li.DeclaredTwice, b.Pos, $"{what(b)} is already declared at {a.Pos}");
                 }
     }
 
@@ -516,7 +516,7 @@ public sealed partial class Compiler
             if (t.Path is not null || t.Name is "None" or "Bool" or "Addr" or "Me" || IntType.FromName(t.Name) is not null
                 || NamesType(t.Name) || declared.Contains(t.Name) || ownerNames.Contains(t.Name)
                 || _presets.ContainsKey(("", t.Name))) return;
-            throw new CompileError(t.Pos, $"routine '{owner}.{r.Name}' names '{t.Name}' in its [...], and no type is "
+            throw new CompileError(Li.UnknownType, t.Pos, $"routine '{owner}.{r.Name}' names '{t.Name}' in its [...], and no type is "
                 + $"called '{t.Name}': if it's a type parameter of the routine, declare it on a needs line (needs AnyType "
                 + $"{t.Name})");
         }
@@ -560,7 +560,7 @@ public sealed partial class Compiler
         }
         if (first.IsInfallible == r.IsInfallible || first.IsLibrary && r.IsLibrary) return;
         var (infallible, plain) = r.IsInfallible ? (r, first) : (first, r);
-        throw new CompileError(plain.Pos, $"'{r.DisplayName}' is infallible on the target of line {infallible.Pos.Line} and not on this "
+        throw new CompileError(Li.AnnotationTarget, plain.Pos, $"'{r.DisplayName}' is infallible on the target of line {infallible.Pos.Line} and not on this "
             + "one: a call of it is written once for every target, so declare this form infallible routine too");
     }
 
@@ -578,17 +578,17 @@ public sealed partial class Compiler
         foreach (var a in d.Annotations)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
-                throw new CompileError(a.Pos, $"only @target takes a list of values; @{a.Name}'s '{listed.Key}' takes one");
+                throw new CompileError(Li.BuildSettingAnnotation, a.Pos, $"only @target takes a list of values; @{a.Name}'s '{listed.Key}' takes one");
             if (a.Name == "target")
             {
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is null) throw new CompileError(a.Pos, "@target arguments are written key: value");
+                    if (arg.Key is null) throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@target arguments are written key: value");
                     // A list matches when any of its values does; `not` before it, when none does. Every value is
                     // checked, so a misspelled key is an error whatever the target.
                     bool m;
                     try { m = (arg.Values ?? [arg.Value]).Select(v => Target.Matches(arg.Key, v)).ToList().Contains(true); }
-                    catch (ArgumentException e) { throw new CompileError(a.Pos, e.Message); }
+                    catch (ArgumentException e) { throw new CompileError(Li.BuildSettingAnnotation, a.Pos, e.Message); }
                     if (m == arg.Negated) return false;
                 }
             }
@@ -597,7 +597,7 @@ public sealed partial class Compiler
                 var cpu = CpuModel.For(Target, a.Pos);
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is not null) throw new CompileError(a.Pos, "@feature takes feature names, as in @feature(\"avx2\")");
+                    if (arg.Key is not null) throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@feature takes feature names, as in @feature(\"avx2\")");
                     if (cpu.Has(arg.Value, a.Pos) == arg.Negated) return false;
                 }
             }
@@ -617,12 +617,12 @@ public sealed partial class Compiler
     {
         if (d.AnnotationNamed("heap_check") is not { } a) return true;
         if (!d.IsLibrary)
-            throw new CompileError(a.Pos, "@heap_check selects standard library declarations by the heap-check setting");
+            throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@heap_check selects standard library declarations by the heap-check setting");
         return a.First switch
         {
             "on" => HeapCheck,
             "off" => !HeapCheck,
-            _ => throw new CompileError(a.Pos, "@heap_check takes \"on\" or \"off\""),
+            _ => throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@heap_check takes \"on\" or \"off\""),
         };
     }
 
@@ -636,12 +636,12 @@ public sealed partial class Compiler
     {
         if (d.AnnotationNamed("race_check") is not { } a) return true;
         if (!d.IsLibrary)
-            throw new CompileError(a.Pos, "@race_check selects standard library declarations by the race-check setting");
+            throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@race_check selects standard library declarations by the race-check setting");
         return a.First switch
         {
             "on" => RaceCheck,
             "off" => !RaceCheck,
-            _ => throw new CompileError(a.Pos, "@race_check takes \"on\" or \"off\""),
+            _ => throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@race_check takes \"on\" or \"off\""),
         };
     }
 
@@ -870,7 +870,7 @@ public sealed partial class Compiler
         {
             var export = r.AnnotationNamed("export")!;
             if (symbols.TryGetValue(export.First!, out string? library))
-                errors.Add(new CompileError(export.Pos, $"@export(\"{export.First}\") names '{export.First}', which {library}, a C "
+                errors.Add(new CompileError(Li.ExportProblem, export.Pos, $"@export(\"{export.First}\") names '{export.First}', which {library}, a C "
                     + $"library the build links, already defines: '{r.DisplayName}' would replace it for every C caller in the "
                     + $"program, the C library's own included. Give the routine a C name no linked library uses, such as "
                     + $"@export(\"{r.Module.Replace('/', '_').ToLowerInvariant()}_{export.First}\")"));
@@ -898,7 +898,7 @@ public sealed partial class Compiler
         if (c.IsSpan)
         {
             if (c.Value is StrLit)
-                throw new CompileError(c.Value.Pos, $"a string literal is read-only, and a global is written: global {c.Name}: &Items[Byte, _] <- \"...\"");
+                throw new CompileError(Li.GlobalInitializer, c.Value.Pos, $"a string literal is read-only, and a global is written: global {c.Name}: &Items[Byte, _] <- \"...\"");
             GlobalInitializer(c.Value!, SpanStorage(c, t, env), env);
             return;
         }
@@ -923,10 +923,10 @@ public sealed partial class Compiler
     private void CheckPresetType(PresetDecl c, DType t)
     {
         if (Entities.Holds(t))
-            throw new CompileError(c.Type.Pos, $"a preset is a value, and {t} is an entity, which lives in one place: "
+            throw new CompileError(Li.PresetValue, c.Type.Pos, $"a preset is a value, and {t} is an entity, which lives in one place: "
                 + $"keep it in a global, global {c.Name}: &{t} <- value");
         if (AddressIn(t, []) is { } address)
-            throw new CompileError(c.Type.Pos, $"a preset is a value the build knows, and {t} holds an address ({address}): "
+            throw new CompileError(Li.PresetValue, c.Type.Pos, $"a preset is a value the build knows, and {t} holds an address ({address}): "
                 + $"an address is a global's, global {c.Name}: &{t} <- value");
     }
 
@@ -949,14 +949,14 @@ public sealed partial class Compiler
     private void CheckThreadLocal(PresetDecl c, Annotation tl)
     {
         if (!c.IsGlobal)
-            throw new CompileError(tl.Pos, $"@threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
+            throw new CompileError(Li.ThreadLocalProblem, tl.Pos, $"@threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
         if (tl.Args.Count != 0)
-            throw new CompileError(tl.Pos, "@threadlocal takes no arguments");
+            throw new CompileError(Li.ThreadLocalProblem, tl.Pos, "@threadlocal takes no arguments");
         // Without an operating system only AArch64 has a thread-local area: the link script's block for the flow the
         // reset starts (TPIDR_EL0 points at it from prepare_core on), and one block in each slot of a
         // ThreadManagerByRoundRobin, whose switch moves TPIDR_EL0 along.
         if (!Target.HasOs && Target.Arch != "aarch64")
-            throw new CompileError(tl.Pos,
+            throw new CompileError(Li.ThreadLocalProblem, tl.Pos,
                 $"'{c.Name}' is @threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system and no "
                 + "thread-local area: without an operating system only AArch64 has one");
     }
@@ -966,11 +966,11 @@ public sealed partial class Compiler
     private static void CheckExternalVariable(PresetDecl c, Annotation ext)
     {
         if (!c.IsGlobal)
-            throw new CompileError(ext.Pos, $"an external variable is a global: #[external(\"c\"), symbol(\"{c.Name}\")] global {c.Name}: @T");
+            throw new CompileError(Li.ExternalProblem, ext.Pos, $"an external variable is a global: #[external(\"c\"), symbol(\"{c.Name}\")] global {c.Name}: @T");
         if (ext.First != "c")
-            throw new CompileError(ext.Pos, $"a global can only be @external(\"c\"), a C variable; found @external(\"{ext.First}\")");
+            throw new CompileError(Li.ExternalProblem, ext.Pos, $"a global can only be @external(\"c\"), a C variable; found @external(\"{ext.First}\")");
         if (c.Value is not null)
-            throw new CompileError(c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
+            throw new CompileError(Li.ExternalProblem, c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
     }
 
     /// `@export("lapila_pool_next")` above a global defines it under that C name, so code outside the program (a
@@ -979,13 +979,13 @@ public sealed partial class Compiler
     private static void CheckExportedVariable(PresetDecl c, Annotation export)
     {
         if (!c.IsGlobal)
-            throw new CompileError(export.Pos, $"@export names the C symbol of a global or a routine, and '{c.Name}' is a preset: a preset has no memory C could reach");
+            throw new CompileError(Li.ExportProblem, export.Pos, $"@export names the C symbol of a global or a routine, and '{c.Name}' is a preset: a preset has no memory C could reach");
         if (export.First is null || export.Args.Count != 1)
-            throw new CompileError(export.Pos, $"@export on a global takes its C name: @export(\"{c.Name.ToLowerInvariant()}\")");
+            throw new CompileError(Li.ExportProblem, export.Pos, $"@export on a global takes its C name: @export(\"{c.Name.ToLowerInvariant()}\")");
         if (c.AnnotationNamed("external") is not null)
-            throw new CompileError(export.Pos, $"'{c.Name}' is @external(\"c\"), a C variable defined elsewhere, so it can't be @export too");
+            throw new CompileError(Li.ExportProblem, export.Pos, $"'{c.Name}' is @external(\"c\"), a C variable defined elsewhere, so it can't be @export too");
         if (c.AnnotationNamed("threadlocal") is not null)
-            throw new CompileError(export.Pos, $"'{c.Name}' is @threadlocal: each thread has its own copy, so there is no one variable for C to reach");
+            throw new CompileError(Li.ThreadLocalProblem, export.Pos, $"'{c.Name}' is @threadlocal: each thread has its own copy, so there is no one variable for C to reach");
     }
 
     /// The symbol of a C variable: its @symbol, or its own name.
@@ -1159,12 +1159,12 @@ public sealed partial class Compiler
     private void CheckModuleCollision(ModuleDecl m)
     {
         if (_libraryModules.Contains(m.Path))
-            throw new CompileError(m.Pos, $"your module {m.Path} has the same path as the "
+            throw new CompileError(Li.ModuleCollision, m.Pos, $"your module {m.Path} has the same path as the "
                 + (IsUnder(m.Path, StandardLibrary.IngridRoot) ? "Ingrid library's" : "standard library's")
                 + $" module {m.Path}, so the two would be one module: give yours another path (its module line, or "
                 + "the file's or folder's name)");
         if (new[] { SystemModule, HostedModule, UnhostedModule }.FirstOrDefault(root => IsUnder(m.Path, root)) is { } under)
-            throw new CompileError(m.Pos, $"your module {m.Path} is under the standard library's module {under}, whose "
+            throw new CompileError(Li.ModuleCollision, m.Pos, $"your module {m.Path} is under the standard library's module {under}, whose "
                 + "paths are all the standard library's: give yours another path (its module line, or the file's or "
                 + "folder's name)");
     }
@@ -1244,18 +1244,18 @@ public sealed partial class Compiler
         {
             // The other side's declarations aren't there on this target (Selected).
             if (path is not null && IsOtherSide(path))
-                throw new CompileError(pos, $"{what} is in {path}: {OtherSide(path)}") { Final = true };
+                throw new CompileError(Li.NameInOtherModule, pos, $"{what} is in {path}: {OtherSide(path)}") { Final = true };
             return null;
         }
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();
-        if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path, file));
+        if (visible.Count == 0) throw new CompileError(Li.NameInOtherModule, pos, Hidden(candidates[0], what, path, file));
         var nearest = Nearest(visible, file);
         if (nearest.Count == 1) return nearest[0];
         var modules = nearest.Select(c => c.Module).Distinct().ToList();
         if (modules.Count > 1)
-            throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
+            throw new CompileError(Li.AmbiguousName, pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
                 + $"write the module path ({modules[0]}/...)");
-        throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", nearest.Select(c => c.Pos))}");
+        throw new CompileError(Li.AmbiguousName, pos, $"{what} is ambiguous: defined in {string.Join(", ", nearest.Select(c => c.Pos))}");
     }
 
     /// The declared type (record, variant, or choice) a type name means from `file`, or null for a built-in type, a
@@ -1400,7 +1400,7 @@ public sealed partial class Compiler
         if (library.Count == 0)
         {
             if (required)
-                throw new ManifestError("config.toml",
+                throw new ManifestError(Li.ManifestUnknownKey, "config.toml",
                     $"the key {key} sets the standard library's preset {name}, and the library has no preset with that name");
             return;
         }
@@ -1409,7 +1409,7 @@ public sealed partial class Compiler
             if (list![i].Type.Name != type || list[i].Type.Args.Count != 0)
             {
                 if (required)
-                    throw new ManifestError("config.toml",
+                    throw new ManifestError(Li.ManifestUnknownKey, "config.toml",
                         $"the key {key} sets the standard library's preset {name}, which is declared {list[i].Type.Name}, not {type}");
                 return;
             }
@@ -1510,9 +1510,9 @@ public sealed partial class Compiler
     public DType ResolveType(TypeRef t, TypeEnv env, bool allowVoid = false)
     {
         var r = ResolveTypeInner(t, env, allowVoid);
-        if (r is VoidType && !allowVoid) throw new CompileError(t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
+        if (r is VoidType && !allowVoid) throw new CompileError(Li.TypeSpelling, t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
         if (r is ConstArg ca)
-            throw new CompileError(t.Pos, ca.Kind is ChoiceType ct ? $"'{t}' is a member of {ct.Name}, a value, not a type" : $"'{t.Name}' is a number, not a type");
+            throw new CompileError(Li.TypeArgument, t.Pos, ca.Kind is ChoiceType ct ? $"'{t}' is a member of {ct.Name}, a value, not a type" : $"'{t.Name}' is a number, not a type");
         return r;
     }
 
@@ -1522,7 +1522,7 @@ public sealed partial class Compiler
         if (t.Member is not null) return ResolveMember(t, env);
         void NoArgs()
         {
-            if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
+            if (t.Args.Count != 0) throw new CompileError(Li.TypeNotGeneric, t.Pos, $"type '{t.Name}' takes no generic arguments");
         }
 
         if (t.Path is null && env.Get(t.Name) is { } bound)
@@ -1554,28 +1554,28 @@ public sealed partial class Compiler
             // is the record with the one value `None()`.
             case "None" when allowVoid: NoArgs(); return VoidType.Instance;
             // A program may declare a type of either name (`choice Unit`), and then the name is that type.
-            case "Void" when !DeclaresType(t, env): throw new CompileError(t.Pos, "nothing is written None, not Void");
-            case "Unit" when !DeclaresType(t, env): throw new CompileError(t.Pos, "the type with one value is written None, not Unit");
+            case "Void" when !DeclaresType(t, env): throw new CompileError(Li.TypeSpelling, t.Pos, "nothing is written None, not Void");
+            case "Unit" when !DeclaresType(t, env): throw new CompileError(Li.TypeSpelling, t.Pos, "the type with one value is written None, not Unit");
             case "Addr": NoArgs(); return new PtrType(null);
             case "PointedCell":
                 return t.Args switch
                 {
-                    [] => throw new CompileError(t.Pos, "a pointer without a pointee type is spelled Addr"),
+                    [] => throw new CompileError(Li.TypeSpelling, t.Pos, "a pointer without a pointee type is spelled Addr"),
                     [TypeArgType inner] => new PtrType(ResolveType(inner.Type, env)),
-                    _ => throw new CompileError(t.Pos, "PointedCell takes one type argument"),
+                    _ => throw new CompileError(Li.TypeForm, t.Pos, "PointedCell takes one type argument"),
                 };
             case "Items" or "Slots":
             {
                 if (t.Args is not [TypeArgType elem, var count])
-                    throw new CompileError(t.Pos, $"{t.Name} takes an element type and an element count: {t.Name}[T, COUNT]");
+                    throw new CompileError(Li.TypeForm, t.Pos, $"{t.Name} takes an element type and an element count: {t.Name}[T, COUNT]");
                 var elemType = ResolveType(elem.Type, env);
                 // An Items is a record: a value, copied with '=', so its elements hold nothing with a release duty.
                 if (t.Name == "Items" && Entities.Holds(elemType))
-                    throw new CompileError(t.Pos, $"an Items is a record, which holds nothing with a release duty, and "
+                    throw new CompileError(Li.TypeForm, t.Pos, $"an Items is a record, which holds nothing with a release duty, and "
                         + $"{elemType.Name} {(Entities.IsEntity(elemType) ? "is an entity" : "holds an entity")}: keep the "
                         + $"elements in a Slots[{elemType.Name}, ...], an entity with the same layout");
                 if (t.Name == "Items" && MayHoldReleaseDuty(elemType))
-                    throw new CompileError(t.Pos, $"an Items is a record, which holds nothing with a release duty, and its "
+                    throw new CompileError(Li.TypeForm, t.Pos, $"an Items is a record, which holds nothing with a release duty, and its "
                         + $"elements are {elemType.Name}, which may be an entity: declare needs RecordType {RecordKindFix(elemType)}, or "
                         + $"keep them in a Slots[{elemType.Name}, ...]");
                 return new ArrayType(elemType, ConstInt(count, env, t.Pos), isSlots: t.Name == "Slots");
@@ -1583,13 +1583,13 @@ public sealed partial class Compiler
             case "Vector":
             {
                 if (t.Args is not [TypeArgType lane, var lanes])
-                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector[T, LANES]");
+                    throw new CompileError(Li.TypeForm, t.Pos, "Vector takes a lane type and a lane count: Vector[T, LANES]");
                 var laneType = ResolveType(lane.Type, env);
                 // A type parameter's lanes are checked at each instantiation (the lane concepts say which ones work).
                 if (laneType.Repr is not (IntType or FloatType or BoolType or ArchetypeType))
-                    throw new CompileError(t.Pos, $"a Vector's lanes are integers, floats, or Bool (a mask), not {laneType}");
+                    throw new CompileError(Li.TypeForm, t.Pos, $"a Vector's lanes are integers, floats, or Bool (a mask), not {laneType}");
                 long n = ConstInt(lanes, env, t.Pos);
-                if (n < 1) throw new CompileError(t.Pos, "a Vector has at least one lane");
+                if (n < 1) throw new CompileError(Li.TypeForm, t.Pos, "a Vector has at least one lane");
                 return new VectorType(laneType, n);
             }
             case "Callable":
@@ -1597,10 +1597,10 @@ public sealed partial class Compiler
             // `Check[T]` as a binding's type: the check that fills it gives its list of crashables.
             case "Check" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null:
                 if (t.Args is not [TypeArgType value])
-                    throw new CompileError(t.Pos, "Check takes the value's type: Check[T]");
+                    throw new CompileError(Li.TypeForm, t.Pos, "Check takes the value's type: Check[T]");
                 return Crashing.Check(ResolveType(value.Type, env), []);
             case "Crashables" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
-                throw new CompileError(t.Pos, "Crashables is what a check caught, named in a when arm: is Crashables as e");
+                throw new CompileError(Li.TypeForm, t.Pos, "Crashables is what a check caught, named in a when arm: is Crashables as e");
         }
 
         if (Target.ResolveTargetType(t.Name) is { } alias)
@@ -1650,7 +1650,7 @@ public sealed partial class Compiler
         if (TypeAlias(t, env.File) is { } alias) return ResolveAlias(alias, t, env);
         void NoArgs()
         {
-            if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
+            if (t.Args.Count != 0) throw new CompileError(Li.TypeNotGeneric, t.Pos, $"type '{t.Name}' takes no generic arguments");
         }
 
         if (FindRecord(t.Name, env.File, t.Pos, t.Path) is { } s)
@@ -1665,7 +1665,7 @@ public sealed partial class Compiler
             // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
             if (RecordType.IsTupleDecl(s) && Entities.EntityArgument(args) is { } inTuple)
-                throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
+                throw new CompileError(Li.RecordHoldsEntity, t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
             CheckResultCode(s, args, t.Pos);
             var record = new RecordType(s, args, TransparentField);
@@ -1685,7 +1685,7 @@ public sealed partial class Compiler
             // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             if (!(v is { Name: "Optional" } && v.Module == SystemModule) && args.FirstOrDefault(a => a is VariantType { IsAddressed: true }) is VariantType branch)
-                throw new CompileError(t.Pos, OptionalStaysInFrame(branch, $"{v.Name}[...]")
+                throw new CompileError(Li.TypeForm, t.Pos, OptionalStaysInFrame(branch, $"{v.Name}[...]")
                     + $": take the {branch.Leaves[0].Name} out with when first (is {branch.Leaves[0].Name} as x)");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
@@ -1695,7 +1695,7 @@ public sealed partial class Compiler
             NoArgs();
             var under = ResolveType(e.Underlying, env);
             if (under is not IntType { IsNumber: true } it)
-                throw new CompileError(e.Pos, $"choice '{e.Name}' must have a signed or unsigned integer type, not {under}");
+                throw new CompileError(Li.ChoiceUnderlying, e.Pos, $"choice '{e.Name}' must have a signed or unsigned integer type, not {under}");
             return new ChoiceType(e, it);
         }
 
@@ -1706,22 +1706,22 @@ public sealed partial class Compiler
 
         // The binary floating-point types are B16, B32, B64 and B128.
         if (t.Args.Count == 0 && t.Name is "F16" or "F32" or "F64" or "F128")
-            throw new CompileError(t.Pos, $"unknown type '{t}'. Did you mean 'B{t.Name[1..]}'?");
+            throw new CompileError(Li.UnknownType, t.Pos, $"unknown type '{t}'. Did you mean 'B{t.Name[1..]}'?");
 
         // The console is Console: Console.show / Console.alert / Console.ask_*, and the streams' types are
         // ConsoleOutput, ConsoleErrors and ConsoleInput.
         if (t.Args.Count == 0 && t.Name is "Out" or "Err" or "In")
-            throw new CompileError(t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
+            throw new CompileError(Li.UnknownType, t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
                 "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput");
 
         if (t.Path is null && OldSpellings.OldTypeName(t.Name) is { } renamed)
-            throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
+            throw new CompileError(Li.UnknownType, t.Pos, $"unknown type '{t}': {renamed}");
 
         if (t.Args.Count == 0 && t.Name == "Mapping")
-            throw new CompileError(t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +
+            throw new CompileError(Li.UnknownType, t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +
                 "OsFileManager.storage_result[Byte]");
 
-        throw new CompileError(t.Pos, $"unknown type '{t}'");
+        throw new CompileError(Li.UnknownType, t.Pos, $"unknown type '{t}'");
     }
 
     /// Why `where` can't hold the Optional `optional`: it is the address of an E in the frame of the routine whose call
@@ -1742,7 +1742,7 @@ public sealed partial class Compiler
         if (r.Name == "to") return;
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null || r.IsInfallible
             || r.AnnotationNamed("template") is not null || Derive.IsImplicit(r)) return;
-        throw new CompileError(ret.Pos, $"'{r.DisplayName}' returns {ret}, which only 'check' makes at a call. Return the value "
+        throw new CompileError(Li.TypeForm, ret.Pos, $"'{r.DisplayName}' returns {ret}, which only 'check' makes at a call. Return the value "
             + $"itself and 'throw' where it fails: a caller then writes 'check {r.Name}(...)' to get the {ret}");
     }
 
@@ -1758,7 +1758,7 @@ public sealed partial class Compiler
     {
         if (s is not { Name: "Result", IsLibrary: true, Module: SystemModule } || args is not [_, var code]) return;
         if (code is ChoiceType or ArchetypeType) return;
-        throw new CompileError(pos, $"Result's error code is what C reads as an integer, so it is a choice (choice OpenError: S32, "
+        throw new CompileError(Li.TypeForm, pos, $"Result's error code is what C reads as an integer, so it is a choice (choice OpenError: S32, "
             + $"its first member the success code), not {code.Name}");
     }
 
@@ -1772,12 +1772,12 @@ public sealed partial class Compiler
             parts.RemoveAt(0);
         }
         if (parts is not [TypeArgTuple ps, TypeArgType ret])
-            throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
+            throw new CompileError(Li.TypeForm, t.Pos, "Callable is written Callable[(Params...), Ret]");
         // `Callable[(S,), T]` with `T` the None record (a generic argument) returns nothing, like `-> None` written out.
         var returned = ResolveType(ret.Type, env, allowVoid: true);
         if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == SystemModule) returned = VoidType.Instance;
         if (returned is VariantType { IsAddressed: true } optional)
-            throw new CompileError(t.Pos, NoOptionalCallable(optional));
+            throw new CompileError(Li.TypeForm, t.Pos, NoOptionalCallable(optional));
         // `failable Callable[...]`: open to a failable value, whose list the instance takes from the value it is given.
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned, failable: t.Failable);
     }
@@ -1787,7 +1787,7 @@ public sealed partial class Compiler
     public static string CheckCallConv(Annotation annotation) => annotation.First switch
     {
         "fast" or "cold" or "stdcall" => annotation.First,
-        _ => throw new CompileError(annotation.Pos,
+        _ => throw new CompileError(Li.AnnotationArgument, annotation.Pos,
             $"@callconv takes \"fast\", \"cold\", or \"stdcall\", not {(annotation.First is null ? "nothing" : $"\"{annotation.First}\"")}"),
     };
 
@@ -1832,7 +1832,7 @@ public sealed partial class Compiler
             var path = new List<string> { inst.Decl.DisplayName };
             for (string at = closing; at != inst.Symbol; at = from[at]) path.Insert(1, _instances[at].Decl.DisplayName);
             path.Add(inst.Decl.DisplayName);
-            errors.Add(new CompileError(inst.Decl.AnnotationNamed("inline")!.Pos,
+            errors.Add(new CompileError(Li.AnnotationTarget, inst.Decl.AnnotationNamed("inline")!.Pos,
                 $"'{inst.Decl.DisplayName}' is @inline, and it calls itself ({string.Join(" -> ", path)}); "
                 + "a recursive routine can't be inlined at every call"));
         }
@@ -1846,14 +1846,14 @@ public sealed partial class Compiler
         var inline = r.AnnotationNamed("inline");
         var noinline = r.AnnotationNamed("noinline");
         if (inline is not null && noinline is not null)
-            throw new CompileError(noinline.Pos, $"'{r.DisplayName}' is @inline and @noinline; it can only be one");
+            throw new CompileError(Li.AnnotationTarget, noinline.Pos, $"'{r.DisplayName}' is @inline and @noinline; it can only be one");
         foreach (var a in new[] { inline, noinline })
         {
             if (a is null) continue;
             if (a.Args.Count != 0)
-                throw new CompileError(a.Pos, $"@{a.Name} takes no arguments");
+                throw new CompileError(Li.AnnotationTarget, a.Pos, $"@{a.Name} takes no arguments");
             if (r.AnnotationNamed("external") is not null)
-                throw new CompileError(a.Pos, $"@{a.Name} needs a body, and '{r.DisplayName}' is @external");
+                throw new CompileError(Li.AnnotationTarget, a.Pos, $"@{a.Name} needs a body, and '{r.DisplayName}' is @external");
         }
     }
 
@@ -1878,16 +1878,16 @@ public sealed partial class Compiler
         {
             case TypeArgInt i: return AsCount(i.Value, pos);
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
-            case TypeArgInferred blank: throw new CompileError(blank.Pos, InferredCountMessage);
+            case TypeArgInferred blank: throw new CompileError(Li.TypeArgument, blank.Pos, InferredCountMessage);
             case TypeArgType { Type: { Member: not null } member }:
                 return EvalConstInt(new PresetRef(member with { Member = null }, member.Member, pos), env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
-                if (env.Get(tr.Name) is ConstArg { Kind: ChoiceType ct }) throw new CompileError(pos, $"'{tr.Name}' is a member of {ct.Name}, not an integer");
+                if (env.Get(tr.Name) is ConstArg { Kind: ChoiceType ct }) throw new CompileError(Li.TypeArgument, pos, $"'{tr.Name}' is a member of {ct.Name}, not an integer");
                 if (env.Get(tr.Name) is ConstArg ca) return AsCount(ca.Value, pos);
                 if (FindPreset("", tr.Name, env.File, pos) is not null) return EvalConstInt(new PresetRef(null, tr.Name, pos), env, 0);
-                throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
+                throw new CompileError(Li.PresetNotConstant, pos, $"'{tr.Name}' is not an integer constant");
             default:
-                throw new CompileError(pos, "expected an integer constant");
+                throw new CompileError(Li.PresetNotConstant, pos, "expected an integer constant");
         }
     }
 
@@ -1896,9 +1896,9 @@ public sealed partial class Compiler
     {
         if (lit.Repeat is null) return lit.Elements;
         long times = EvalConstInt(lit.Repeat, env, 0);
-        if (times < 0) throw new CompileError(lit.Repeat.Pos, $"'* {times}' repeats a negative number of times");
+        if (times < 0) throw new CompileError(Li.PresetNotConstant, lit.Repeat.Pos, $"'* {times}' repeats a negative number of times");
         if (times * lit.Elements.Count > 1 << 24)
-            throw new CompileError(lit.Repeat.Pos, $"'* {times}' makes {times * lit.Elements.Count} elements, too many for a literal");
+            throw new CompileError(Li.PresetNotConstant, lit.Repeat.Pos, $"'* {times}' makes {times * lit.Elements.Count} elements, too many for a literal");
         var all = new List<Expr>((int)(times * lit.Elements.Count));
         for (long i = 0; i < times; i++) all.AddRange(lit.Elements);
         return all;
@@ -1913,13 +1913,13 @@ public sealed partial class Compiler
     {
         var v = Fold(e, null, env);
         if (v.Type is not (null or IntType))
-            throw new CompileError(e.Pos, $"expected a buildtime integer, found {v.Type.Name}");
+            throw new CompileError(Li.PresetNotConstant, e.Pos, $"expected a buildtime integer, found {v.Type.Name}");
         return v.Value;
     }
 
     /// A buildtime integer where a count, a size or an alignment goes, which is at most 64 bits.
     private static long AsCount(BigInteger value, Pos pos) =>
-        value < long.MinValue || value > long.MaxValue ? throw new CompileError(pos, $"{value} is too large here") : (long)value;
+        value < long.MinValue || value > long.MaxValue ? throw new CompileError(Li.PresetNotConstant, pos, $"{value} is too large here") : (long)value;
 
     /// The type a `needs` line declares a value parameter with: an integer type (`U256` of `needs U256 P`) or a choice
     /// (`MemoryOrder` of `needs MemoryOrder O`). Null for a type parameter, a name the lines don't declare, or a kind
@@ -1939,7 +1939,7 @@ public sealed partial class Compiler
                 {
                     IntType { IsNumber: true } it => it,
                     ChoiceType { Decl.IsFlags: false } ct => ct,
-                    ChoiceType flags => throw new CompileError(at, $"{name} is declared a {flags.Name}, which is a flags type: a "
+                    ChoiceType flags => throw new CompileError(Li.FlagsDeclaration, at, $"{name} is declared a {flags.Name}, which is a flags type: a "
                         + "value type parameter takes an integer type or a choice, one value a when can pick, and a flags value "
                         + $"has any set of its members on. Declare {name} with a choice, or pass the flags value as an argument"),
                     _ => null,
@@ -1985,7 +1985,7 @@ public sealed partial class Compiler
         {
             int required = typeParams.TakeWhile(p => DefaultOf(clauses, p) is null).Count();
             string takes = required == typeParams.Count ? $"{typeParams.Count}" : $"{required} to {typeParams.Count}";
-            throw new CompileError(pos, $"{what} takes {takes} generic argument(s), got {written.Count}");
+            throw new CompileError(Li.WrongTypeArgumentCount, pos, $"{what} takes {takes} generic argument(s), got {written.Count}");
         }
         var args = new List<DType>();
         for (int i = 0; i < written.Count; i++)
@@ -2024,26 +2024,26 @@ public sealed partial class Compiler
                     TypeArgType ta => ResolveTypeInner(ta.Type, env),
                     TypeArgInt ti => new ConstArg(ti.Value),
                     TypeArgExpr te => EvalConstArg(te.Expr, env, kind as ChoiceType),
-                    TypeArgInferred blank => throw new CompileError(blank.Pos, InferredCountMessage),
-                    _ => throw new CompileError(pos, $"invalid generic argument for '{owner}'"),
+                    TypeArgInferred blank => throw new CompileError(Li.TypeArgument, blank.Pos, InferredCountMessage),
+                    _ => throw new CompileError(Li.WrongTypeArgumentCount, pos, $"invalid generic argument for '{owner}'"),
                 };
             }
             catch (CompileError) when (kind is ChoiceType choice
                                        && written is TypeArgType { Type: { Args.Count: 0, Path: null, Member: null, Known: null } unknown })
             {
-                throw new CompileError(unknown.Pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), "
+                throw new CompileError(Li.TypeArgument, unknown.Pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), "
                     + $"and {choice.Name} has no member {unknown.Name}: pass one of those");
             }
         }
-        if (arg is VoidType) throw new CompileError(pos, "None as a value is the one value None(); as a type it is the return of nothing");
+        if (arg is VoidType) throw new CompileError(Li.TypeSpelling, pos, "None as a value is the one value None(); as a type it is the return of nothing");
         Pos at = written is TypeArgType { Type.Pos: var wp } ? wp : pos;
         // A parameter being checked (an archetype) or a slot two signatures are compared by stands for any argument.
         if (isValue && arg is not (ConstArg or ArchetypeType or SlotType))
-            throw new CompileError(at, kind is ChoiceType wanted
+            throw new CompileError(Li.TypeArgument, at, kind is ChoiceType wanted
                 ? $"{param} of '{owner}' takes a member of {wanted.Name} ({Members(wanted)}), and {written} is a type: pass one of those"
                 : $"{param} of '{owner}' is a value, and {written} is a type: pass a number, a value parameter or a preset");
         if (isType && arg is ConstArg given)
-            throw new CompileError(at, $"{param} of '{owner}' is a type, and {given.Name} is "
+            throw new CompileError(Li.TypeArgument, at, $"{param} of '{owner}' is a type, and {given.Name} is "
                 + (given.Kind is ChoiceType of ? $"a member of {of.Name}" : "a number") + ": pass a type there");
         return arg is ConstArg value && kind is not null ? FitValue(value, kind, param, owner, at) : arg;
     }
@@ -2091,7 +2091,7 @@ public sealed partial class Compiler
         {
             null or IntType => new ConstArg(v.Value),
             ChoiceType { Decl.IsFlags: false } ct => new ConstArg(v.Value, ct),
-            _ => throw new CompileError(e.Pos, $"expected a buildtime integer or a choice member, found {v.Type.Name}"),
+            _ => throw new CompileError(Li.PresetNotConstant, e.Pos, $"expected a buildtime integer or a choice member, found {v.Type.Name}"),
         };
     }
 
@@ -2104,15 +2104,15 @@ public sealed partial class Compiler
         {
             if (arg.Kind is ChoiceType same && same.Equals(choice)) return arg;
             string given = arg.Kind is ChoiceType other ? $"{arg.Name} is a member of {other.Name}" : $"{arg.Name} is a number";
-            throw new CompileError(pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), and {given}: "
+            throw new CompileError(Li.TypeArgument, pos, $"{param} of '{owner}' takes a member of {choice.Name} ({Members(choice)}), and {given}: "
                 + $"pass one of those, bare or with the choice ({choice.Decl.Members[0].Name} or {choice.Name}.{choice.Decl.Members[0].Name})");
         }
         if (arg.Kind is ChoiceType member)
-            throw new CompileError(pos, $"{param} of '{owner}' is a {kind.Name}, and {arg.Name} is a member of {member.Name}: "
+            throw new CompileError(Li.TypeArgument, pos, $"{param} of '{owner}' is a {kind.Name}, and {arg.Name} is a member of {member.Name}: "
                 + "pass a number, a value parameter or a preset");
         var number = (IntType)kind;
         if (!arg.StandIn && (arg.Value < number.MinValue || arg.Value > number.MaxValue))
-            throw new CompileError(pos, $"{param} of '{owner}' is a {number.Name}, which holds {number.MinValue}..{number.MaxValue}, "
+            throw new CompileError(Li.TypeArgument, pos, $"{param} of '{owner}' is a {number.Name}, which holds {number.MinValue}..{number.MaxValue}, "
                 + $"and {arg.Value} is outside that: pass a value in that range, or declare {param} with a wider type");
         return arg.As(number);
     }
@@ -2125,7 +2125,7 @@ public sealed partial class Compiler
         if (TryResolveType(ownerRef, env) is ChoiceType { Decl.IsFlags: false } choice)
             return choice.Decl.Members.FirstOrDefault(m => m.Name == t.Member) is { Name: not null, Value: IntLit lit }
                 ? new ConstArg(lit.Value, choice)
-                : throw new CompileError(t.Pos, $"{choice.Name} has no member {t.Member}: its members are {Members(choice)}");
+                : throw new CompileError(Li.TypeArgument, t.Pos, $"{choice.Name} has no member {t.Member}: its members are {Members(choice)}");
         return EvalConstArg(new PresetRef(ownerRef, t.Member!, t.Pos), env);
     }
 
@@ -2134,7 +2134,7 @@ public sealed partial class Compiler
     public DType ResolveTypeOrValue(TypeRef t, TypeEnv env)
     {
         var r = ResolveTypeInner(t, env);
-        if (r is VoidType) throw new CompileError(t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
+        if (r is VoidType) throw new CompileError(Li.TypeSpelling, t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
         return r;
     }
 
@@ -2142,9 +2142,9 @@ public sealed partial class Compiler
     public RecordType TupleOf(List<DType> items, Pos pos)
     {
         var decl = _records.GetValueOrDefault($"Tuple{items.Count}")?.FirstOrDefault(RecordType.IsTupleDecl)
-                   ?? throw new CompileError(pos, $"a tuple has {Parser.MinTupleItems} to {Parser.MaxTupleItems} items, not {items.Count}");
+                   ?? throw new CompileError(Li.TupleSize, pos, $"a tuple has {Parser.MinTupleItems} to {Parser.MaxTupleItems} items, not {items.Count}");
         if (Entities.EntityArgument(items) is { } held)
-            throw new CompileError(pos, $"a tuple holds {held.Name}, an entity, which is never copied: hold it through a pointer, @{held.Name}");
+            throw new CompileError(Li.RecordHoldsEntity, pos, $"a tuple holds {held.Name}, an entity, which is never copied: hold it through a pointer, @{held.Name}");
         CheckRecordRequirements(decl, items, pos);
         return new RecordType(decl, items, TransparentField);
     }
@@ -2172,7 +2172,7 @@ public sealed partial class Compiler
         foreach (var f in s.Decl.Fields)
         {
             if (fields.Any(x => x.Item1 == f.Name))
-                throw new CompileError(f.Pos, $"field '{f.Name}' is declared twice");
+                throw new CompileError(Li.DuplicateField, f.Pos, $"field '{f.Name}' is declared twice");
             var ft = HeldOptional(ResolveType(f.Type, env), f.Pos, env);
             // The routine a work block holds is its entry, which can fail the way the block's list says (a block written without a list, as
             // in the generic routines the standard library checks on their own, holds a plain one).
@@ -2183,7 +2183,7 @@ public sealed partial class Compiler
             ft = OpenCallable(ft, s.Decl.IsLibrary);
             // A record is copied with `=`, and so would everything in it be: an entity goes in an entity.
             if (!s.Decl.IsEntity && Entities.Holds(ft))
-                throw new CompileError(f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
+                throw new CompileError(Li.RecordHoldsEntity, f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
                     + $"which a record is: declare it entity {s.Decl.Name}, or hold a pointer, @{ft.Name}");
             fields.Add((f.Name, ft));
         }
@@ -2216,12 +2216,12 @@ public sealed partial class Compiler
     {
         var d = s.Decl;
         if (d.AnnotationNamed("aggregate") is { } aggregate)
-            throw new CompileError(aggregate.Pos, $"record '{d.Name}' is a struct already, as every record is: remove @aggregate");
+            throw new CompileError(Li.AnnotationTarget, aggregate.Pos, $"record '{d.Name}' is a struct already, as every record is: remove @aggregate");
         // A library `@llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
         if (d.AnnotationNamed("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)
-                : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
+                : throw new CompileError(Li.AnnotationTarget, d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
         return null;
     }
 
@@ -2264,13 +2264,13 @@ public sealed partial class Compiler
             for (int j = 0; j < i; j++)
             {
                 if (branches[i].Equals(branches[j]))
-                    throw new CompileError(pos[i],
+                    throw new CompileError(Li.TypeForm, pos[i],
                         $"{BranchesShown(v, branches)} has two branches of type {branches[i]}, and a value couldn't tell which "
                         + "it is: wrap one of them in a record of its own");
                 foreach (var (outer, inner) in new[] { (branches[i], branches[j]), (branches[j], branches[i]) })
                     if (outer is VariantType nested && !_branchesChecking.Contains(nested.Key)
                         && nested.Branches.Any(n => n.Equals(inner)))
-                        throw new CompileError(pos[i],
+                        throw new CompileError(Li.TypeForm, pos[i],
                             $"{BranchesShown(v, branches)} has {inner} as a branch and inside its branch {outer}, and a "
                             + $"value of {inner} couldn't tell which: wrap one of them in a record of its own");
             }
@@ -2299,10 +2299,10 @@ public sealed partial class Compiler
         branches.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
         if (branches.Count == 1) return branches[0];
         if (branches.Count > MaxUnionBranches)
-            throw new CompileError(t.Pos,
+            throw new CompileError(Li.VariantSyntax, t.Pos,
                 $"a variant written inline has at most {MaxUnionBranches} branches, and '{t}' has {branches.Count}: declare a variant");
         var decl = FindVariant($"Union{branches.Count}", env.File, t.Pos, SystemModule)
-            ?? throw new CompileError(t.Pos, $"the standard library's Union{branches.Count} is missing");
+            ?? throw new CompileError(Li.UnionBuild, t.Pos, $"the standard library's Union{branches.Count} is missing");
         return CheckedAt(new VariantType(decl, branches, VariantBranches), t.Pos);
     }
 
@@ -2317,7 +2317,7 @@ public sealed partial class Compiler
         }
         catch (CompileError e) when (e.Pos.File == v.Decl.File)
         {
-            throw new CompileError(at, e.Text);
+            throw new CompileError(Li.TypeNotSupported, at, e.Text);
         }
         return v;
     }
@@ -2327,7 +2327,7 @@ public sealed partial class Compiler
     {
         var sorted = leaves.Distinct().OrderBy(l => l.Key, StringComparer.Ordinal).ToList();
         var decl = FindVariant($"Union{sorted.Count}", file, pos, SystemModule)
-            ?? throw new CompileError(pos, $"the standard library's Union{sorted.Count} is missing");
+            ?? throw new CompileError(Li.UnionBuild, pos, $"the standard library's Union{sorted.Count} is missing");
         return new VariantType(decl, sorted, VariantBranches);
     }
 
@@ -2420,7 +2420,7 @@ public sealed partial class Compiler
                 break;
             case VariantType v:
             {
-                if (_definingTypes.Contains(v.Key)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");
+                if (_definingTypes.Contains(v.Key)) throw new CompileError(Li.RecursiveValueRecord, v.Decl.Pos, $"{v} contains itself");
                 if (!_definedTypes.Add(v.Key)) return;
                 _definingTypes.Add(v.Key);
                 try
@@ -2444,7 +2444,7 @@ public sealed partial class Compiler
             }
             case RecordType s when s.Decl.AnnotationNamed("llvm") is null:
                 // A record can hold itself only through a pointer.
-                if (_definingTypes.Contains(s.Key)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");
+                if (_definingTypes.Contains(s.Key)) throw new CompileError(Li.RecursiveValueRecord, s.Decl.Pos, $"{s} contains itself");
                 if (!_definedTypes.Add(s.Key)) return;
                 _definingTypes.Add(s.Key);
                 try
@@ -2517,7 +2517,7 @@ public sealed partial class Compiler
             return name;
         }
         if (c.Value is null && !c.Late && NoZeroValueWhere(t, t.Name) is { } noZero)
-            throw new CompileError(c.Pos, $"global {c.Name} has no value, and {t} has no all-zero value: it holds a pointer, "
+            throw new CompileError(Li.GlobalInitializer, c.Pos, $"global {c.Name} has no value, and {t} has no all-zero value: it holds a pointer, "
                 + $"memory or a routine that is never empty ({noZero}). Give it one: global {c.Name}: &{t} <- value, "
                 + "or make what may be missing optional (@T? or Callable?, None() when absent), or write lateinit global when the program fills it before it reads it");
         string init = c.Value is null ? "zeroinitializer" : GlobalInitializer(c.Value, t, env);
@@ -2567,9 +2567,9 @@ public sealed partial class Compiler
     public ArrayType SpanStorage(PresetDecl c, DType span, TypeEnv env)
     {
         if (!IsCoreSpan(span, out var elem))
-            throw new CompileError(c.Type.Pos, $"expected @[T], found {span}");
+            throw new CompileError(Li.GlobalInitializer, c.Type.Pos, $"expected @[T], found {span}");
         if (c.Value is not ArrayLit { IsTuple: false } lit)
-            throw new CompileError(c.Value!.Pos,
+            throw new CompileError(Li.GlobalInitializer, c.Value!.Pos,
                 $"a span (@[T]) in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] * 26");
         return new ArrayType(elem, Elements(lit, env).Count, isSlots: Entities.Holds(elem));
     }
@@ -2609,10 +2609,10 @@ public sealed partial class Compiler
             return TextInitializer(s, text);
         if (t is ArrayType a)
         {
-            if (e is not ArrayLit { IsTuple: false } lit) throw new CompileError(e.Pos, $"expected an array literal for {a}: [...]");
+            if (e is not ArrayLit { IsTuple: false } lit) throw new CompileError(Li.GlobalInitializer, e.Pos, $"expected an array literal for {a}: [...]");
             var elements = Elements(lit, env);
             if (elements.Count != a.Count)
-                throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {elements.Count}");
+                throw new CompileError(Li.GlobalInitializer, lit.Pos, $"{a} needs {a.Count} element(s), got {elements.Count}");
             // A repeated element is one constant, written once.
             var constants = lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}").ToList();
             return "[" + string.Join(", ", elements.Select((_, i) => constants[i % constants.Count])) + "]";
@@ -2623,7 +2623,7 @@ public sealed partial class Compiler
         if (t is RecordType record && record.Decl.AnnotationNamed("llvm") is null && e is RecordLit recordLit)
             return RecordInitializer(recordLit, record, env);
         if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null && !IsDuration(t))
-            throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
+            throw new CompileError(Li.GlobalInitializer, e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
     }
 
@@ -2633,7 +2633,7 @@ public sealed partial class Compiler
     {
         bool chars = a.Elem is IntType { Kind: IntKind.Char };
         List<long> values = chars
-            ? (CodePoints(s.Value) ?? throw new CompileError(s.Pos, $"{a} holds characters, and this string has a \\x byte above 7F, "
+            ? (CodePoints(s.Value) ?? throw new CompileError(Li.GlobalInitializer, s.Pos, $"{a} holds characters, and this string has a \\x byte above 7F, "
                 + "which is no character: write the character itself or \\uXXXXXX, or keep the bytes in an Items[Byte, _]"))
                 .Select(c => (long)c).ToList()
             : SourceText.Utf8(s.Value).Select(b => (long)b).ToList();
@@ -2643,7 +2643,7 @@ public sealed partial class Compiler
             string sizes = CodePoints(s.Value) is { } cps
                 ? $"{bytes} byte{(bytes == 1 ? "" : "s")} in UTF-8 and {cps.Count} character{(cps.Count == 1 ? "" : "s")}"
                 : $"{bytes} byte{(bytes == 1 ? "" : "s")} (a \\x byte above 7F is no character)";
-            throw new CompileError(s.Pos, $"{a} holds {a.Count} {(chars ? "Char" : "Byte")}{(a.Count == 1 ? "" : "s")}, and this string is {sizes}");
+            throw new CompileError(Li.GlobalInitializer, s.Pos, $"{a} holds {a.Count} {(chars ? "Char" : "Byte")}{(a.Count == 1 ? "" : "s")}, and this string is {sizes}");
         }
         int bits = ((IntType)a.Elem).Bits;
         return "[" + string.Join(", ", values.Select(v => $"{a.Elem.Llvm} {SignedForm(v, bits)}")) + "]";
@@ -2657,7 +2657,7 @@ public sealed partial class Compiler
         if (e is StrLit s)
         {
             if (span is not RecordType { Args: [IntType { Kind: IntKind.Byte }] })
-                throw new CompileError(e.Pos, $"a string literal is a @[Byte], and this is a {span}");
+                throw new CompileError(Li.GlobalInitializer, e.Pos, $"a string literal is a @[Byte], and this is a {span}");
             return $"{{ ptr {StringGlobal(s.Value)}, {Count.Llvm} {Utf8Length(s.Value)} }}";
         }
         // A preset Items in read-only data, viewed: its address and its count.
@@ -2669,10 +2669,10 @@ public sealed partial class Compiler
         if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)
         {
             if (target.AnnotationNamed("threadlocal") is not null)
-                throw new CompileError(e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
+                throw new CompileError(Li.ThreadLocalProblem, e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
             var targetEnv = new TypeEnv(target.File);
             var targetSpan = ResolveType(target.Type, targetEnv);
-            if (!targetSpan.Equals(span)) throw new CompileError(e.Pos, $"expected {span}, found {targetSpan}");
+            if (!targetSpan.Equals(span)) throw new CompileError(Li.GlobalInitializer, e.Pos, $"expected {span}, found {targetSpan}");
             if (target.Value is StrLit text) return SpanInitializer(text, span, targetEnv);
             var storage = SpanStorage(target, targetSpan, targetEnv);
             string address = target.IsGlobal
@@ -2741,7 +2741,7 @@ public sealed partial class Compiler
     {
         // An address written as a number: a constant.
         if (t is PtrType { Pointee: null } && e is IntLit literalAddress)
-            return AddressLiteralError(literalAddress) is { } notHex ? throw new CompileError(e.Pos, notHex) : $"inttoptr ({Count.Llvm} {Count.Literal(literalAddress.Value, literalAddress.HexDigits, out var addressError) ?? throw new CompileError(e.Pos, $"{addressError}: an address on this target is {Count.Bits} bits wide")} to ptr)";
+            return AddressLiteralError(literalAddress) is { } notHex ? throw new CompileError(Li.AddressLiteral, e.Pos, notHex) : $"inttoptr ({Count.Llvm} {Count.Literal(literalAddress.Value, literalAddress.HexDigits, out var addressError) ?? throw new CompileError(Li.AddressLiteral, e.Pos, $"{addressError}: an address on this target is {Count.Bits} bits wide")} to ptr)";
         if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
         // A preset in read-only data: its address, a view.
         if (t is PtrType { Pointee: { } viewed } && e is PresetRef { Owner: null } named
@@ -2754,17 +2754,17 @@ public sealed partial class Compiler
             && target is { IsStorage: true, IsSpan: false })
         {
             if (target.AnnotationNamed("threadlocal") is not null)
-                throw new CompileError(e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
+                throw new CompileError(Li.ThreadLocalProblem, e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
             var targetEnv = new TypeEnv(target.File);
             var pointee = ResolveType(target.Type, targetEnv);
             var address = new PtrType(pointee);
             if (!address.Equals(t) && t is not PtrType { Pointee: null })
-                throw new CompileError(e.Pos, $"expected {t}, found {address}");
+                throw new CompileError(Li.GlobalInitializer, e.Pos, $"expected {t}, found {address}");
             return target.IsGlobal
                 ? GlobalVariable(target, pointee, targetEnv)
                 : PresetStorageGlobal(target, pointee, targetEnv);
         }
-        throw new CompileError(e.Pos, t is CallableType
+        throw new CompileError(Li.RoutineValue, e.Pos, t is CallableType
             ? $"a {t.Name} in memory starts as .hollow() or as a routine: name.to[Callable]()"
             : $"a {t.Name} in memory starts as Addr.zero() or as the address of a global or preset in memory");
     }
@@ -2774,19 +2774,19 @@ public sealed partial class Compiler
     private string RecordInitializer(RecordLit lit, RecordType s, TypeEnv env)
     {
         if (lit.Type is not null && !ResolveType(lit.Type, env).Equals(s))
-            throw new CompileError(lit.Pos, $"expected a literal for {s}, found one for {ResolveType(lit.Type, env)}");
+            throw new CompileError(Li.GlobalInitializer, lit.Pos, $"expected a literal for {s}, found one for {ResolveType(lit.Type, env)}");
         var fields = Fields(s);
         var given = new Dictionary<string, Expr>();
         foreach (var (name, value, pos) in lit.Fields)
         {
-            if (fields.All(f => f.Name != name)) throw new CompileError(pos, $"{s} has no field '{name}'");
-            if (!given.TryAdd(name, value)) throw new CompileError(pos, $"field '{name}' is given twice");
+            if (fields.All(f => f.Name != name)) throw new CompileError(Li.FieldNotFound, pos, $"{s} has no field '{name}'");
+            if (!given.TryAdd(name, value)) throw new CompileError(Li.FieldGivenTwice, pos, $"field '{name}' is given twice");
             // A `private` field is given only in the record's module, as in a routine's literal.
             if (s.Decl.Fields.FirstOrDefault(f => f.Name == name) is { IsPrivate: true } && !PrivateReaches(s.Decl, env.File))
-                throw new CompileError(pos, $"field '{name}' of {s} is secret to {ShowModule(s.Decl.Module)}");
+                throw new CompileError(Li.SecretField, pos, $"field '{name}' of {s} is secret to {ShowModule(s.Decl.Module)}");
         }
         if (fields.FirstOrDefault(f => !given.ContainsKey(f.Name)) is { Name: not null } missing)
-            throw new CompileError(lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");
+            throw new CompileError(Li.MissingField, lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");
         if (s.TransparentField is { } only) return PresetInitializer(given[fields[0].Name], only, env);
         var shape = Shape(s);
         var members = shape.Members.Select(m => $"{m.Llvm} zeroinitializer").ToArray();
@@ -2803,9 +2803,9 @@ public sealed partial class Compiler
     private string RoutineAddress(RoutineRef r, CallableType want, TypeEnv env)
     {
         var set = FreeCandidates(r.Name, env.File, r.Pos, r.Path);
-        if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
+        if (set.Count == 0) throw new CompileError(Li.RoutineValue, r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want) && !named.Equals(want.Plain))
-            throw new CompileError(r.Pos, $"expected {want}, found {named}");
+            throw new CompileError(Li.RoutineValue, r.Pos, $"expected {want}, found {named}");
         // Memory that holds a Callable open to failures holds the routine's recovering form, or the plain routine.
         bool failing = want.Failable;
         var plainWant = want.Plain;
@@ -2813,11 +2813,11 @@ public sealed partial class Compiler
         string Address(RoutineDecl routine, TypeEnv routineEnv)
         {
             if (routine.AnnotationNamed("inline") is not null)
-                throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
+                throw new CompileError(Li.RoutineValue, r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
             var used = failing && CanRecover(routine) ? RecoveringOf(routine) : routine;
             var inst = RequireInstance(used, routineEnv);
             if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, Target))
-                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
+                throw new CompileError(Li.RoutineValue, r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
             // Memory open to any failure holds the address with its kind beside it.
             return want.IsOpen
                 ? $"{{ ptr @{Quote(inst.Symbol)}, i8 {(inst.IsFailable ? CallableType.KindFailing : CallableType.KindPlain)} }}"
@@ -2835,7 +2835,7 @@ public sealed partial class Compiler
                 if (!new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(plainWant)) continue;
                 return Address(routine, routineEnv);
             }
-            throw new CompileError(r.Pos, $"no overload of '{r.Name}' with {args.Count} type argument(s) is {want}");
+            throw new CompileError(Li.RoutineValue, r.Pos, $"no overload of '{r.Name}' with {args.Count} type argument(s) is {want}");
         }
         foreach (var routine in set.Where(o => o.TypeParams.Count == 0))
         {
@@ -2846,7 +2846,7 @@ public sealed partial class Compiler
             return Address(routine, new TypeEnv(routine.File));
         }
         string list = string.Concat(set.Select(o => $"\n    {ShowSignature(o)} at {o.Pos}"));
-        throw new CompileError(r.Pos, $"no routine '{r.Name}' is {want}; the routines of that name are:{list}");
+        throw new CompileError(Li.RoutineValue, r.Pos, $"no routine '{r.Name}' is {want}; the routines of that name are:{list}");
     }
 
     // ── String literals ─────────────────────────────────────────────────────

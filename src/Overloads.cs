@@ -178,14 +178,14 @@ public sealed partial class Compiler
                         continue;
                     }
                     if (ka.Params == kb.Params)
-                        throw new CompileError(b.Pos, ka.Ret == kb.Ret
+                        throw new CompileError(Li.DuplicateRoutine, b.Pos, ka.Ret == kb.Ret
                             ? $"routine '{b.DisplayName}' is already declared at {a.Pos} with the same parameter types"
                             : $"routine '{b.DisplayName}' differs from the one at {a.Pos} only in its return type; "
                               + "a call can't choose by what it returns, so give it another name");
                     CheckOverloadSymbol(b, a);
                     CheckOverloadSymbol(a, b);
                     if (CSymbol(a) is { } sa && sa == CSymbol(b))
-                        throw new CompileError(b.Pos, $"routine '{b.DisplayName}' and its overload at {a.Pos} are both the C symbol '{sa}'; "
+                        throw new CompileError(Li.OverloadSymbolClash, b.Pos, $"routine '{b.DisplayName}' and its overload at {a.Pos} are both the C symbol '{sa}'; "
                             + "give each its own");
                 }
     }
@@ -208,7 +208,7 @@ public sealed partial class Compiler
                     if (!other.TakesAddress || other.Owner!.ToString() != pointee.ToString() || Rest(other) != Rest(onPtr)) continue;
                     if ((other.IsPrivate || onPtr.IsPrivate) && other.Module != onPtr.Module) continue;
                     var (kept, reported) = onPtr.IsLibrary && !other.IsLibrary ? (onPtr, other) : (other, onPtr);
-                    throw new CompileError(reported.Pos, $"'{reported.Header}' and '{kept.Header}' (at {kept.Pos}) are the same "
+                    throw new CompileError(Li.DuplicateRoutine, reported.Pos, $"'{reported.Header}' and '{kept.Header}' (at {kept.Pos}) are the same "
                         + $"routine for a call on a @{pointee}, so a call couldn't choose: give one of them another name");
                 }
             }
@@ -230,7 +230,7 @@ public sealed partial class Compiler
             foreach (var r in group)
             {
                 if (r.IsLibrary && IdentityOwners.Contains(owner)) continue;
-                throw new CompileError(r.Pos, $"'{r.Header}' would be what {(name == "same" ? "===" : "!==")} means on {owner}, and === asks "
+                throw new CompileError(Li.DuplicateRoutine, r.Pos, $"'{r.Header}' would be what {(name == "same" ? "===" : "!==")} means on {owner}, and === asks "
                     + "whether two names reach the same memory, which only an address (@T, Addr), a span (@[T]) or a stamp has: compare values "
                     + "with ==, which is eq, or give the routine another name");
             }
@@ -241,10 +241,10 @@ public sealed partial class Compiler
     private static void CheckOverloadSymbol(RoutineDecl r, RoutineDecl other)
     {
         if (r.AnnotationNamed("export") is { First: null } export)
-            throw new CompileError(export.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its @export names its C symbol: "
+            throw new CompileError(Li.OverloadSymbolClash, export.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its @export names its C symbol: "
                 + $"@export(\"{r.Name}_...\")");
         if (r.AnnotationNamed("external") is { First: "c" } && r.AnnotationNamed("symbol") is null)
-            throw new CompileError(r.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its C name can't default to '{r.Name}', "
+            throw new CompileError(Li.OverloadSymbolClash, r.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its C name can't default to '{r.Name}', "
                 + $"which every overload would get: name the C routine with @symbol(\"...\")");
     }
 
@@ -266,11 +266,11 @@ public sealed partial class Compiler
         if (all is null || all.Count == 0)
         {
             if (path is not null && IsOtherSide(path))
-                throw new CompileError(pos, $"routine '{name}' is in {path}: {OtherSide(path)}") { Final = true };
+                throw new CompileError(Li.NameInOtherModule, pos, $"routine '{name}' is in {path}: {OtherSide(path)}") { Final = true };
             return [];
         }
         var visible = all.Where(c => Visible(c, file, path)).ToList();
-        if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine '{name}'", path, file));
+        if (visible.Count == 0) throw new CompileError(Li.NameInOtherModule, pos, Hidden(all[0], $"routine '{name}'", path, file));
         return OverloadSet(visible, file, pos, $"routine '{name}'");
     }
 
@@ -284,7 +284,7 @@ public sealed partial class Compiler
             // System and the modules under it are one set: every file sees all of them.
             var modules = visible.Select(c => IsSystemModule(c.Module) ? SystemModule : c.Module).Distinct().ToList();
             if (modules.Count > 1)
-                throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
+                throw new CompileError(Li.AmbiguousName, pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
                     + $"write the module path ({modules[0]}/...)");
             scope = visible;
         }
@@ -325,7 +325,7 @@ public sealed partial class Compiler
                 m.IsPrivate ? PrivateReaches(m, file)
                 : anyModule || m.Module == home || Visible(m, file, null)).ToList();
             if (visible.Count == 0)
-                throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
+                throw new CompileError(Li.NameInOtherModule, pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
             return LocalHides(visible, file);
         }
         if (required.Count > 0) return required;
@@ -408,7 +408,7 @@ public sealed partial class Compiler
             && (anyModule || Visible(b, file, null) || !b.IsPrivate)).ToList();
         if (all is null || all.Count == 0) return [];
         var visible = all.Where(c => Visible(c, file, null)).ToList();
-        if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine 'T.{name}'", null));
+        if (visible.Count == 0) throw new CompileError(Li.NameInOtherModule, pos, Hidden(all[0], $"routine 'T.{name}'", null));
         return OverloadSet(visible, file, pos, $"routine 'T.{name}'");
     }
 

@@ -43,7 +43,7 @@ public sealed partial class Compiler
     {
         if (d.AnnotationNamed("trace") is not { } a) return true;
         if (!d.IsLibrary)
-            throw new CompileError(a.Pos, "@trace selects standard library declarations by the build's trace setting; a routine of the program opts out with @untraced");
+            throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@trace selects standard library declarations by the build's trace setting; a routine of the program opts out with @untraced");
         return a.First switch
         {
             "on" => Trace,
@@ -51,7 +51,7 @@ public sealed partial class Compiler
             // A traced build keeps either a shadow stack or the table it reads the stack with.
             "shadow" => Trace && !TraceFromStack,
             "stack" => Trace && TraceFromStack,
-            _ => throw new CompileError(a.Pos, "@trace takes \"on\", \"off\", \"shadow\", or \"stack\""),
+            _ => throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@trace takes \"on\", \"off\", \"shadow\", or \"stack\""),
         };
     }
 
@@ -60,9 +60,9 @@ public sealed partial class Compiler
     private static void CheckUntraced(RoutineDecl r)
     {
         if (r.AnnotationNamed("untraced") is not { } a) return;
-        if (a.Args.Count != 0) throw new CompileError(a.Pos, "@untraced takes no arguments");
+        if (a.Args.Count != 0) throw new CompileError(Li.BuildSettingAnnotation, a.Pos, "@untraced takes no arguments");
         if (r.AnnotationNamed("external") is not null && !IsAsm(r))
-            throw new CompileError(a.Pos, $"@untraced needs a body, and '{r.DisplayName}' is @external");
+            throw new CompileError(Li.BuildSettingAnnotation, a.Pos, $"@untraced needs a body, and '{r.DisplayName}' is @external");
     }
 
     /// Whether this instance keeps a frame on the crash trace. The boot step keeps none: the trace is a global its

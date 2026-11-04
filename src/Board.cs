@@ -73,7 +73,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         if (isFile) return System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, spec));
         string shipped = System.IO.Path.Combine(ShippedDirectory(), spec + ".toml");
         if (!File.Exists(shipped))
-            throw new ManifestError(spec, $"Lapila has no board named '{spec}' (its boards: {ShippedNames()}); a board " +
+            throw new ManifestError(Li.BoardFile, spec, $"Lapila has no board named '{spec}' (its boards: {ShippedNames()}); a board " +
                 "file of your own is named by its path, such as board = \"boards/my-board.toml\"");
         return shipped;
     }
@@ -89,66 +89,66 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
     public static Board Load(string spec, string baseDir)
     {
         string path = Locate(spec, baseDir);
-        if (!File.Exists(path)) throw new ManifestError(path, "no such board file");
+        if (!File.Exists(path)) throw new ManifestError(Li.BoardFile, path, "no such board file");
         var doc = Toml.Parse(File.ReadAllText(path), path);
         if (doc.HasErrors)
-            throw new ManifestError(path, string.Join("; ", doc.Diagnostics.Select(d => d.ToString())));
+            throw new ManifestError(Li.BoardFile, path, string.Join("; ", doc.Diagnostics.Select(d => d.ToString())));
         var root = doc.ToModel();
         foreach (var (key, value) in root)
         {
             if (!Keys.TryGetValue(key, out var allowed))
-                throw new ManifestError(path, $"unknown section [{key}] (a board file has [board], [memory] and [devices])");
-            if (value is not TomlTable table) throw new ManifestError(path, $"'{key}' must be a section: [{key}]");
+                throw new ManifestError(Li.BoardFile, path, $"unknown section [{key}] (a board file has [board], [memory] and [devices])");
+            if (value is not TomlTable table) throw new ManifestError(Li.BoardFile, path, $"'{key}' must be a section: [{key}]");
             foreach (var field in table.Keys)
                 if (!allowed.Contains(field))
-                    throw new ManifestError(path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
+                    throw new ManifestError(Li.BoardFile, path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
         }
-        var board = root.TryGetValue("board", out var b) ? (TomlTable)b : throw new ManifestError(path, "a board file needs a [board] section with its triple");
-        var memory = root.TryGetValue("memory", out var m) ? (TomlTable)m : throw new ManifestError(path, "a board file needs a [memory] section: its flash (or image) and its ram");
+        var board = root.TryGetValue("board", out var b) ? (TomlTable)b : throw new ManifestError(Li.BoardFile, path, "a board file needs a [board] section with its triple");
+        var memory = root.TryGetValue("memory", out var m) ? (TomlTable)m : throw new ManifestError(Li.BoardFile, path, "a board file needs a [memory] section: its flash (or image) and its ram");
 
         string name = board.TryGetValue("name", out var n) && n is string s ? s : System.IO.Path.GetFileNameWithoutExtension(path);
         string triple = board.TryGetValue("triple", out var t) && t is string ts
             ? ts
-            : throw new ManifestError(path, "[board] needs the triple: triple = \"aarch64-none-elf\"");
+            : throw new ManifestError(Li.BoardFile, path, "[board] needs the triple: triple = \"aarch64-none-elf\"");
         BuildTarget target;
         try { target = BuildTarget.Parse(triple); }
-        catch (ArgumentException e) { throw new ManifestError(path, $"[board] triple: {e.Message}"); }
+        catch (ArgumentException e) { throw new ManifestError(Li.BoardFile, path, $"[board] triple: {e.Message}"); }
         if (target.HasOs)
-            throw new ManifestError(path, $"[board] triple: {triple} has an operating system, and a board file is for a target without one (its OS is none)");
+            throw new ManifestError(Li.BoardFile, path, $"[board] triple: {triple} has an operating system, and a board file is for a target without one (its OS is none)");
         if (board.TryGetValue("cpu", out var cpu))
-            target = target with { Cpu = cpu as string ?? throw new ManifestError(path, "'cpu' is a string") };
+            target = target with { Cpu = cpu as string ?? throw new ManifestError(Li.BoardFile, path, "'cpu' is a string") };
         if (board.TryGetValue("features", out var f))
         {
             if (f is not TomlArray a || !a.All(x => x is string))
-                throw new ManifestError(path, "'features' is a list of strings: features = [\"...\"]");
+                throw new ManifestError(Li.BoardFile, path, "'features' is a list of strings: features = [\"...\"]");
             target = target with { Features = a.Cast<string>().Select(x => x.Length > 0 && x[0] is '+' or '-' ? x : "+" + x).ToList() };
         }
 
         Region? flash = memory.TryGetValue("flash", out var fl) ? RegionOf(fl, "flash", path) : null;
         ulong? image = memory.TryGetValue("image", out var im) ? Address(im, "image", path) : null;
         if (flash is null == image is null)
-            throw new ManifestError(path, flash is null
+            throw new ManifestError(Li.BoardFile, path, flash is null
                 ? "[memory] needs where the code goes: flash = { start = ..., size = ... }, or for a board without flash the address the image is loaded at, image = 0x80000"
                 : "[memory] has flash and image: a board with flash writes flash, one without it writes image, the address the image is loaded at");
         var ram = memory.TryGetValue("ram", out var r)
             ? RegionOf(r, "ram", path)
-            : throw new ManifestError(path, "[memory] needs the RAM: ram = { start = ..., size = ... }");
+            : throw new ManifestError(Li.BoardFile, path, "[memory] needs the RAM: ram = { start = ..., size = ... }");
         if (image is { } at && !ram.Holds(at))
-            throw new ManifestError(path, $"[memory] image: 0x{at:X} isn't inside ram (0x{ram.Start:X} up to 0x{ram.End:X}): a board without flash runs the image from RAM");
+            throw new ManifestError(Li.BoardFile, path, $"[memory] image: 0x{at:X} isn't inside ram (0x{ram.Start:X} up to 0x{ram.End:X}): a board without flash runs the image from RAM");
         if (flash is { } fr && fr.Start < ram.End && ram.Start < fr.End)
-            throw new ManifestError(path, "[memory] flash and ram overlap: they are two separate regions");
+            throw new ManifestError(Li.BoardFile, path, "[memory] flash and ram overlap: they are two separate regions");
         ulong limit = target.Size == 32 ? 1UL << 32 : ulong.MaxValue;
         foreach (var (what, region) in new[] { ("ram", ram) }.Concat(flash is { } fx ? [("flash", fx)] : []))
             if (region.Start > limit - region.Size)
-                throw new ManifestError(path, $"[memory] {what} ends past the {target.Size}-bit address space");
+                throw new ManifestError(Li.BoardFile, path, $"[memory] {what} ends past the {target.Size}-bit address space");
         Device? rtc = null;
         if (root.TryGetValue("devices", out var d) && ((TomlTable)d).TryGetValue("rtc", out var rv))
         {
             if (rv is not TomlTable rt || rt.Keys.Any(k => k is not ("kind" or "base")) || rt["kind"] is not string kind
                 || !rt.ContainsKey("base"))
-                throw new ManifestError(path, "[devices] rtc is the board's real-time clock: rtc = { kind = \"pl031\", base = 0x09010000 }");
+                throw new ManifestError(Li.BoardFile, path, "[devices] rtc is the board's real-time clock: rtc = { kind = \"pl031\", base = 0x09010000 }");
             if (!RtcKinds.Contains(kind))
-                throw new ManifestError(path, $"[devices] rtc: the standard library has no manager for a '{kind}' clock (kinds: {string.Join(", ", RtcKinds)})");
+                throw new ManifestError(Li.BoardFile, path, $"[devices] rtc: the standard library has no manager for a '{kind}' clock (kinds: {string.Join(", ", RtcKinds)})");
             rtc = new Device(kind, Address(rt["base"], "rtc.base", path));
             target = target with { Rtc = kind };
         }
@@ -157,9 +157,9 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         {
             if (sv is not TomlTable st || st.Keys.Any(k => k is not ("kind" or "base")) || st["kind"] is not string kind
                 || !st.ContainsKey("base"))
-                throw new ManifestError(path, "[devices] serial is the board's serial port: serial = { kind = \"pl011\", base = 0x09000000 }");
+                throw new ManifestError(Li.BoardFile, path, "[devices] serial is the board's serial port: serial = { kind = \"pl011\", base = 0x09000000 }");
             if (!SerialKinds.Contains(kind))
-                throw new ManifestError(path, $"[devices] serial: the standard library writes to no '{kind}' serial port (kinds: {string.Join(", ", SerialKinds)})");
+                throw new ManifestError(Li.BoardFile, path, $"[devices] serial: the standard library writes to no '{kind}' serial port (kinds: {string.Join(", ", SerialKinds)})");
             serial = new Device(kind, Address(st["base"], "serial.base", path));
             target = target with { Serial = kind };
         }
@@ -170,16 +170,16 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
     private static Region RegionOf(object value, string key, string path)
     {
         if (value is not TomlTable t || t.Keys.Any(k => k is not ("start" or "size")) || !t.ContainsKey("start") || !t.ContainsKey("size"))
-            throw new ManifestError(path, $"[memory] {key} is a region: {key} = {{ start = 0x20000000, size = \"64kib\" }}");
+            throw new ManifestError(Li.BoardFile, path, $"[memory] {key} is a region: {key} = {{ start = 0x20000000, size = \"64kib\" }}");
         ulong start = Address(t["start"], $"{key}.start", path);
         ulong size = Size(t["size"], $"{key}.size", path);
-        if (size == 0) throw new ManifestError(path, $"[memory] {key}.size is 0: a region holds at least one byte");
+        if (size == 0) throw new ManifestError(Li.BoardFile, path, $"[memory] {key}.size is 0: a region holds at least one byte");
         return new Region(start, size);
     }
 
     /// An address: a non-negative integer.
     private static ulong Address(object value, string key, string path) =>
-        value is long n && n >= 0 ? (ulong)n : throw new ManifestError(path, $"[memory] {key} is an address, a non-negative integer such as 0x80000");
+        value is long n && n >= 0 ? (ulong)n : throw new ManifestError(Li.BoardFile, path, $"[memory] {key} is an address, a non-negative integer such as 0x80000");
 
     /// A size: a non-negative integer of bytes, or a string with a unit.
     private static ulong Size(object value, string key, string path)
@@ -196,7 +196,7 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
                     && count <= ulong.MaxValue / bytes)
                     return count * bytes;
         }
-        throw new ManifestError(path, $"[memory] {key} is a size: a byte count such as 0x10000, or a count with a unit such as \"64kib\" (b, kib, mib, gib, kb, mb, gb)");
+        throw new ManifestError(Li.BoardFile, path, $"[memory] {key} is a size: a byte count such as 0x10000, or a count with a unit such as \"64kib\" (b, kib, mib, gib, kb, mb, gb)");
     }
 
     /// The link script of the board's memory map. It defines the symbols the builder's entry and the managers use:

@@ -268,8 +268,8 @@ public static partial class LanguageServer
         }
     }
 
-    // `file:line:col: warning: text`, the file possibly holding a drive's colon.
-    private static readonly Regex Warning = new(@"^(?<file>.*):(?<line>\d+):(?<col>\d+): warning: (?<text>.*)$",
+    // `warning[LI-W305]: file:line:col: text`, the file possibly holding a drive's colon.
+    private static readonly Regex Warning = new(@"^warning\[[A-Z]+-W\d+\]: (?<file>.*):(?<line>\d+):(?<col>\d+): (?<text>.*)$",
         RegexOptions.Singleline);
 
     /// The document's errors and warnings: what `lapila check` reports for it, read from the editor's text.

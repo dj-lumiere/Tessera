@@ -105,16 +105,16 @@ public sealed partial class FunctionGen
             if (putWork)
             {
                 if (arg is ValueRef named && RunsOnce(named.Name, out var once))
-                    throw Err(arg.Pos, $"{once}, so the work in '{named.Name}' runs once, and {ticket}.put_work takes it over "
+                    throw Err(Li.WorkRunsOnce, arg.Pos, $"{once}, so the work in '{named.Name}' runs once, and {ticket}.put_work takes it over "
                         + $"with steal: {ticket}.put_work(steal {named.Name})");
                 if (arg is WorkExpr made && WorkOnce(made) is { } madeOnce)
-                    throw Err(arg.Pos, $"{madeOnce}, so this work runs once and goes to its ticket with steal: bind it to a name "
+                    throw Err(Li.WorkRunsOnce, arg.Pos, $"{madeOnce}, so this work runs once and goes to its ticket with steal: bind it to a name "
                         + $"first, work: {WorkType(made)} = {made.Routine.Name}.to[Work](...), then {ticket}.put_work(steal work)");
                 continue;
             }
             if (arg is StealExpr { Value: ValueRef stolen } && RunsOnce(stolen.Name, out var stolenOnce)
                 && (plan.Decl.IsLibrary || parameters.ElementAtOrDefault(i)?.Type is not { Name: "Work", Path: null }))
-                throw Err(arg.Pos, $"{stolenOnce}, so the work in '{stolen.Name}' runs once and goes to a ticket: "
+                throw Err(Li.WorkRunsOnce, arg.Pos, $"{stolenOnce}, so the work in '{stolen.Name}' runs once and goes to a ticket: "
                     + $"t.put_work(steal {stolen.Name}). Handed to '{plan.Decl.Name}', no ticket would run it");
         }
     }
@@ -127,8 +127,8 @@ public sealed partial class FunctionGen
         _c.FreeCandidates(w.Routine.Name, _env.File, w.Routine.Pos, w.Routine.Path) switch
         {
             [var only] => only,
-            [] => throw Err(w.Routine.Pos, $"'{w.Routine.Name}' isn't a routine: to[Work] makes a piece of work of a routine and its arguments"),
-            _ => throw Err(w.Routine.Pos, $"'{w.Routine.Name}' has more than one overload: a piece of work names one routine, so give the one you mean a name of its own"),
+            [] => throw Err(Li.WorkForm, w.Routine.Pos, $"'{w.Routine.Name}' isn't a routine: to[Work] makes a piece of work of a routine and its arguments"),
+            _ => throw Err(Li.WorkForm, w.Routine.Pos, $"'{w.Routine.Name}' has more than one overload: a piece of work names one routine, so give the one you mean a name of its own"),
         };
 
     /// `Work[T]`, T the routine's result (`None` for none), carrying what the routine can throw.
@@ -220,9 +220,9 @@ public sealed partial class FunctionGen
             string throws = string.Join(", ", fails.Where(f => !ticket.Fails.Contains(f)).Select(f => f.Name));
             string fix = $"receive them inside {entry} with try or check, or put it on a ticket of its own";
             if (ticket.Fails.Count > 0)
-                throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, which the ticket '{spelled}' can't: its type took the list "
+                throw Err(Li.WorkFailures, plan.Args[0].Pos, $"{entry} can throw {throws}, which the ticket '{spelled}' can't: its type took the list "
                     + $"of its first work's routine, {ticket.FailsFrom} ({string.Join(", ", ticket.Fails.Select(f => f.Name))}). {Capitalized(fix)}");
-            throw Err(plan.Args[0].Pos, $"{entry} can throw {throws}, and the ticket '{spelled}' fails nothing: its type took the "
+            throw Err(Li.WorkFailures, plan.Args[0].Pos, $"{entry} can throw {throws}, and the ticket '{spelled}' fails nothing: its type took the "
                 + $"list of its first work's routine, {first ?? "which"}{(first is null ? "" : ",")} which fails nothing. {Capitalized(fix)}");
         }
         // The routines of the put are built for the list of the work it puts: the ticket's own, or the work's when the
@@ -285,21 +285,21 @@ public sealed partial class FunctionGen
     {
         var names = routine.Params.Select(p => p.Name).ToList();
         if (names.Count > 4)
-            throw Err(w.Pos, $"a piece of work takes at most four arguments, and '{routine.DisplayName}' has {names.Count}: hand it a record of them");
+            throw Err(Li.WorkArguments, w.Pos, $"a piece of work takes at most four arguments, and '{routine.DisplayName}' has {names.Count}: hand it a record of them");
         var byName = new Dictionary<string, Expr>();
         for (int i = 0; i < w.Args.Count; i++)
         {
             string? name = w.ArgNames?.ElementAtOrDefault(i);
             if (name is null)
-                throw Err(w.Args[i].Pos, $"to[Work] takes the arguments by the names of the parameters of '{routine.DisplayName}': "
+                throw Err(Li.WorkArguments, w.Args[i].Pos, $"to[Work] takes the arguments by the names of the parameters of '{routine.DisplayName}': "
                     + $"{w.Routine.Name}.to[Work]({string.Join(", ", names.Select(n => $"{n}: ..."))})");
             if (!names.Contains(name))
-                throw Err(w.Args[i].Pos, $"'{routine.DisplayName}' has no parameter named '{name}': its parameters are {string.Join(", ", names)}");
+                throw Err(Li.WorkArguments, w.Args[i].Pos, $"'{routine.DisplayName}' has no parameter named '{name}': its parameters are {string.Join(", ", names)}");
             if (!byName.TryAdd(name, w.Args[i]))
-                throw Err(w.Args[i].Pos, $"'{name}' is given twice");
+                throw Err(Li.DuplicateNamedArgument, w.Args[i].Pos, $"'{name}' is given twice");
         }
         if (names.FirstOrDefault(n => !byName.ContainsKey(n)) is { } missing)
-            throw Err(w.Pos, $"to[Work] gives every parameter of '{routine.DisplayName}' its value, and '{missing}' has none");
+            throw Err(Li.WorkArguments, w.Pos, $"to[Work] gives every parameter of '{routine.DisplayName}' its value, and '{missing}' has none");
         return names.Select(n => byName[n]).ToList();
     }
 
@@ -310,7 +310,7 @@ public sealed partial class FunctionGen
         var routine = WorkRoutine(w);
         var args = WorkArgs(w, routine);
         if (Infer(w.Routine) is not CallableType ct)
-            throw Err(w.Routine.Pos, $"'{w.Routine.Name}' has no one signature here: write its instance, {w.Routine.Name}[T].to[Work](...)");
+            throw Err(Li.WorkForm, w.Routine.Pos, $"'{w.Routine.Name}' has no one signature here: write its instance, {w.Routine.Name}[T].to[Work](...)");
         bool none = ct.Ret is VoidType;
         int n = args.Count;
         TypeRef Known(DType t) => new(t.Name, [], w.Pos) { Known = t };
@@ -345,7 +345,7 @@ public sealed partial class FunctionGen
         {
             var arg = args[i];
             if (IsAccessType(ct.Params[i]) && arg is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(arg) is not PtrType)
-                throw Err(arg.Pos, $"the access for '{routine.Params[i].Name}' is borrowed right in the work's arguments, and "
+                throw Err(Li.WorkArguments, arg.Pos, $"the access for '{routine.Params[i].Name}' is borrowed right in the work's arguments, and "
                     + $"nothing would give it back: borrow it in a name first, held: {(ct.Params[i] is PtrType { Pointee: { } lent } ? lent : ct.Params[i])} <- ..., hand the work "
                     + "that name, and drop it after the ticket's retrieve");
             ctorArgs.Add(arg);

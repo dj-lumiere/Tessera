@@ -186,7 +186,7 @@ public sealed partial class Compiler
                 break;
             }
             default:
-                throw new CompileError(pos, $"{t} can't be passed by value at the C ABI");
+                throw new CompileError(Li.TypeNotSupported, pos, $"{t} can't be passed by value at the C ABI");
         }
     }
 

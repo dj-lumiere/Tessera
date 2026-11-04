@@ -19,7 +19,7 @@ public sealed partial class FunctionGen
     private Val StampSlot(CallExpr c)
     {
         if (!_decl.IsLibrary)
-            throw Err(c.Pos, $"{c.Name} belongs to the standard library: a stamp is taken with stamp() and read with fetch()");
+            throw Err(Li.StampProblem, c.Pos, $"{c.Name} belongs to the standard library: a stamp is taken with stamp() and read with fetch()");
         bool kept = c.Name == "stamp_slot_kept";
         var resultType = kept ? OptionalPointerType(IntType.U(32), c.Pos) : new PtrType(IntType.U(32));
         if (_c.Prechecking) return new Val("null", resultType);
@@ -28,9 +28,9 @@ public sealed partial class FunctionGen
         {
             if (kept) return new Val("null", resultType);
             if (t is not RecordType { Decl.IsEntity: true })
-                throw Err(c.Pos, $"stamp() is taken of an entity, and {t} isn't one: a value of it is copied where it goes, "
+                throw Err(Li.StampProblem, c.Pos, $"stamp() is taken of an entity, and {t} isn't one: a value of it is copied where it goes, "
                     + "so keep a copy instead of a stamp");
-            throw Err(c.Pos, $"{t} has no slot for stamps: the builder gives one to an entity whose type the program writes as "
+            throw Err(Li.StampProblem, c.Pos, $"{t} has no slot for stamps: the builder gives one to an entity whose type the program writes as "
                 + $"Stamped[{t.Name}] somewhere in its source, so write that type where the stamp is kept (s: Stamped[{t.Name}] = x.stamp())");
         }
         var at = Eval(c.Args[0], new PtrType(t));
@@ -44,9 +44,9 @@ public sealed partial class FunctionGen
     {
         if (_c.KeepsStamp(t)) return;
         if (t is not RecordType { Decl.IsEntity: true })
-            throw Err(pos, $"stamp() is taken of an entity, and {t} isn't one: a value of it is copied where it goes, "
+            throw Err(Li.StampProblem, pos, $"stamp() is taken of an entity, and {t} isn't one: a value of it is copied where it goes, "
                 + "so keep a copy instead of a stamp");
-        throw Err(pos, $"{t} has no slot for stamps: the builder gives one to an entity whose type the program writes as "
+        throw Err(Li.StampProblem, pos, $"{t} has no slot for stamps: the builder gives one to an entity whose type the program writes as "
             + $"Stamped[{t.Name}] somewhere in its source, so write that type where the stamp is kept (s: Stamped[{t.Name}] = x.stamp())");
     }
 
@@ -121,7 +121,7 @@ public sealed partial class FunctionGen
     private Val StampsBuiltin(CallExpr c)
     {
         if (!_decl.IsLibrary)
-            throw Err(c.Pos, $"{c.Name} belongs to the standard library: a stamp is taken with stamp() and read with fetch()");
+            throw Err(Li.StampProblem, c.Pos, $"{c.Name} belongs to the standard library: a stamp is taken with stamp() and read with fetch()");
         if (c.Name == "holds_stamps")
             return new Val(!_c.Prechecking && _c.HoldsStamps(Resolve(c.TypeArgs[0])) ? "true" : "false", BoolType.Instance);
         if (_c.Prechecking) return new Val("", VoidType.Instance);

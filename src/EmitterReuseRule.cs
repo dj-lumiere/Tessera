@@ -272,11 +272,11 @@ public static class EmitterReuseRule
             // The first pass reports what runs out on one pass, so a pass after it reports what the loop brought round.
             var again = _loops.LastOrDefault(x => x.Again);
             if (again.Loop is not null)
-                throw new CompileError(l.Pos, $"this for loop over '{source}' runs zero times on every pass of the loop on line "
+                throw new CompileError(Li.EmitterRunOut, l.Pos, $"this for loop over '{source}' runs zero times on every pass of the loop on line "
                     + $"{again.Loop.Pos.Line} after the first: you made '{source}' outside that loop, and "
                     + (emptied == l.Pos ? "this for loop" : $"the for loop on line {emptied.Line}") + " takes every item from it on the first pass. Make the emitter inside the loop, just before "
                     + $"this for loop ({remake}), so each pass walks the collection from its start");
-            throw new CompileError(l.Pos, $"this for loop over '{source}' runs zero times: the for loop on line {emptied.Line} "
+            throw new CompileError(Li.EmitterRunOut, l.Pos, $"this for loop over '{source}' runs zero times: the for loop on line {emptied.Line} "
                 + $"already took every item from it, and an emitter hands out each item once. Make a new emitter for this "
                 + $"loop ({remake}) to walk the collection again");
         }

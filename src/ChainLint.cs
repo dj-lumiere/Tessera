@@ -67,7 +67,7 @@ public static class ChainLint
         {
             if (ops <= MaxOperations) continue;
             var at = Head(e).Pos;
-            warnings.Add($"{new Pos(at.File, line, line == at.Line ? at.Col : 1)}: warning: {ops} calls of a chain on one line; "
+            warnings.Add($"{Li.ChainTooLong.Head}: {new Pos(at.File, line, line == at.Line ? at.Col : 1)}: {ops} calls of a chain on one line; "
                 + $"break it before each `.`, one call per line, or name a part of it, so that each line holds at most "
                 + $"{MaxOperations} (a binding says what the steps so far give)");
             break;

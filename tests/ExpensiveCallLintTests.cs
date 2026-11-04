@@ -49,7 +49,7 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.li:24:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.li:24:21: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself, so it runs on every pass", warning);
         Assert.Contains("Move it out of the loop", warning);
     }
@@ -76,7 +76,7 @@ public class ExpensiveCallLintTests
                     jump head(i + 1, total)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.li:28:21: warning: 'unexplained' is @expensive, and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.li:28:21: 'unexplained' is @expensive, and this call is on a loop: "
             + "block 'body' is on the loop that 'latch' closes by going back to 'head'", warning);
     }
 
@@ -140,9 +140,9 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains("t.li:27:38: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.li:27:38: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself", warnings[0]);
-        Assert.Contains("t.li:30:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.li:30:21: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'even' goes back to 'loop', closing a loop", warnings[1]);
     }
 

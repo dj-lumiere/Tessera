@@ -54,7 +54,7 @@ public static class Derive
                 {
                     string concept = arg.Value;
                     if (!Methods.TryGetValue(concept, out var method))
-                        throw new CompileError(annotation.Pos,
+                        throw new CompileError(Li.DeriveProblem, annotation.Pos,
                             $"@derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
                     Check(type, concept, method, declared, annotation.Pos);
                     derived.AddRange(Parse(type, Source(type, concept, method, implicitly: false), implicitly: false));
@@ -109,28 +109,28 @@ public static class Derive
     {
         string name = Name(type);
         if (declared.Contains((name, method)))
-            throw new CompileError(at, $"{name} derives {concept} and also declares '{method}'; keep one");
+            throw new CompileError(Li.DeriveProblem, at, $"{name} derives {concept} and also declares '{method}'; keep one");
         if (type is VariantDecl v)
         {
             if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
-                throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
+                throw new CompileError(Li.DeriveProblem, at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
             if (concept is "Equatable" or "Hashable" or "Comparable"
                 && v.Branches.FirstOrDefault(c => c.Type.Name is "PointedCell" or "Addr") is { } pointerBranch)
-                throw new CompileError(at, $"{name} can't derive {concept}: its branch {pointerBranch.Name} is a pointer; declare '{method}'");
+                throw new CompileError(Li.DeriveProblem, at, $"{name} can't derive {concept}: its branch {pointerBranch.Name} is a pointer; declare '{method}'");
             return;
         }
         if (type is ChoiceDecl { IsFlags: true } && concept == "Comparable")
-            throw new CompileError(at, $"{name} is a flags type, a set of members, which has no order to derive Comparable from");
+            throw new CompileError(Li.DeriveProblem, at, $"{name} is a flags type, a set of members, which has no order to derive Comparable from");
         if (type is not RecordDecl r) return;
         if (r.AnnotationNamed("llvm") is not null)
-            throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
+            throw new CompileError(Li.DeriveProblem, at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
-            throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
+            throw new CompileError(Li.DeriveProblem, at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
         // A pointer compares by address only through same, on purpose (see Type-System, PointedCell<T> and T's API),
         // so there's nothing to derive.
         if (concept is "Equatable" or "Hashable" or "Comparable"
             && r.Fields.FirstOrDefault(f => f.Type.Name is "PointedCell" or "Addr") is { } pointer)
-            throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
+            throw new CompileError(Li.DeriveProblem, at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
 
     /// Parses generated source in the type's file. Each routine is marked `@derived` (`@derived(implicit)` when the
@@ -507,7 +507,7 @@ public static class Derive
         {
             case "represent_into" or "diagnose_into":
                 if (c.Members.Count == 0)
-                    throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
+                    throw new CompileError(Li.DeriveProblem, c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
                 sb.Append(WriterHeader(c.Name, method, "T"));
                 sb.Append($"needs T obeys {Fmt}Writer\n");

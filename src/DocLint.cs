@@ -56,7 +56,7 @@ public static class DocLint
         int first = r.Annotations.Where(a => a.Pos.File == r.Pos.File).Select(a => a.Pos.Line).Append(r.Pos.Line).Min();
         if (DocAbove(lines, first) is not { } doc)
         {
-            warnings.Add($"{r.Pos}: warning: routine '{name}' has no doc comment: write ### lines above it saying what "
+            warnings.Add($"{Li.NoDocComment.Head}: {r.Pos}: routine '{name}' has no doc comment: write ### lines above it saying what "
                 + "it does, with a :param line for each parameter and a :returns: line unless it returns None");
             return;
         }
@@ -64,12 +64,12 @@ public static class DocLint
         var documented = fields.Where(f => f.Kind == "param").Select(f => f.Name).ToList();
         var parameters = r.Params.Select(p => p.Name).Where(p => p != "me").ToList();
         foreach (string p in parameters.Where(p => !documented.Contains(p)))
-            warnings.Add($"{r.Pos}: warning: the doc comment of '{name}' has no :param line for '{p}'");
+            warnings.Add($"{Li.DocLacksParam.Head}: {r.Pos}: the doc comment of '{name}' has no :param line for '{p}'");
         foreach (string p in documented.Where(p => !parameters.Contains(p)))
-            warnings.Add($"{r.Pos}: warning: the doc comment of '{name}' has a :param line for '{p}', which is not one "
+            warnings.Add($"{Li.DocUnknownParam.Head}: {r.Pos}: the doc comment of '{name}' has a :param line for '{p}', which is not one "
                 + "of its parameters");
         if (r.ReturnType.Name != "None" && !fields.Any(f => f.Kind == "returns"))
-            warnings.Add($"{r.Pos}: warning: the doc comment of '{name}' has no :returns: line, and it returns "
+            warnings.Add($"{Li.DocLacksReturns.Head}: {r.Pos}: the doc comment of '{name}' has no :returns: line, and it returns "
                 + $"{r.ReturnType}");
     }
 
