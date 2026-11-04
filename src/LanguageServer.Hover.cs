@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Hover: what the name under the cursor is. A routine, a type, a preset, a block, a case, or a field shows the
 /// declaration as its source writes it, with its `///` doc; a call shows what each type parameter of the routine stands
@@ -59,7 +59,7 @@ public static partial class LanguageServer
     private static string HoverText(string code, string? doc, IEnumerable<(string Name, string Type)>? bindings = null)
     {
         // The fence names the language the Rider plugin registers for highlighting code in hover.
-        var sb = new StringBuilder($"```tessera\n{code}\n```");
+        var sb = new StringBuilder($"```lapila\n{code}\n```");
         var shown = (bindings ?? []).Where(b => b.Name != b.Type).ToList();
         // One paragraph each: an editor drops a trailing-space line break, which would run them into one line.
         if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("\n\n", shown.Select(b => Ko($"`{b.Name}` is `{b.Type}`", $"`{b.Name}`은(는) `{b.Type}`입니다"))));
@@ -196,7 +196,7 @@ public static partial class LanguageServer
     private static (List<string> Summary, List<(string Kind, string? Name, string Text)> Fields) ParseDoc(string doc) =>
         ApiDocs.ParseDoc(doc);
 
-    /// A doc as hover markdown, the way RazorForge and Suflae show theirs: the summary, the type parameters and the
+    /// A doc as hover markdown, the way Revare and Mielia show theirs: the summary, the type parameters and the
     /// parameters as lists, then Returns, Throws, Absent, Note, and See.
     private static string RenderDoc(string doc)
     {

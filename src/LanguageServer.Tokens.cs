@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Semantic tokens: what each name in a document is, so an editor colors a record apart from an entity or a concept, a
 /// block from a value. A type name's kind is what the builder resolves it to from the document's file (a record,
@@ -535,7 +535,7 @@ public static partial class LanguageServer
                 : ReceiverType(m.Receiver) is { Name: "PointedCell", Path: null, Args: [TypeArgType inner] } ? inner.Type.ToString()
                 : null;
             if (pointee is null) return null;
-            string ptr = Path.Combine("Standard", "System", "PointedCell.te");
+            string ptr = Path.Combine("Standard", "System", "PointedCell.li");
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);

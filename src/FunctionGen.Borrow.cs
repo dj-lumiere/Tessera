@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace Tessera;
+namespace Lapila;
 
 /// `x: &T <- value [from manager]`: a line that borrows. With a `&T` / `&[T]` declared, it borrows a place from the
 /// manager (STACK when none is named) and puts the value in it: three steps, the manager's borrow, the BorrowedCell or BorrowedSlice
@@ -412,7 +412,7 @@ public sealed partial class FunctionGen
     private string SlotBytes => _slotBytes.ToString(CultureInfo.InvariantCulture);
 
     /// The largest frame a routine that calls no other routine may have and still skip borrow_frame: well inside the
-    /// room (StackManager_freestanding.te's STACK_MARGIN, 4096 bytes) its caller's own check left above the stack's
+    /// room (StackManager_freestanding.li's STACK_MARGIN, 4096 bytes) its caller's own check left above the stack's
     /// bottom.
     private const long LeafFrameBytes = 1024;
 

@@ -1,0 +1,473 @@
+# Lapila stdlib: BorrowedSlice[T] and BorrowedCell[T], memory taken from a manager
+#
+# `BorrowedSlice[T]` is a run of values and `BorrowedCell[T]` one value, both from a MemoryManager, and each is given back exactly
+# once: `drop` gives the memory back, and so does handing the value to a routine that takes a `BorrowedSlice` or a `BorrowedCell` (it
+# gives it back then). The block holds the values and nothing else: plain `T` values in a row.
+#
+# Only a `BorrowedCell[T]` reads and writes its value (`load`, `store`), and only a `@T` its place (`peek`, `poke`). A
+# `BorrowedSlice[T]` and a `@[T]` reach their elements the same way: `m[i]` (getitem) is the value, a copy, `m.getslot(i)` is
+# its place as a `@T`, and `m.getslice(start, count)` is a run of them as a `@[T]`. An entity element doesn't come out
+# as a copy: look at it through `getslot(i)`, or take it out with `steal m.getslot(i) as old inject new`, which puts
+# `new` in its place in the same step.
+# Lending is passing a BorrowedSlice where a `@[T]` is expected (it passes `getslice()`, every value) or a BorrowedCell where a `@T`
+# is (it passes `getview()`).
+#
+# A literal names the manager with `from`: `xs: &[U64] <- [0] * n from HEAP` is a BorrowedSlice of n zeros (the count may be
+# known only while running), and `node: &Node <- (value: 1, next: None()) from HEAP` a BorrowedCell of one value.
+#
+# The build checks that memory is given back once, and not used after. A second give-back that code the build doesn't
+# follow makes crashes with `DoubleFreeError` under the heap check (`[debug] heap-check`).
+#
+# An empty BorrowedSlice (count 0) holds an aligned address that is never read, and always keeps its manager. A place
+# declared `lateinit` and not yet filled holds all zero bytes: `drop` on it does nothing, and a read crashes.
+
+module System
+
+### The routine Hosted's AccessManager puts here before it hands out its first access, or hollow: memory given back
+### or moved by a BorrowedSlice or a BorrowedCell is handed to it first (its address and size in bytes), and it waits while another flow
+### holds an access inside that range. A `Callable[(Addr, U64), @[Byte]]` that gives an empty view, or the sentence of
+### the `DeadlockError` to throw (a call through an address can't carry a failure).
+@target(os: not "none")
+global ACCESS_RANGE_CHECK: &Addr
+
+### Hands the block at `at`, `size` bytes, to the AccessManager's check before it is given back or moved, when an
+### access was ever handed out.
+### :param at: The block.
+### :param size: Its size in bytes.
+### :throws: Throws `DeadlockError` when the flow holds an access inside the block, or waits in a cycle for one.
+@target(os: not "none")
+@inline
+@track_caller
+secret routine check_access_range(at: Addr, size: U64) -> None
+    hook: Addr = ACCESS_RANGE_CHECK.peek_unbroken()
+    if hook.is_hollow()
+        return
+    check: Callable[(Addr, U64), @[Byte]] = bitcast(hook)
+    sentence: @[Byte] = check.call(at, size)
+    if sentence.count != 0
+        throw DeadlockError(description: sentence)
+    return
+
+### Without an operating system there is no AccessManager: nothing to check.
+### :param at: The block.
+### :param size: Its size in bytes.
+@target(os: "none")
+@inline
+secret routine check_access_range(at: Addr, size: U64) -> None
+    return
+
+### The address an empty memory holds: aligned for `T` and never zero. It is never read, since every access is range-checked.
+### :typeparam T: The value type.
+### :returns: An aligned, non-zero address.
+@inline
+routine dangling[T]() -> @T
+    r: @T = inttoptr[U64, Addr](alignof[T]()).to[@T]()
+    return r
+
+### An empty memory from `manager`: no values and nothing taken, so it can't fail.
+### :param manager: Where the memory would come from and goes back to.
+### :returns: The empty memory, which keeps the manager.
+common routine BorrowedSlice[T].empty(manager: @MemoryManager) -> Me
+    return Me(data: dangling[T](), count: 0, manager)
+
+### Takes room for `count` values of `T` from `manager`.
+### :typeparam T: The value type.
+### :param count: The number of values, more than 0.
+### :param manager: Where the memory comes from.
+### :returns: The first value's address, or None when the manager has none to give (also when the size doesn't fit in
+###     U64, which is more memory than any manager has).
+@expensive("allocates memory")
+secret routine take_block[T](count: U64, manager: @MemoryManager) -> @T?
+    if count.mul_overflows(sizeof[T]())
+        return None()
+    bytes: U64 = sizeof[T]() * count
+    # Values of no size still take a block of their own, so the manager has an address to give.
+    size: U64 = when
+        bytes == 0 => 1
+        else => bytes
+    taken: Addr = manager.borrow(size, align: alignof[T]())
+    return taken.to[@T?]()
+
+### Gives the block of `count` values at `data` back to `manager`, once no other flow holds an access inside it.
+### :typeparam T: The value type.
+### :param data: The first value.
+### :param count: The number of values.
+### :param manager: Where the memory came from.
+@track_caller
+@expensive("frees memory")
+secret routine give_block[T](data: @T, count: U64, manager: @MemoryManager) -> None
+    check_access_range(at: data, size: sizeof[T]() * count)
+    manager.give_back(data)
+    return
+
+# == BorrowedSlice[T] ====================================================================================================
+
+### `count` values of `T` from a manager, given back exactly once with `drop`. An entity: never copied, lent as a
+### `@BorrowedSlice[T]`. Its elements are reached as a value (`m[i]`), a `@T` (`getslot`), or a `@[T]` (`getslice`).
+### :typeparam T: The element type.
+entity BorrowedSlice[T]
+obeys ViewingIndexable[BorrowedSlice[T], T]
+    data: @T
+    count: U64
+    manager: @MemoryManager
+
+### `count` uninitialized values of `T` from `manager`, given back with `drop`. A count of 0 takes nothing and keeps
+### the manager.
+### :param count: The number of values.
+### :param manager: Where the memory comes from and goes back to.
+### :returns: The memory.
+### :throws: Throws `OutOfMemoryError` when the manager has no memory to give, or when the size of `count` values
+###     doesn't fit in U64.
+@expensive("allocates memory")
+common routine BorrowedSlice[T].construct(count: U64, manager: @MemoryManager) -> Me
+    if count == 0
+        return Me(data: dangling[T](), count: 0, manager)
+    data_made: @T? = take_block[T](count, manager)
+    if data_made.is_absent()
+        throw OutOfMemoryError()
+    data: @T = data_made.unwrap()
+    return Me(data, count, manager)
+
+### `values` written `times` over, one run after another, in memory from `manager`: what `[a, b] * n at manager`
+### makes.
+### :param values: The values to repeat.
+### :param times: How many times they are written.
+### :param manager: Where the memory comes from and goes back to.
+### :returns: The memory, `times` runs of `values`.
+### :throws: Throws `OutOfMemoryError` when the manager has no memory to give, or when the count or its size doesn't
+###     fit in U64.
+@track_caller
+@expensive("allocates memory")
+common routine BorrowedSlice[T].construct(values: @[T], times: U64, manager: @MemoryManager) -> Me
+    if values.count.mul_overflows(times)
+        throw OutOfMemoryError()
+    lateinit made: &Me
+
+    count: U64 = values.count * times
+    when check Me.construct(count, manager)
+        is Me as memory => made.store(steal memory)
+    view: @[T] = made.getslice()
+
+    if values.count == 0
+        return made
+    for i in 0 til times
+        view.getslot(i * values.count).copy(src: values.data, count: values.count)
+    then
+        return made
+
+### The number of values.
+### :returns: The count.
+routine @BorrowedSlice[T].count() -> U64
+    return me.count.peek()
+
+### The values as a view: what lending passes where a `@[T]` is expected.
+### :returns: A span over every value, valid until the memory is given back or resized.
+@track_caller
+routine @BorrowedSlice[T].getslice() -> @[T]
+    return @[T].construct(data: me.data.peek(), count: me.count.peek())
+
+### The `count` values from `start` as a view.
+### :param start: The position of the first value.
+### :param count: The number of values.
+### :returns: A span over them, valid until the memory is given back or resized.
+### :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+@track_caller
+routine @BorrowedSlice[T].getslice(start: U64, count: U64) -> @[T]
+    return me.getslice().getslice(start, count)
+
+### The value at `index`, a copy. An entity value doesn't come out as a copy: look at it with `getslot(index)`, or
+### take it out with `steal m.getslot(index) as old inject new`.
+### :param index: The zero-based position.
+### :returns: The value.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
+routine @BorrowedSlice[T].getitem(index: U64) -> T
+    count: U64 = me.count.peek()
+    if index >= count
+        throw IndexOutOfBoundsError(index, count)
+    value: T = me.getslice().getslot(index).peek()
+    return value
+
+### The place of the value at `index`: its address, `data + index * T.data_size()`.
+### :param index: The zero-based position.
+### :returns: The place, valid until the memory is given back or resized.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @BorrowedSlice[T].getslot(index: U64) -> @T
+    return me.getslice().getslot(index)
+
+### The address of the first value: for C code that takes the values' address.
+### :returns: `data`, an aligned address that is not zero and holds nothing for an empty memory.
+@track_caller
+routine @BorrowedSlice[T].to[@T]() -> @T
+    return me.getslice().data
+
+### Exchanges the values at `first` and `second` in place. Each value is moved, never copied, so entity values swap
+### too, and neither place is left hollow. The same index twice changes nothing. Work on another thread that swaps
+### elements another flow can reach holds an exclusive access to both first (`m.getslot(i).get_exclusive_access()`),
+### taken in address order.
+### :param first: The zero-based position of one value.
+### :param second: The zero-based position of the other value.
+### :throws: Crashes with `IndexOutOfBoundsError` when `first >= count` or `second >= count`.
+@track_caller
+routine @BorrowedSlice[T].swap(first: U64, second: U64) -> None
+    me.getslice().swap(first, second)
+    return
+
+### Keeps only the first `count` values in use: no copy and no reallocation, for a buffer filled with less than it
+### holds.
+### :param count: How many of the values are in use, at most `count()`.
+### :throws: Throws `IndexOutOfBoundsError` when `count` is more than the memory holds.
+@track_caller
+routine @BorrowedSlice[T].keep_first(count: U64) -> None
+    if count > me.count.peek()
+        throw IndexOutOfBoundsError(index: count, count: me.count.peek())
+    count.poke_into(me.count)
+    return
+
+### A copy in memory of its own from the same manager, given back on its own. The values are copied bit for bit.
+### :returns: The copy.
+### :throws: Crashes with `OutOfMemoryError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates memory")
+routine @BorrowedSlice[T].duplicate() -> Me
+    view: @[T] = me.getslice()
+    copy: &Me <- Me.construct(count: view.count, manager: me.manager.peek())
+
+    if view.count == 0
+        return copy
+    copy.data.peek().copy(src: view.data, count: view.count)
+    return copy
+
+### Holds `count` values from here on, keeping the first ones (as many as both counts allow). The memory may move:
+### views and addresses taken before see it no longer. A count of 0 gives the memory back and keeps the manager.
+### :param count: The new number of values.
+### :throws: Throws `UnacceptedValueError` on a hollow memory (no manager), and `DeadlockError` when this flow holds an
+###     access inside the memory (it would wait for itself) or waits for one in a cycle. Throws `OutOfMemoryError` when the
+###     manager has no memory to give or the size doesn't fit in U64, and the memory is unchanged then.
+@track_caller
+@expensive("reallocates memory")
+@reshaping
+routine @BorrowedSlice[T].resize(count: U64) -> None
+    manager: @MemoryManager = me.manager.peek()
+    data: @T = me.data.peek()
+
+    if manager.to[Addr]().is_hollow()
+        throw UnacceptedValueError(description: "This memory is hollow (it has no manager), so it can't be resized.")
+    if count == 0
+        drop me
+        me.manager.poke(manager)
+        return
+    elseif me.count.peek() == 0
+        when check Me.construct(count, manager)
+            is Me as memory =>
+                me.poke(steal memory)
+                return
+    else
+        check_access_range(at: data, size: sizeof[T]() * me.count.peek())
+        if count.mul_overflows(sizeof[T]())
+            throw OutOfMemoryError()
+        bytes: U64 = sizeof[T]() * count
+        # Values of no size keep a block of one byte: a block of none would be given back by the move.
+        size: U64 = when
+            bytes == 0 => 1
+            else => bytes
+        moved: @MemoryManager = me.manager.peek()
+        grown: Addr = moved.reborrow(at: data, size, align: alignof[T]())
+        if grown.is_hollow()
+            throw OutOfMemoryError()
+        me.data.poke(grown.to[@T]())
+        me.count.poke(count)
+        return
+
+### Gives the memory back to its manager and leaves an empty value that keeps its manager. Does nothing on an empty value. The
+### values themselves are not destructed: see `destruct_all`.
+@track_caller
+routine @BorrowedSlice[T].destruct() -> None
+    count: U64 = me.count.peek()
+    if count > 0
+        give_block[T](data: me.data.peek(), count, manager: me.manager.peek())
+        me.data.poke(dangling[T]())
+        me.count.poke(0)
+    return
+
+### Gives the memory back and puts `value` in its place: how a global that holds memory changes (the program's end
+### gives the last one back).
+### :param value: The memory that takes its place, taken over.
+@track_caller
+routine @BorrowedSlice[T].replace(value: Me) -> None
+    drop me
+    me.poke(steal value)
+    return
+
+### Gives the memory back and keeps the manager: it holds nothing afterward, and a `resize` draws from the same manager
+### again. What a collection's `destruct` does with its storage. Nothing on a hollow or empty value.
+@track_caller
+routine @BorrowedSlice[T].give_back() -> None
+    manager: @MemoryManager = me.manager.peek()
+    drop me
+    me.manager.poke(manager)
+    return
+
+### Moves the memory out to the caller and leaves this one holding nothing, with the same manager: a `resize` draws
+### from it again.
+### :returns: The memory that was here, which the caller drops.
+routine @BorrowedSlice[T].take() -> Me
+    taken: &Me <- steal me.stride(0)
+
+    me.data.poke(dangling[T]())
+    me.count.poke(0)
+    me.manager.poke(taken.manager.peek())
+    return taken
+
+### Destructs every value, then drops the memory: for values that hold something, such as lists. Every value must be
+### initialized.
+@track_caller
+routine @BorrowedSlice[T].destruct_all() -> None
+needs T obeys Destructible
+    view: @[T] = me.getslice()
+
+    for i in 0 til view.count
+        drop view.getslot(i)
+    drop me
+    return
+
+# == BorrowedCell[T] =======================================================================================================
+
+### One value of `T` from a manager, given back exactly once with `drop`. An entity: never copied, lent as a `@BorrowedCell[T]`.
+### Read with `load`, written with `store`. Lend `getview()` where a `@T` is expected.
+### :typeparam T: The value type.
+entity BorrowedCell[T]
+    at: @T
+    manager: @MemoryManager
+
+### `value`, in memory from `manager`, given back with `drop`.
+### :param value: The value, taken over.
+### :param manager: Where the memory comes from and goes back to.
+### :returns: The box.
+### :throws: Throws `OutOfMemoryError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates memory")
+common routine BorrowedCell[T].construct(value: T, manager: @MemoryManager) -> Me
+    at_made: @T? = take_block[T](count: 1, manager)
+    if at_made.is_absent()
+        drop value
+        throw OutOfMemoryError()
+    at: @T = at_made.unwrap()
+    at.poke(steal value)
+    return Me(at, manager)
+
+### `value`, in memory from `manager`, or the failure when the manager has none to give: what `x: &T? <- try value
+### from manager` and `x: Check[&T] <- check value from manager` stand for. The try or check covers the whole line: a
+### failure making `value` borrows nothing, and when the manager has no memory `value` ends (its destruct) before the
+### failure goes on.
+### :param value: The value, taken over.
+### :param manager: Where the memory comes from and goes back to.
+### :returns: The box.
+### :throws: `OutOfMemoryError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates memory")
+common routine BorrowedCell[T].construct_or_fail(value: T, manager: @MemoryManager) -> Me
+    when take_block[T](count: 1, manager)
+        is @T as at =>
+            at.poke(steal value)
+            return Me(at, manager)
+        is None =>
+            drop value
+            throw OutOfMemoryError()
+
+### A box over a slot of the running routine's frame, with no manager: what `me.next <- value from STACK` puts in a field
+### that keeps an `E?`. Its destruct ends the value and gives nothing back, since the slot is the frame's.
+### :param at: The frame slot, which holds the value.
+### :returns: The box.
+common routine BorrowedCell[T].over_frame(at: @T) -> Me
+    no_manager: @MemoryManager = bitcast[Addr, @MemoryManager](Addr.zero())
+    return Me(at, manager: no_manager)
+
+### The value's address: what lending passes.
+### :returns: The address, valid until the box is dropped.
+### :throws: Throws `UnacceptedValueError` when the box is hollow.
+@track_caller
+routine @BorrowedCell[T].getview() -> @T
+    at: @T = me.at.peek()
+    if at.to[Addr]().is_hollow()
+        throw UnacceptedValueError(description: "This box holds nothing: it is hollow, or was dropped.")
+    return at
+
+### The value.
+### :returns: A copy of the value.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
+@track_caller
+routine @BorrowedCell[T].load() -> T
+    return me.getview().peek()
+
+### Writes `value` into the box.
+### :param value: The value to write, taken over.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
+@track_caller
+routine @BorrowedCell[T].store(value: T) -> None
+    me.getview().poke(steal value)
+    return
+
+### Writes this value into the box `dest`: `dest.store(me)` read from the value's side, for a chain that ends in the
+### box (`x.load().add(1).store_into(x)`).
+### :param dest: The box to write to.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
+@track_caller
+routine T.store_into(dest: @&T) -> None
+needs AnyType T
+    dest.store(steal me)
+    return
+
+### Moves the value out and leaves the place all zero: how an element of a `BorrowedSlice[T]` is taken out, an
+### entity value included.
+### :returns: The value that was there.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
+@track_caller
+routine @BorrowedCell[T].take() -> T
+    place: @T = me.getview()
+    return steal place.stride(0)
+
+### The value in a box of its own from the same manager.
+### :returns: The copy.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
+@track_caller
+@expensive("allocates memory")
+routine @BorrowedCell[T].duplicate() -> Me
+    return Me.construct(value: me.load(), manager: me.manager.peek())
+
+### Ends the value (its destruct), gives the memory back to its manager, and leaves the box hollow. Does nothing on a
+### hollow box. A box over a frame slot (an entity's field filled `from STACK`) has no manager: the slot stays with its
+### frame.
+@track_caller
+routine @BorrowedCell[T].destruct() -> None
+    at: @T = me.at.peek()
+    if at.to[Addr]().is_hollow()
+        return
+    drop at
+    manager: @MemoryManager = me.manager.peek()
+    if not manager.to[Addr]().is_hollow()
+        give_block[T](data: me.at.peek(), count: 1, manager)
+    me.zeroinit(1)
+    return
+
+### Gives the memory back to its manager without ending the value: for a box whose value was moved out with `take()`.
+### Does nothing on a box over a frame slot (it has no manager) or a hollow one.
+@track_caller
+routine @BorrowedCell[T].give_back() -> None
+    at: @T = me.at.peek()
+    if at.to[Addr]().is_hollow()
+        return
+    manager: @MemoryManager = me.manager.peek()
+    if not manager.to[Addr]().is_hollow()
+        give_block[T](data: me.at.peek(), count: 1, manager)
+    me.zeroinit(1)
+    return
+
+### Gives the memory back and puts `value` in its place: how a global that holds a box changes (the program's end
+### gives the last one back).
+### :param value: The box that takes its place, taken over.
+@track_caller
+routine @BorrowedCell[T].replace(value: Me) -> None
+    drop me
+    me.poke(steal value)
+    return

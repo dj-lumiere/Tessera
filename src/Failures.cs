@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The LLVM type a failable routine returns: a named struct, `%"carrier.<symbol>"`, laid out like the routine's
 /// `Check[T]` once its list of crashables is final. The routine and its callers are written before that (the list grows
@@ -266,12 +266,12 @@ public sealed partial class Compiler
         return errors;
     }
 
-    /// The LLVM type of a flow's mold: the tagged layout of every crashable the program throws (Crash.te's
+    /// The LLVM type of a flow's mold: the tagged layout of every crashable the program throws (Crash.li's
     /// failure_mold).
-    public const string MoldLlvm = "%tessera.mold";
+    public const string MoldLlvm = "%lapila.mold";
 
     /// The thread's (or, without an operating system, the program's) own mold.
-    private const string ThreadMoldSymbol = "tessera.thread_mold";
+    private const string ThreadMoldSymbol = "lapila.thread_mold";
 
     /// The bytes a split program's mold holds at least: the base is built once, so its mold has room for the crashables
     /// a delta adds later.

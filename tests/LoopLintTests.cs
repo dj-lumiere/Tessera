@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The loop lint: `until true` never runs its body and `until false` never ends by itself (both
@@ -17,7 +17,7 @@ public class LoopLintTests
                     nothing
                 return
             """));
-        Assert.Contains("t.te:2:5: warning: this loop's body never runs", warning);
+        Assert.Contains("t.li:2:5: warning: this loop's body never runs", warning);
     }
 
     [Fact]
@@ -53,12 +53,12 @@ public class LoopLintTests
                 while true
                     break
                 return
-            """, "t.te"));
+            """, "t.li"));
         Assert.Contains("'until'", error.Message);
         Assert.Contains("'loop'", error.Message);
     }
 
-    private static List<string> Lint(string source, string file = "t.te") => LoopLint.Check(Parse(source, file));
+    private static List<string> Lint(string source, string file = "t.li") => LoopLint.Check(Parse(source, file));
 
     private static List<Decl> Parse(string source, string file) =>
         new Parser(new Lexer(file, source).Lex(), file).ParseModule().Decls;

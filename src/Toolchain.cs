@@ -1,15 +1,15 @@
-namespace Tessera;
+namespace Lapila;
 
 /// Where the LLVM tools the builder runs are. An editor starts the builder with the environment it was started with,
 /// which often lacks the shell's PATH (an IDE backend started by a service): so a tool not on PATH is looked for where
 /// LLVM installs itself.
 internal static class Toolchain
 {
-    /// The clang to run: `TESSERA_CLANG` when set, else `clang` on PATH, else the newest one LLVM installed where its
+    /// The clang to run: `LAPILA_CLANG` when set, else `clang` on PATH, else the newest one LLVM installed where its
     /// packages put it. "clang" when none is found, so the error names the tool.
     public static string Clang => _clang.Value;
 
-    private static readonly Lazy<string> _clang = new(() => Find("clang", "TESSERA_CLANG"));
+    private static readonly Lazy<string> _clang = new(() => Find("clang", "LAPILA_CLANG"));
 
     private static string Find(string tool, string variable)
     {

@@ -1,0 +1,73 @@
+# Lapila stdlib: reading and writing from fibers
+#
+# read and write are read(2) and write(2) through run_blocking: inside a fiber the call runs on a thread ticket while
+# the fiber waits and its thread goes on with the manager's other fibers, and outside a fiber they are the plain
+# call.
+
+module Fiber
+
+import Hosted
+
+### A read or write, on the waiting fiber's stack.
+secret record IoCall
+    fd: CInt
+    buf: @Byte
+    count: U64
+    result: S64
+
+### Makes a `IoCall` from its fields.
+### :param fd: Its `fd`.
+### :param buf: Its `buf`.
+### :param count: Its `count`.
+### :param result: Its `result`.
+### :returns: The new value.
+secret common routine IoCall.construct(fd: CInt, buf: @Byte, count: U64, result: S64) -> Me
+    return Me(fd, buf, count, result)
+
+### Releases nothing: a `IoCall` holds no memory of its own.
+secret routine @IoCall.destruct() -> None
+    return
+
+### Runs a fiber's read(2) on a thread ticket and stores the result in its {IoCall}.
+### :param call: The {IoCall} on the waiting fiber's stack.
+@target(os: not "none")
+secret routine read_call(call: @IoCall) -> None
+    n: S64 = c_read(call.fd.peek(), call.buf.peek(), call.count.peek().to[CSize]()).to[S64]()
+    call.result.poke(n)
+    return
+
+### Runs a fiber's write(2) on a thread ticket and stores the result in its {IoCall}.
+### :param call: The {IoCall} on the waiting fiber's stack.
+@target(os: not "none")
+secret routine write_call(call: @IoCall) -> None
+    n: S64 = c_write(call.fd.peek(), call.buf.peek(), call.count.peek().to[CSize]()).to[S64]()
+    call.result.poke(n)
+    return
+
+### Reads up to count bytes from fd into buf without stopping the other fibers: the number read, 0 at the end of
+### the input, or negative on an error.
+### :param fd: The file descriptor to read from.
+### :param buf: Where the bytes go.
+### :param count: The most bytes to read.
+### :returns: The number of bytes read, 0 at the end of the input, or negative on an error.
+@target(os: not "none")
+routine @CoroutineManager.read(fd: CInt, buf: @Byte, count: U64) -> S64
+    call: &IoCall <- IoCall(fd: fd, buf: buf, count: count, result: 0)
+
+    me.run_blocking(work: read_call.to[Callable](), arg: call)
+    n: S64 = call.result.peek()
+    return n
+
+### Writes up to count bytes from buf to fd without stopping the other fibers: the number written, or negative on
+### an error.
+### :param fd: The file descriptor to write to.
+### :param buf: The bytes to write.
+### :param count: The number of bytes to write.
+### :returns: The number of bytes written, or negative on an error.
+@target(os: not "none")
+routine @CoroutineManager.write(fd: CInt, buf: @Byte, count: U64) -> S64
+    call: &IoCall <- IoCall(fd: fd, buf: buf, count: count, result: 0)
+
+    me.run_blocking(work: write_call.to[Callable](), arg: call)
+    n: S64 = call.result.peek()
+    return n

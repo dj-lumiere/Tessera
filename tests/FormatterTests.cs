@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The formatter's long-line wrapping: a line over 100 columns breaks after commas of a call's or a literal's list,

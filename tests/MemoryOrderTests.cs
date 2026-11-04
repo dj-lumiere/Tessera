@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The memory order of an unbroken routine is a type argument, so each instance is one LLVM instruction with its order
@@ -9,9 +9,9 @@ namespace Tessera.Tests;
 /// </summary>
 public class MemoryOrderTests
 {
-    private static readonly Lazy<string> Ir = new(() => Compile("memory_order.te"));
+    private static readonly Lazy<string> Ir = new(() => Compile("memory_order.li"));
 
-    /// The instructions tests/memory_order.te writes, the defaults included: `peek_unbroken()` is SEQ_CST, and a
+    /// The instructions tests/memory_order.li writes, the defaults included: `peek_unbroken()` is SEQ_CST, and a
     /// compare_exchange without its failure order takes ACQUIRE for ACQ_REL, RELAXED (monotonic) for RELEASE, and
     /// the success order otherwise.
     [Theory]
@@ -75,9 +75,9 @@ public class MemoryOrderTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

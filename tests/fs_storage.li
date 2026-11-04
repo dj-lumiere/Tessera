@@ -1,0 +1,62 @@
+# OsFileManager.storage over a file of its own under the temporary directory: a FileStorage[Byte] read and
+# written by index (the write reaching the file), a cell past the end, a window of cells, and a FileStorage[Char] of
+# UTF-32LE cells read and written, its trailing partial cell left out, and a cell that isn't a Unicode scalar.
+
+import Hosted
+
+### The file's text.
+routine text_of(f: @File) -> BorrowedSlice[Byte]
+    return OsFileManager.read_all(at: f, manager: HEAP)
+
+routine start() -> None
+    tmp: &Directory <- OsEnvironment.temp_directory(HEAP)
+    root: &Directory <- tmp.go_to(name: "lapila_fs_storage", manager: HEAP)
+
+    try OsFileManager.delete_all(at: root, manager: HEAP)
+    OsFileManager.make_directory(at: root, parents: true)
+    bytes: &File <- root.file(name: "bytes.bin", manager: HEAP)
+    OsFileManager.make_file(at: bytes, replacing: false)
+    OsFileManager.write_all(at: bytes, data: "hello")
+
+    s: FileStorage[Byte] <- OsFileManager.storage[Byte](at: bytes, write: true, start: 0,
+        count: U64.MAX)
+    Console.show("bytes: {s.count()}, first {s[0].to[U8]()}, last {s[4].to[U8]()}")
+    s[0] = b'J'
+    past: Optional[Byte] = try s.getitem(5)
+    Console.show("cell 5 there: {past.is_present()}")
+    drop s
+    after: &[Byte] <- text_of(f: bytes)
+    Console.show("after a cell write: {after.getslice()}")
+    drop after
+    window: FileStorage[Byte] <- OsFileManager.storage[Byte](at: bytes, write: false, start: 1,
+        count: 3)
+    Console.show("cells 1 to 3: {window.count()}, first {window[0].to[U8]()}")
+    drop window
+
+    # "가A" as UTF-32LE, then one byte more, which is no whole cell.
+    chars: &File <- root.file(name: "chars.utf32", manager: HEAP)
+    OsFileManager.make_file(at: chars, replacing: false)
+    OsFileManager.write_all(at: chars, data: "\x00\xAC\x00\x00\x41\x00\x00\x00\x7F")
+    c: FileStorage[Char] <- OsFileManager.storage[Char](at: chars, write: true, start: 0,
+        count: U64.MAX)
+    Console.show("chars: {c.count()}, first {c[0] == '가'}, second {c[1] == 'A'}")
+    c[1] = '줄'
+    drop c
+    again: FileStorage[Char] <- OsFileManager.storage[Char](at: chars, write: false, start: 1,
+        count: 1)
+    Console.show("second after a write: {again[0] == '줄'}")
+    drop again
+
+    OsFileManager.write_all(at: chars, data: "\xFF\xFF\xFF\xFF")
+    bad: FileStorage[Char] <- OsFileManager.storage[Char](at: chars, write: false, start: 0,
+        count: U64.MAX)
+    cell: Optional[Char] = try bad.getitem(0)
+    Console.show("a cell that isn't a Unicode scalar: {cell.is_present()}")
+    drop bad
+
+    try OsFileManager.delete_all(at: root, manager: HEAP)
+    drop chars
+    drop bytes
+    drop root
+    drop tmp
+    return

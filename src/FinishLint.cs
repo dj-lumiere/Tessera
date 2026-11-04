@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The style warnings for the `finish` convention. A routine that has something to release (memory, a handle, a lock)
 /// gathers its exits into one block named `finish`: every other block that ends the routine jumps there with its
@@ -9,8 +9,8 @@ namespace Tessera;
 /// The warning: a `return` outside `finish` (that exit skips the release). A head slot `finish` destructs starts as
 /// `.hollow()` when no value is ready yet, which its `destruct` leaves alone, so a path that never filled it is safe.
 ///
-/// Warnings, like ChainLint's: `tessera check`, `build`, and `run` print them for the program's own files, and
-/// `tessera lint` for any file.
+/// Warnings, like ChainLint's: `lapila check`, `build`, and `run` print them for the program's own files, and
+/// `lapila lint` for any file.
 public static class FinishLint
 {
     public const string BlockName = "finish";

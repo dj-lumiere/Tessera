@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
@@ -970,7 +970,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private bool BindingLineAhead() =>
         Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon && !IsBlockHeader() && Cur.Pos.Col > 1;
 
-    /// The error for a line that starts with `local`, which Tessera doesn't have.
+    /// The error for a line that starts with `local`, which Lapila doesn't have.
     private CompileError LocalGone() =>
         Error("a line doesn't start with 'local': a value is bound with x: T = value, and a place is borrowed from a "
               + "manager with x: &T <- value (from STACK when no manager is named)");

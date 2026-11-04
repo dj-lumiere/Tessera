@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The doc lint: every routine in a library or example file has a <c>###</c> doc comment with a <c>:param</c> line for
@@ -32,7 +32,7 @@ public class DocLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("lib/t.te:2:8: warning: routine 'helper' has no doc comment", warning);
+        Assert.Contains("lib/t.li:2:8: warning: routine 'helper' has no doc comment", warning);
     }
 
     [Fact]
@@ -114,11 +114,11 @@ public class DocLintTests
     }
 
     [Theory]
-    [InlineData("tests/t.te")]
-    [InlineData("../Ingrid/tests/decimal64/t.te")]
-    [InlineData("playground/main.te")]
-    [InlineData("scratch/probe/t.te")]
-    [InlineData("../Ingrid/tessera/generated/t.te")]
+    [InlineData("tests/t.li")]
+    [InlineData("../Ingrid/tests/decimal64/t.li")]
+    [InlineData("playground/main.li")]
+    [InlineData("scratch/probe/t.li")]
+    [InlineData("../Ingrid/lapila/generated/t.li")]
     public void TestAndScratchFilesAreExempt(string file)
     {
         var warnings = Lint("""
@@ -146,12 +146,12 @@ public class DocLintTests
             routine helper() -> None
                 return
             """;
-        var decls = Parse(source, "lib/t.te");
+        var decls = Parse(source, "lib/t.li");
         Assert.Empty(StyleLint.Check(decls));
         Assert.Contains(StyleLint.Check(decls, _ => source.Split('\n')), w => w.Contains("has no doc comment"));
     }
 
-    private static List<string> Lint(string source, string file = "lib/t.te") =>
+    private static List<string> Lint(string source, string file = "lib/t.li") =>
         DocLint.Check(Parse(source, file), f => f == file ? source.Split('\n') : null);
 
     private static List<Decl> Parse(string source, string file) =>

@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The style warnings for doc comments. Every routine in a library or example file, private ones and a concept's
 /// required routines included, carries a `///` doc comment right above it (past its annotation lines): what it does, a

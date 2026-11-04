@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The order of a file's imports never changes what a program means. Each test builds one set of files several times
@@ -11,14 +11,14 @@ public class ImportOrderTests
 {
     private static readonly Dictionary<string, string> Modules = new()
     {
-        ["base.te"] = "module Base\n\nrecord Counter\n    n: S64\n",
+        ["base.li"] = "module Base\n\nrecord Counter\n    n: S64\n",
         // Adds a routine to a type of another module: it is seen where Ext is imported.
-        ["ext.te"] = "module Ext\n\nimport Base\n\nroutine Counter.plus_two() -> S64\n    return me.n + 2\n",
-        ["a.te"] = "module A\n\nrecord Thing\n    v: S64\n\nroutine twin() -> S64\n    return 1\n\n"
+        ["ext.li"] = "module Ext\n\nimport Base\n\nroutine Counter.plus_two() -> S64\n    return me.n + 2\n",
+        ["a.li"] = "module A\n\nrecord Thing\n    v: S64\n\nroutine twin() -> S64\n    return 1\n\n"
             + "routine describe() -> S64\n    return 10\n\nroutine pick(x: S64) -> S64\n    return x + 100\n",
-        ["b.te"] = "module B\n\nroutine twin() -> S64\n    return 2\n\n"
+        ["b.li"] = "module B\n\nroutine twin() -> S64\n    return 2\n\n"
             + "routine describe() -> S64\n    return 20\n\nroutine pick(x: Bool) -> S64\n    return 7\n",
-        ["d.te"] = "module D\n\nroutine describe() -> S64\n    return 30\n\nroutine only_d() -> S64\n    return 4\n",
+        ["d.li"] = "module D\n\nroutine describe() -> S64\n    return 30\n\nroutine only_d() -> S64\n    return 4\n",
     };
 
     private static readonly string[] Imports = ["import Hosted", "import Base", "import Ext", "import A", "import B", "import D"];
@@ -149,7 +149,7 @@ public class ImportOrderTests
         public TempDir(string main)
         {
             Directory.CreateDirectory(Root);
-            foreach (var (name, text) in Modules.Append(new("main.te", main)))
+            foreach (var (name, text) in Modules.Append(new("main.li", main)))
             {
                 string path = Path.Combine(Root, name);
                 File.WriteAllText(path, text);

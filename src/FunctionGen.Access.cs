@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The accesses a routine takes from the AccessManager (Hosted): `p.get_exclusive_access()` gives an
 /// `Authorized[T]` and `p.get_shared_read_access()` a `ReadAuthorized[T]`, read and written through `getview()`, and

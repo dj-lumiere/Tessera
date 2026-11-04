@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Inlay hints. Every routine but an infallible one may fail, so a call carries no `may stop` mark: a failure nobody
 /// receives stops the program where it happens, and a `try` or `check` above a call receives it.

@@ -1,7 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The document's outline (`textDocument/documentSymbol`) and go-to-definition (`textDocument/definition`).
 public static partial class LanguageServer

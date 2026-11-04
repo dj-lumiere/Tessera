@@ -1,8 +1,8 @@
-namespace Tessera;
+namespace Lapila;
 
-/// `tessera new [folder]`: starts a solution in the folder (the current one when none is given, made when missing).
-/// Writes config.toml (the package named after the folder), a main.te that prints a greeting, a .gitignore for build
-/// output, and the VS Code files that recommend the Tessera extension and bind run and build. A file that is already
+/// `lapila new [folder]`: starts a solution in the folder (the current one when none is given, made when missing).
+/// Writes config.toml (the package named after the folder), a main.li that prints a greeting, a .gitignore for build
+/// output, and the VS Code files that recommend the Lapila extension and bind run and build. A file that is already
 /// there is kept as it is.
 static class NewProject
 {
@@ -18,14 +18,14 @@ static class NewProject
                 [package]
                 name = "{name}"
                 version = "0.1.0"
-                tessera-version = "{version}"
+                lapila-version = "{version}"
 
                 [target]
-                executable = "main.te"
+                executable = "main.li"
                 mode = "debug"
 
                 """),
-            ("main.te", """
+            ("main.li", """
                 import Hosted
 
                 ### Writes a greeting.
@@ -40,7 +40,7 @@ static class NewProject
                 """),
             (Path.Combine(".vscode", "extensions.json"), """
                 {
-                  "recommendations": ["lumifoundry.tessera"]
+                  "recommendations": ["lumifoundry.lapila"]
                 }
 
                 """),
@@ -51,14 +51,14 @@ static class NewProject
                     {
                       "label": "run",
                       "type": "shell",
-                      "command": "tessera run",
+                      "command": "lapila run",
                       "group": { "kind": "build", "isDefault": true },
                       "problemMatcher": []
                     },
                     {
                       "label": "build",
                       "type": "shell",
-                      "command": "tessera build",
+                      "command": "lapila build",
                       "problemMatcher": []
                     }
                   ]
@@ -79,7 +79,7 @@ static class NewProject
             File.WriteAllText(path, text);
             Console.WriteLine($"  created  {relative}");
         }
-        Console.WriteLine("Run it with: tessera run");
+        Console.WriteLine("Run it with: lapila run");
         return 0;
     }
 }

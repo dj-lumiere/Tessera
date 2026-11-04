@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// Concept checking. A concept names a set of required routines (`routine Me.eq(...)`), and may refine other
 /// concepts (`conform Equatable[T]` inside it). A type satisfies a concept through a conformance: a `conform` clause on

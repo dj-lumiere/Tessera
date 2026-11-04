@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The default heap's check for a block freed twice is the manifest's <c>[debug] heap-check</c>, the same in every build
@@ -43,13 +43,13 @@ public class HeapCheckTests
         string root = FindRoot();
         Assert.True(Manifest.Load(Path.Combine(root, "tests", "double_free_release", Manifest.FileName)).HeapCheck);
 
-        string dir = Path.Combine(Path.GetTempPath(), "tessera-heap-check-" + Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Path.GetTempPath(), "lapila-heap-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
-            File.WriteAllText(Path.Combine(dir, "main.te"), "");
+            File.WriteAllText(Path.Combine(dir, "main.li"), "");
             File.WriteAllText(Path.Combine(dir, Manifest.FileName),
-                "[package]\nname = \"plain\"\n\n[target]\nmode = \"debug\"\nexecutable = \"main.te\"\n");
+                "[package]\nname = \"plain\"\n\n[target]\nmode = \"debug\"\nexecutable = \"main.li\"\n");
             Assert.False(Manifest.Load(Path.Combine(dir, Manifest.FileName)).HeapCheck);
         }
         finally
@@ -58,21 +58,21 @@ public class HeapCheckTests
         }
     }
 
-    /// tests/slice_borrowed.te allocates and frees through HEAP.
+    /// tests/slice_borrowed.li allocates and frees through HEAP.
     private static string CompileSliceProgram(BuildMode mode, bool heapCheck)
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        return Cli.Compile([Path.Combine(root, "tests", "slice_borrowed.te")], BuildTarget.Host(), mode: mode,
+        return Cli.Compile([Path.Combine(root, "tests", "slice_borrowed.li")], BuildTarget.Host(), mode: mode,
             lint: false, heapCheck: heapCheck);
     }
 
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

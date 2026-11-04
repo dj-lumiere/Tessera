@@ -1,9 +1,9 @@
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// `@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` on a record, choice, or variant: the builder declares the
-/// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
+/// conformance and writes the routine. Each routine is generated as Lapila source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 ///
 /// A choice or variant without `@derive` derives all five, except what it declares itself (a routine of the name, or a
@@ -177,7 +177,7 @@ public static class Derive
     public static IEnumerable<Decl> DefaultDestruct(Decl type, Func<TypeRef, bool> holds) =>
         Parse(type, DefaultDestructSource(type, holds), implicitly: true);
 
-    /// The source of the `destruct` DefaultDestruct writes, as Tessera text: what `--show-destructs` prints.
+    /// The source of the `destruct` DefaultDestruct writes, as Lapila text: what `--show-destructs` prints.
     public static string DefaultDestructSource(Decl type, Func<TypeRef, bool> holds)
     {
         var (name, typeParams, clauses) = type switch

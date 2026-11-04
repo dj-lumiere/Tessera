@@ -7,7 +7,7 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
-group = "com.tessera"
+group = "com.lapila"
 version = "0.1.0"
 
 repositories {
@@ -45,13 +45,13 @@ intellijPlatform {
 }
 
 tasks {
-    // The TextMate bundle sits next to the plugin's jar: the grammar comes straight from ../Tessera.tmbundle (its one
+    // The TextMate bundle sits next to the plugin's jar: the grammar comes straight from ../Lapila.tmbundle (its one
     // source), the VS Code-style package.json and language-configuration.json from bundle/.
     prepareSandbox {
         from(layout.projectDirectory.dir("bundle")) {
             into(pluginName.map { "$it/bundle" })
         }
-        from(layout.projectDirectory.dir("../Tessera.tmbundle/Syntaxes")) {
+        from(layout.projectDirectory.dir("../Lapila.tmbundle/Syntaxes")) {
             into(pluginName.map { "$it/bundle/syntaxes" })
         }
     }

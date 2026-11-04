@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// A manifest key that writes a standard library preset by name (`[debug] deadlock-check`, `trace-frames`, ...) fails the
@@ -53,16 +53,16 @@ public class ManifestPresetTests
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
         var target = BuildTarget.Host();
-        var decls = Cli.LoadDecls([Path.Combine(root, "tests", "choice_type_arg.te")], target);
+        var decls = Cli.LoadDecls([Path.Combine(root, "tests", "choice_type_arg.li")], target);
         return new Compiler(target, decls);
     }
 
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

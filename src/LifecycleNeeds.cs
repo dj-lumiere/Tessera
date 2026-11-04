@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// Which types hold something to release, and so declare `construct` and have a `destruct` (written by hand, or by the
 /// builder as a walk over the fields that hold something): memory from a manager (`BorrowedCell`, `BorrowedSlice`), an

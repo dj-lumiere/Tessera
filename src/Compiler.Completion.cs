@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// What a file can name, for the language server's completion: the declarations `file` sees, by the same rules a name
 /// written there is resolved by. Nothing here reports errors.

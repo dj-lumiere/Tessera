@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The record-parameter lint: a routine with five or more parameters, <c>me</c> not counted, gets a warning that
@@ -25,7 +25,7 @@ public class RecordParamLintTests
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
             """));
-        Assert.Contains("t.te:1:1: warning: routine 'blend' takes 5 parameters (not counting me)", warning);
+        Assert.Contains("t.li:1:1: warning: routine 'blend' takes 5 parameters (not counting me)", warning);
         Assert.Contains("into a record", warning);
     }
 
@@ -83,7 +83,7 @@ public class RecordParamLintTests
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
             """;
-        Assert.Empty(Lint(source, "out/generated/t.te"));
+        Assert.Empty(Lint(source, "out/generated/t.li"));
         Assert.Empty(Lint("""
             @source("blend.mini", 1, 1)
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
@@ -107,11 +107,11 @@ public class RecordParamLintTests
         var warnings = StyleLint.Check(Parse("""
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
-            """, "t.te"));
+            """, "t.li"));
         Assert.Contains(warnings, w => w.Contains("not counting me"));
     }
 
-    private static List<string> Lint(string source, string file = "t.te") =>
+    private static List<string> Lint(string source, string file = "t.li") =>
         RecordParamLint.Check(Parse(source, file));
 
     private static List<Decl> Parse(string source, string file) =>

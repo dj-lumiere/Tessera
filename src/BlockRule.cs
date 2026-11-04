@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The rule for blocks and jumps. A routine people write reads top to bottom with `if`, `when`, and loops. Blocks,
 /// `jump`, and an `if` that jumps are the language of two kinds of routine only: an assembly routine

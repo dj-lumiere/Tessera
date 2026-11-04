@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The symbols the C libraries a build links define, read from the libraries themselves: an `@export` of a name one
 /// of them already has would replace that routine for every C caller in the process.
@@ -62,7 +62,7 @@ public static class CLibrarySymbols
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var a in new[] { "-###", "--target=" + target.LlvmTriple, "-x", "c", "-", "-o", "tessera-link-probe" })
+        foreach (var a in new[] { "-###", "--target=" + target.LlvmTriple, "-x", "c", "-", "-o", "lapila-link-probe" })
             psi.ArgumentList.Add(a);
         if (target.Os == "windows")
         {

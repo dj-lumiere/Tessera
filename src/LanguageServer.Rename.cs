@@ -1,7 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Find references (`textDocument/references`) and Rename (`textDocument/prepareRename`, `textDocument/rename`), in the
 /// document. A name's occurrences are the names whose declaration is the same one, as go-to-definition finds it, so a

@@ -3,13 +3,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
-/// The Tessera language server, `tessera lsp`: the Language Server Protocol over standard input and output. A `.te`
-/// document that opens or changes is checked the way `tessera check` checks it (its own routines and presets, and every
+/// The Lapila language server, `lapila lsp`: the Language Server Protocol over standard input and output. A `.li`
+/// document that opens or changes is checked the way `lapila check` checks it (its own routines and presets, and every
 /// instance they reach), as the editor holds it, saved or not, together with the files its solution builds with
 /// (`config.toml`'s import closure, or the file alone) and the standard library. Its errors and its style warnings
-/// come back as diagnostics. Formatting is `tessera fmt`'s.
+/// come back as diagnostics. Formatting is `lapila fmt`'s.
 ///
 /// Typing sends a change per keystroke; a check runs once the document has been still for a moment, on the text it
 /// holds then, so a burst of changes costs one check. The standard library is parsed once and kept while its files
@@ -41,7 +41,7 @@ public static partial class LanguageServer
         // The protocol owns standard output: anything else the builder prints goes to standard error.
         Console.SetOut(Console.Error);
         var stdin = Console.OpenStandardInput();
-        new Thread(() => CheckLoop(stdlibDir)) { IsBackground = true, Name = "tessera-lsp-check" }.Start();
+        new Thread(() => CheckLoop(stdlibDir)) { IsBackground = true, Name = "lapila-lsp-check" }.Start();
 
         bool shutdown = false;
         while (Read(stdin) is { } message)
@@ -71,7 +71,7 @@ public static partial class LanguageServer
                             ["inlayHintProvider"] = true,
                             ["codeActionProvider"] = true,
                         },
-                        ["serverInfo"] = new JsonObject { ["name"] = "tessera-lsp", ["version"] = "0.1" },
+                        ["serverInfo"] = new JsonObject { ["name"] = "lapila-lsp", ["version"] = "0.1" },
                     });
                     break;
                 case "shutdown":
@@ -272,7 +272,7 @@ public static partial class LanguageServer
     private static readonly Regex Warning = new(@"^(?<file>.*):(?<line>\d+):(?<col>\d+): warning: (?<text>.*)$",
         RegexOptions.Singleline);
 
-    /// The document's errors and warnings: what `tessera check` reports for it, read from the editor's text.
+    /// The document's errors and warnings: what `lapila check` reports for it, read from the editor's text.
     private static (JsonArray Diagnostics, Analysis? Analysis) Check(string uri, string text, Func<string> stdlibDir)
     {
         var diagnostics = new JsonArray();
@@ -404,8 +404,8 @@ public static partial class LanguageServer
         }
         catch (ManifestError e)
         {
-            // A config.toml it can't read, often another language's (a RazorForge folder that keeps its Tessera
-            // translation, main.te, next to main.rf): the document is checked alone, and says why.
+            // A config.toml it can't read, often another language's (a Revare folder that keeps its Lapila
+            // translation, main.li, next to main.rr): the document is checked alone, and says why.
             return (BuildTarget.Host(), [file], Ko($"checked on its own: {e.Message}", $"이 파일만 검사합니다: {e.Message}"));
         }
         if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
@@ -418,7 +418,7 @@ public static partial class LanguageServer
     /// The standard library's declarations, each file parsed again only when it changed on disk.
     private static IEnumerable<Decl> StdlibDecls(string stdlib)
     {
-        var files = Directory.GetFiles(stdlib, "*.te", SearchOption.AllDirectories).Order().ToList();
+        var files = Directory.GetFiles(stdlib, "*.li", SearchOption.AllDirectories).Order().ToList();
         foreach (var gone in Stdlib.Keys.Except(files, StringComparer.OrdinalIgnoreCase).ToList()) Stdlib.Remove(gone);
         var all = new List<Decl>();
         foreach (var f in files)
@@ -435,7 +435,7 @@ public static partial class LanguageServer
         return all;
     }
 
-    /// The whole document in `tessera fmt`'s layout, as one edit, or no edit when it is laid out already.
+    /// The whole document in `lapila fmt`'s layout, as one edit, or no edit when it is laid out already.
     private static JsonArray FormattingEdits(string uri)
     {
         string? text;
@@ -467,7 +467,7 @@ public static partial class LanguageServer
         {
             ["range"] = Range(l, c, l, end),
             ["severity"] = severity,
-            ["source"] = "tessera",
+            ["source"] = "lapila",
             ["message"] = message,
         };
     }
@@ -491,7 +491,7 @@ public static partial class LanguageServer
     private static void Request(string method) => Send(new JsonObject
     {
         ["jsonrpc"] = "2.0",
-        ["id"] = $"tessera-{Interlocked.Increment(ref _nextRequest)}",
+        ["id"] = $"lapila-{Interlocked.Increment(ref _nextRequest)}",
         ["method"] = method,
     });
 
@@ -561,7 +561,7 @@ public static partial class LanguageServer
         return null;
     }
 
-    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.te`).
+    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.li`).
     private static string PathOf(string uri)
     {
         if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) return uri;

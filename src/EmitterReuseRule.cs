@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The rule for an emitter that ran out. `for x in e` takes items from the emitter `e` until its `emit` throws
 /// `AbsentValueError`, so after a `for` that wasn't left with `break`, `e` has nothing left: a second `for` over

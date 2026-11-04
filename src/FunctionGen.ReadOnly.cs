@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// Read-only data seen through `=`: a string literal, an array literal of constants, and a preset are put in the
 /// program's read-only data, so a `@T` or a `@[T]` of them may be taken with `=`. Nothing writes through such a view:

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// 32-bit ARM assembly, which no CI host runs: each program is built for arm-linux-gnueabihf (ARM code) or for a
@@ -239,7 +239,7 @@ public class AsmArmTests
     /// per line. With assemble, clang also assembles the IR for the target, which fails on any line it doesn't take.
     private static string Build(string source, BuildTarget target, bool assemble = true)
     {
-        var decls = new Parser(new Lexer("arm.te", source).Lex(), "arm.te").ParseModule().Decls;
+        var decls = new Parser(new Lexer("arm.li", source).Lex(), "arm.li").ParseModule().Decls;
         decls.AddRange(StandardLibrary.Load(Path.Combine(FindRoot(), "Standard")));
         string ir = new Compiler(target, decls).Generate();
         if (assemble) Assemble(ir, target);
@@ -252,7 +252,7 @@ public class AsmArmTests
 
     private static void Assemble(string ir, BuildTarget target)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "tessera-asm-arm-" + Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Path.GetTempPath(), "lapila-asm-arm-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
@@ -278,9 +278,9 @@ public class AsmArmTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

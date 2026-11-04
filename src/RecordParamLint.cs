@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The style warning for long parameter lists. Values that belong together travel better as one: a routine with
 /// MaxParameters or more parameters (`me` not counted) takes a record instead, one record parameter or a record plus
@@ -10,8 +10,8 @@ namespace Tessera;
 /// wrote (`@source(...)`), and any file under a directory named `generated`. A concept's required routines are
 /// checked like any other, since every type that meets the concept repeats the signature.
 ///
-/// A warning, like ChainLint's: `tessera check`, `build`, and `run` print it for the program's own files, and
-/// `tessera lint` for any file.
+/// A warning, like ChainLint's: `lapila check`, `build`, and `run` print it for the program's own files, and
+/// `lapila lint` for any file.
 public static class RecordParamLint
 {
     /// The parameter count, `me` not counted, at which a routine takes a record instead.

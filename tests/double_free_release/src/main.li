@@ -1,0 +1,37 @@
+# A BorrowedSlice is never copied, but two holders of one can still be made out of the build's sight: the bytes of one copied
+# into another's slot. Both are the same memory. The first drop gives the memory back. The other holder is stale: its
+# bits were copied where the build doesn't follow them, so the build can't see that it was given back already, and its
+# drop gives the block back a second time: the heap check (on under lapila test) finds it in its list of blocks given
+# back and crashes with DoubleFreeError at that line. This handler prints the crash and exits with status 3.
+
+import Hosted
+
+@external("c")
+@symbol("exit")
+@noreturn
+routine exit(status: CInt) -> None
+
+@untraced
+routine on_crash(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    Console.show("{name}: {message.text()}\nat {place.file.peek()} line {place.line.peek()}")
+    exit(3)
+
+### Makes `into` a second holder of the memory in `slot`: the holder's bytes copied one by one, which the build doesn't
+### follow, so both hold the same memory.
+### :param slot: The holder copied.
+### :param into: The slot that becomes the second holder.
+routine copy_of(slot: @BorrowedSlice[U64], into: @BorrowedSlice[U64]) -> None
+    into.to[@Byte]().copy(src: slot.to[@Byte](), count: sizeof[BorrowedSlice[U64]]())
+    return
+
+routine start() -> None
+    first: &[U64] <- .construct(count: 4, manager: HEAP)
+    lateinit second: &[U64]
+
+    Crash.report_with(on_crash.to[Callable]())
+    copy_of(slot: first, into: second)
+    drop first
+    Console.show("first dropped")
+    drop second
+    Console.show("not reached")
+    return

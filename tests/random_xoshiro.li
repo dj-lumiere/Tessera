@@ -1,0 +1,116 @@
+# xoshiro256** (Random) against a Python model of the reference C code: the reference's own start state
+# (1, 2, 3, 4, whose first outputs are 11520, 0, 1509978240, 1215971899390074240), then three seeds through the
+# splitmix64 chain, each draw kind, Lemire's bounded draw, and a checksum of 100000 more draws. The model also
+# reproduces Revare's Random streams, which this file's routines now compute.
+
+import Hosted
+import Random
+
+### Writes a U64 as 16 hex digits.
+routine hex(value: U64) -> None
+    value.represent_hex_into(out: Console.output(), min_digits: 16)
+    return
+
+### Writes `count` 64-bit draws, a space before each.
+routine draws(rng: @Xoshiro256, count: U64) -> None
+    for i in 0 til count
+        Console.show(" ", end: "")
+        hex(rng.next[U64]())
+    then
+        return
+
+### Writes four draws of each kind and the bounded draws from a seed.
+routine seeded(seed: U64) -> None
+    rng: &Xoshiro256 <- .from_seed(seed)
+    h: &U64
+
+    state: Xoshiro256 = rng.load()
+    Console.show("seed ", end: "")
+    hex(seed)
+    Console.show(" state: ", end: "")
+    hex(state.s0)
+    Console.show(" ", end: "")
+    hex(state.s1)
+    Console.show(" ", end: "")
+    hex(state.s2)
+    Console.show(" ", end: "")
+    hex(state.s3)
+    Console.show("\nseed ", end: "")
+    hex(seed)
+    Console.show(" u64:", end: "")
+    draws(rng, count: 4)
+    Console.show("\nseed ", end: "")
+    hex(seed)
+    Console.show(" u32:", end: "")
+
+    for i: U64 in 0 til 4
+        Console.show(" ", end: "")
+        value: U64 = rng.next[U32]().to[U64]()
+        value.represent_hex_into(out: Console.output(), min_digits: 8)
+
+    loop with i: U64 = 0
+        if i == 0
+            Console.show("\nseed ", end: "")
+            hex(seed)
+            Console.show(" b64:", end: "")
+            continue with i: 1
+        elseif i >= 5
+            break
+        else
+            Console.show(" ", end: "")
+            hex(rng.next[B64]().bits())
+            continue with i: i + 1
+    Console.show("\nseed ", end: "")
+    hex(seed)
+    Console.show(" below 6:", end: "")
+
+    loop with i: U64 = 0, bound: U64 = 6, count: U64 = 12
+        if i >= count
+            when
+                bound == 6 =>
+                    Console.show("\nseed ", end: "")
+                    hex(seed)
+                    Console.show(" below 2^63+1:", end: "")
+                    continue with i: 0, bound: U64.shift_left(1, 63) + 1, count: 4
+                bound == 1 => break
+                else =>
+                    Console.show("\nseed ", end: "")
+                    hex(seed)
+                    Console.show(" below 1:", end: "")
+                    continue with i: 0, bound: 1, count: 3
+        else
+            Console.show(" {rng.below(bound)}", end: "")
+            continue with i: i + 1, bound: bound, count: count
+    Console.show("\nseed ", end: "")
+    hex(seed)
+    Console.show(" 100000 more: ", end: "")
+    14695981039346656037.poke_into(h)
+
+    for i: U64 in 0 til 100000
+        mixed: U64 = (h.load() ^ rng.next[U64]()) *% 1099511628211
+        mixed.poke_into(h)
+    hex(h.load())
+    Console.show("")
+    return
+
+routine start() -> None
+    reference: &Xoshiro256 <- .from_state(s0: 1, s1: 2, s2: 3, s3: 4)
+
+    Console.show("state 1 2 3 4:", end: "")
+    draws(rng: reference, count: 6)
+    Console.show("")
+    seeded(0)
+    seeded(12345)
+    seeded(U64.MAX)
+    top: U64 = U64.MAX
+    bottom: U64 = 0
+    Console.show("unit 0: ", end: "")
+    hex(unit_b64(bottom).bits())
+    Console.show(", unit max: ", end: "")
+    hex(unit_b64(top).bits())
+    Console.show("")
+    first: &Xoshiro256 <- .from_entropy()
+    second: &Xoshiro256 <- .from_entropy()
+    differ: Bool = first.next[U64]() != second.next[U64]()
+    Console.show("two entropy seeds differ: {differ}")
+    return

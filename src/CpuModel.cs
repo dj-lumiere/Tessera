@@ -2,11 +2,11 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The CPU a build targets and its feature set, as clang resolves them for the triple, `--cpu`, and `--feature`.
 /// Without `--cpu` it's the triple's default: x86-64 (v1, SSE2) on x86_64, pentium4 on x86, generic on AArch64,
-/// arm1176jzf-s on 32-bit ARM, and so on. Every routine Tessera defines carries the result as its `target-cpu` and
+/// arm1176jzf-s on 32-bit ARM, and so on. Every routine Lapila defines carries the result as its `target-cpu` and
 /// `target-features`, and `@feature` reads the same set, so the code a declaration selects is the code LLVM gets.
 public sealed class CpuModel
 {
@@ -78,7 +78,7 @@ public sealed class CpuModel
     private static (string Ir, string Err) QueryClang(BuildTarget target, IEnumerable<string> features, Pos pos)
     {
         var run = Run(target, features).GetAwaiter().GetResult()
-                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and wasn't found: put it on PATH, or name it with TESSERA_CLANG");
+                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and wasn't found: put it on PATH, or name it with LAPILA_CLANG");
         if (run.ExitCode != 0)
             throw new CompileError(pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {run.Err.Trim()}");
         return (run.Ir, run.Err);

@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Completion (`textDocument/completion`). After `value.` the routines on the value's type (through a pointer too)
 /// and its fields; after `Type.` the routines, presets, and cases on the type; anywhere else the values and blocks in

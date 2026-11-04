@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The chain lint counts calls per line: more than three calls of a chain on one line warn, and a chain written one
@@ -90,5 +90,5 @@ public class ChainLintTests
     }
 
     private static List<string> Lint(string source) =>
-        ChainLint.Check(new Parser(new Lexer("t.te", source).Lex(), "t.te").ParseModule().Decls);
+        ChainLint.Check(new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls);
 }

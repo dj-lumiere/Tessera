@@ -3,7 +3,7 @@ using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Follows the places declared `lateinit x: &T` through a routine body, path by path, and reports a read of one that may
 /// still be unfilled. A place is filled by any call that takes it as the receiver or as an argument (`x.store(v)`,

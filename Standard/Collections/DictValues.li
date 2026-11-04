@@ -1,0 +1,51 @@
+# Lapila stdlib collection: DictValues[TKey, TValue]
+#
+# Walks the values of a Dict[TKey, TValue] in insertion order, skipping entries marked dead by `remove`. It hands
+# out each value (emit) or each value's slot (next), so a loop can change the values in place. The keys are never
+# handed out as slots: changing one would break the hashing the dict keeps.
+#
+# Satisfies concept SlotEmitter[DictValues[TKey, TValue], TValue] (and so Emitter).
+
+module Collections
+
+### An emitter over the values of a {Dict[TKey, TValue]} in insertion order. `next` hands out each value's slot, so
+### writing through it changes the value in the dict. Adding or removing keys while iterating is undefined behavior.
+### :typeparam TKey: The key type.
+### :typeparam TValue: The value type.
+record DictValues[TKey, TValue]
+obeys SlotEmitter[DictValues[TKey, TValue], TValue]
+needs TKey obeys HashEquatable
+    map: @Dict[TKey, TValue]
+    index: U64
+
+### Creates an emitter positioned before the first value of `map`.
+### :param map: The dict whose values to walk.
+### :returns: A new emitter at the first entry.
+common routine DictValues[TKey, TValue].construct(map: @Dict[TKey, TValue]) -> Me
+    iter: Me = Me(map: map, index: 0)
+    return iter
+
+### Hands out the slot of the next live entry's value.
+### :returns: The address of the next value, in insertion order.
+### :throws: Throws `AbsentValueError` after the last value has been handed out.
+routine @DictValues[TKey, TValue].next() -> @TValue
+    map: @Dict[TKey, TValue] = me.map.peek()
+    count: U64 = map.entries_count.peek()
+
+    for index in me.index.peek() til count
+        entry_states: @U8 = map.entry_states.data.peek()
+        if entry_states.stride(index).peek() == 1
+            me.index.poke(index + 1)
+            slot: @TValue = map.values.data.peek().stride(index)
+            return slot
+        continue
+    then
+        throw AbsentValueError()
+
+### Yields the next live entry's value.
+### :returns: The next value, in insertion order.
+### :throws: Throws `AbsentValueError` after the last value has been yielded.
+routine @DictValues[TKey, TValue].emit() -> TValue
+    slot: @TValue = when check me.next()
+        is @TValue as at => at
+    return slot.peek()

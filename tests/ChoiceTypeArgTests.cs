@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// A value type parameter whose type is a choice is known in each instance, so a `when` or an `if` on it is no test:
@@ -9,7 +9,7 @@ namespace Tessera.Tests;
 /// </summary>
 public class ChoiceTypeArgTests
 {
-    /// The routines of tests/choice_type_arg.te that branch on their order, by the start of their symbols, and how many
+    /// The routines of tests/choice_type_arg.li that branch on their order, by the start of their symbols, and how many
     /// members each is instantiated with there.
     [Theory]
     [InlineData("_Z4rankIL5Order", 4)]
@@ -17,7 +17,7 @@ public class ChoiceTypeArgTests
     [InlineData("_Z7purposeIL5Order", 3)]
     public void BranchOnTheOrderIsGone(string symbol, int instances)
     {
-        var bodies = Bodies(Compile("choice_type_arg.te"), symbol);
+        var bodies = Bodies(Compile("choice_type_arg.li"), symbol);
         Assert.Equal(instances, bodies.Count);
         foreach (string body in bodies)
         {
@@ -52,9 +52,9 @@ public class ChoiceTypeArgTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

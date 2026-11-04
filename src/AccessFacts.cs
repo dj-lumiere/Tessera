@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// What each built routine does with the accesses it takes from the AccessManager, for the memory check across
 /// routines: whether it returns an access (one it takes, or one a routine it calls returns), and which parameters'

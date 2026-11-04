@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 
-namespace Tessera;
+namespace Lapila;
 
 /// A value the builder folded: an integer (Type null while it is an untyped literal), a Bool (0 or 1), or the IEEE
 /// bits of a float or of a bit-pattern record such as B128.

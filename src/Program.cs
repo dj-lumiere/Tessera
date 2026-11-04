@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
-using Tessera;
+using Lapila;
 
 return Cli.Execute(args);
 
@@ -9,21 +9,21 @@ static class Cli
 {
     private const string Usage = """
         usage:
-          tessera new   [<folder>]      start a solution: config.toml, main.te, .gitignore, VS Code files
-          tessera check [<target>] [<trace>] [<file.te>...]   type-check every non-generic routine, the stdlib included
-          tessera build                 build the solution its config.toml describes (here or above)
-          tessera build <file.te>...    build the files: one file with a config.toml in its own folder takes that
+          lapila new   [<folder>]      start a solution: config.toml, main.li, .gitignore, VS Code files
+          lapila check [<target>] [<trace>] [<file.li>...]   type-check every non-generic routine, the stdlib included
+          lapila build                 build the solution its config.toml describes (here or above)
+          lapila build <file.li>...    build the files: one file with a config.toml in its own folder takes that
                                         config.toml's settings, others build for this machine in debug
-          tessera run                   build it and run it
-          tessera run   <file.te>... [-- <argument>...]   build the files the same way and run the program
-          tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
-          tessera fmt   [--check] <file-or-dir>...   format .te files in place (--check: list files that would change)
-          tessera fmt   -               format the source on standard input to standard output (for an editor)
-          tessera lsp                   run the language server on standard input and output (for an editor)
-          tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
-          tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its ### docs
-          tessera help                  print this text
-          tessera version               print the builder's version
+          lapila run                   build it and run it
+          lapila run   <file.li>... [-- <argument>...]   build the files the same way and run the program
+          lapila test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.li>...
+          lapila fmt   [--check] <file-or-dir>...   format .li files in place (--check: list files that would change)
+          lapila fmt   -               format the source on standard input to standard output (for an editor)
+          lapila lsp                   run the language server on standard input and output (for an editor)
+          lapila lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
+          lapila docs  <source-dir> <output-dir>   write the API reference pages of a library from its ### docs
+          lapila help                  print this text
+          lapila version               print the builder's version
 
         build and run take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
                 mode, [debug] emit-llvm, trace, race-check, heap-check, ...), and a flag that it can say is an error
@@ -32,7 +32,7 @@ static class Cli
                 every routine keeping a frame record.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), config.toml's
                 [target] mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
-                debugger shows Tessera lines, routine parameters, bindings and block parameters.
+                debugger shows Lapila lines, routine parameters, bindings and block parameters.
         <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it
                  ([debug] trace in config.toml). Without either, debug and release builds keep it and release-time and
                  release-space leave it out; check keeps it. A routine marked @untraced is left out of it in any build.
@@ -47,10 +47,10 @@ static class Cli
         <target> (check and test): --target <arch-os-abi> (default: this machine), --cpu <name> (default: the
                   triple's baseline, such as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one).
                   @feature reads the result. --board <name or file.toml> is a board without an operating system. A
-                  name is a board that comes with Tessera (boards/<name>.toml), a path a board file of your own.
+                  name is a board that comes with Lapila (boards/<name>.toml), a path a board file of your own.
 
         All input files form one compilation unit.
-        test: every <name>.te in each <dir>, and every subdirectory <name>/ (its files compiled together), is
+        test: every <name>.li in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
@@ -74,7 +74,7 @@ static class Cli
 
     private static int Version()
     {
-        Console.WriteLine($"tessera {BuilderVersion()}");
+        Console.WriteLine($"lapila {BuilderVersion()}");
         return 0;
     }
 
@@ -117,8 +117,8 @@ static class Cli
         catch (CompileError e)
         {
             Console.Error.WriteLine(e.Message);
-            // TESSERA_STACK shows where in the builder the error was raised.
-            if (Environment.GetEnvironmentVariable("TESSERA_STACK") is { Length: > 0 }) Console.Error.WriteLine(e.StackTrace);
+            // LAPILA_STACK shows where in the builder the error was raised.
+            if (Environment.GetEnvironmentVariable("LAPILA_STACK") is { Length: > 0 }) Console.Error.WriteLine(e.StackTrace);
             return 1;
         }
         catch (ToolError e)
@@ -148,7 +148,7 @@ static class Cli
             return 0;
         }
         var files = paths.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.li", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         int changed = 0;
         foreach (var file in files)
@@ -200,7 +200,7 @@ static class Cli
     {
         if (args.Length == 0) return Fail("lint: give files or directories to lint");
         var files = args.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.li", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         foreach (var file in files)
             if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
@@ -402,8 +402,15 @@ static class Cli
         return BuildModes.Parse(name) ?? throw new ToolError($"--mode is {BuildModes.Names}, not \"{name}\"");
     }
 
-    /// The files of `tessera build` or `tessera run`. The commands take files and nothing else: a flag that config.toml
+    /// The files of `lapila build` or `lapila run`. The commands take files and nothing else: a flag that config.toml
     /// can say is an error that names the key, and one that is gone is an error that says what does its work now.
+    /// The message for a source file that still has the extension Lapila sources had before 0.5 (`.te`), or null.
+    public static string? OldSourceMessage(string file) =>
+        file.EndsWith(".te", StringComparison.OrdinalIgnoreCase)
+            ? $"{file} has the old extension .te: Lapila sources end in .li now. Rename it to " +
+              $"{Path.ChangeExtension(Path.GetFileName(file), ".li")} (every .te file of the program the same way)"
+            : null;
+
     private static List<string> FilesOnly(string[] args)
     {
         // A word after a flag that took one (`--mode release`) was that flag's, not a file.
@@ -428,7 +435,7 @@ static class Cli
             if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
             if (args[i] == "--show-destructs")
                 throw new ToolError("`--show-destructs` isn't an option: a test's <name>.destructs file holds the destruct "
-                    + "routines the builder writes, and `tessera test` compares them");
+                    + "routines the builder writes, and `lapila test` compares them");
             if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
             files.Add(args[i]);
         }
@@ -510,7 +517,7 @@ static class Cli
         // An executable reads its crash trace from the stack where the builder writes the table for it (Link runs the
         // steps): IR handed out on its own keeps the shadow stack, which needs nothing more.
         bool fromStack = executable && TraceTable.Supports(target.Arch, target.Os)
-            && Environment.GetEnvironmentVariable("TESSERA_TRACE_SHADOW") != "1";
+            && Environment.GetEnvironmentVariable("LAPILA_TRACE_SHADOW") != "1";
         var compiler = new Compiler(target, decls, traced, heapCheck, raceCheck, fromStack)
         {
             FileTagPaths = FileTagPaths(inputs, roots),
@@ -534,7 +541,7 @@ static class Cli
                     "no entry point: an executable's entry point is 'routine start() -> None', and main is an ordinary routine name; " +
                     "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Hosted)")
                 : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
-                    "no entry point: an executable needs 'routine start() -> None' (use 'tessera check' to type-check a file without one)");
+                    "no entry point: an executable needs 'routine start() -> None' (use 'lapila check' to type-check a file without one)");
         return ir;
     }
 
@@ -570,6 +577,9 @@ static class Cli
 
     internal static List<Decl> LoadDecls(IEnumerable<string> files, BuildTarget target)
     {
+        files = files.ToList();
+        foreach (string file in files)
+            if (OldSourceMessage(file) is { } old) throw new ToolError(old);
         // The clang runs that resolve the target's CPU and data layout don't depend on the sources, so they go on
         // while the sources are parsed.
         CpuModel.Prefetch(target);
@@ -578,14 +588,14 @@ static class Cli
         var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp),
                 Module: (string?)null))
             .ToList();
-        // Stdlib files are named from the stdlib directory (Standard/Collections/List.te) wherever the build runs, so
+        // Stdlib files are named from the stdlib directory (Standard/Collections/List.li) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
         // reported after the inputs' own errors, as when the inputs were read first.
         ExceptionDispatchInfo? stdlibError = null;
         try
         {
             string stdlib = StdlibDir();
-            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.te", SearchOption.AllDirectories)
+            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.li", SearchOption.AllDirectories)
                          .OrderBy(f => f.FullName))
                 if (!inputs.Contains(f.FullName))
                     jobs.Add((f.FullName, true, StandardLibrary.ShownAs(stdlib, f.FullName),
@@ -684,18 +694,18 @@ static class Cli
         return _ingrid;
     }
 
-    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with System/Prelude.te) above the working
+    /// The standard library: $LAPILA_STDLIB, or the nearest `Standard/` (with System/Prelude.li) above the working
     /// directory or the builder binary.
     internal static string StdlibDir()
     {
         if (_stdlib is not null) return _stdlib;
-        if (Environment.GetEnvironmentVariable("TESSERA_STDLIB") is { Length: > 0 } env)
+        if (Environment.GetEnvironmentVariable("LAPILA_STDLIB") is { Length: > 0 } env)
             return _stdlib = env;
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te")))
+                if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
                     return _stdlib = Path.Combine(dir.FullName, "Standard");
-        throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
+        throw new ToolError("cannot find the standard library; set LAPILA_STDLIB to the stdlib directory");
     }
 
     /// The solution's manifest, for `build` / `run` given no files.
@@ -742,14 +752,14 @@ static class Cli
             "--no-race-check" => "`race-check = false` under [debug]",
             "--trace" => "`trace = true` under [debug]",
             "--no-trace" => "`trace = false` under [debug]",
-            "-o" => "the entry file, whose name the output takes (build/<name>), as `executable = \"main.te\"` under [target]",
+            "-o" => "the entry file, whose name the output takes (build/<name>), as `executable = \"main.li\"` under [target]",
             _ => null,
         };
         string? gone = flag switch
         {
             "--no-stdlib-exports" or "--frame-pointers" => $"a {Manifest.FileName} with no `executable` under [target] builds a library, "
                 + "the `sources` files as LLVM IR, and its routines keep a frame record",
-            "--show-destructs" => "a test's <name>.destructs file holds the destruct routines the builder writes, and `tessera test` compares them",
+            "--show-destructs" => "a test's <name>.destructs file holds the destruct routines the builder writes, and `lapila test` compares them",
             _ => null,
         };
         return key is not null ? $"`{flag}` isn't an option: write {key} in {where}"
@@ -815,9 +825,9 @@ static class Cli
         if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } manifest)
         {
             if (manifest.IsLibrary)
-                throw new ToolError($"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use tessera build");
+                throw new ToolError($"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use lapila build");
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
-                throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use tessera build");
+                throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use lapila build");
             return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
         }
         var target = BuildTarget.Host();
@@ -837,7 +847,7 @@ static class Cli
     }
 
     private static string TempExe() =>
-        Path.Combine(Path.GetTempPath(), $"tessera-{Guid.NewGuid():N}" + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        Path.Combine(Path.GetTempPath(), $"lapila-{Guid.NewGuid():N}" + (OperatingSystem.IsWindows() ? ".exe" : ""));
 
     /// Deletes a temporary executable together with the debug database the Windows linker writes next to it.
     private static void DeleteTempExe(string exe)
@@ -877,7 +887,7 @@ static class Cli
                     asm = Path.ChangeExtension(ll, ".s");
                     RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-Xclang", "-disable-llvm-passes", "-g", optimized, "-o", asm]);
                     File.WriteAllText(asm, TraceTable.Patch(File.ReadAllText(asm), target.Arch, annotation));
-                    if (Environment.GetEnvironmentVariable("TESSERA_TRACE_KEEP") is { Length: > 0 } keep)
+                    if (Environment.GetEnvironmentVariable("LAPILA_TRACE_KEEP") is { Length: > 0 } keep)
                     {
                         File.Copy(optimized, keep + ".opt.ll", true);
                         File.Copy(ll, keep + ".ll", true);
@@ -902,7 +912,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
-            // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.te) live in synchronization.lib, not kernel32.
+            // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.li) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
@@ -1025,7 +1035,7 @@ static class Cli
                 catch (ObjectDisposedException) { }
             });
         }
-        // A test (its output captured) gets limitSeconds. `tessera run` waits as long as the program runs: a long
+        // A test (its output captured) gets limitSeconds. `lapila run` waits as long as the program runs: a long
         // check, such as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
         // hangs with its pipes open still runs into the limit instead of blocking the read forever.
         if (!captureOutput)
@@ -1072,8 +1082,8 @@ static class Cli
         }
         var target = targetArgs.Build();
         args = [.. dirs];
-        if (args.Length == 0) throw new ToolError("test takes one or more directories or .te files");
-        // A test is one file, or a subdirectory whose .te files are compiled together (several modules); its
+        if (args.Length == 0) throw new ToolError("test takes one or more directories or .li files");
+        // A test is one file, or a subdirectory whose .li files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
         // A subdirectory with a config.toml builds through it.
         var tests = new List<(string Stem, string[] Sources)>();
@@ -1087,8 +1097,8 @@ static class Cli
                     tests.Add((Path.GetDirectoryName(dir)!, [dir]));
                     continue;
                 }
-                if (Path.GetExtension(dir) != ".te")
-                    throw new ToolError($"{dir} is not a Tessera source (Tessera sources end in .te)");
+                if (Path.GetExtension(dir) != ".li")
+                    throw new ToolError($"{dir} is not a Lapila source (Lapila sources end in .li)");
                 tests.Add((Path.ChangeExtension(dir, null), [dir]));
                 continue;
             }
@@ -1099,11 +1109,11 @@ static class Cli
             {
                 tests.Add((stem, File.Exists(Path.Combine(stem, Manifest.FileName))
                     ? [Path.Combine(stem, Manifest.FileName)]
-                    : Directory.GetFiles(stem, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()));
+                    : Directory.GetFiles(stem, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()));
                 continue;
             }
             var found = TestsIn(dir);
-            if (found.Count == 0) throw new ToolError($"no .te files in {dir}");
+            if (found.Count == 0) throw new ToolError($"no .li files in {dir}");
             tests.AddRange(found);
         }
         bool qualify = args.Length > 1;
@@ -1189,14 +1199,14 @@ static class Cli
     /// A <name>.serial file marks a test that runs by itself, with no other test building or running beside it.
     internal static bool RunsAlone(string stem) => File.Exists(stem + ".serial");
 
-    /// The golden tests in a directory: every <name>.te, and every subdirectory <name>/ (its .te files compiled
+    /// The golden tests in a directory: every <name>.li, and every subdirectory <name>/ (its .li files compiled
     /// together, or built through its config.toml). A test's .expected / .exit / .error files sit next to it.
     internal static List<(string Stem, string[] Sources)> TestsIn(string dir) =>
-        Directory.GetFiles(dir, "*.te").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
+        Directory.GetFiles(dir, "*.li").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
             .Concat(Directory.GetDirectories(dir)
                 .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
                     ? [Path.Combine(d, Manifest.FileName)]
-                    : Directory.GetFiles(d, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                    : Directory.GetFiles(d, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
                 .Where(t => t.Item2.Length > 0))
             .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
 
@@ -1221,7 +1231,7 @@ static class Cli
     internal static string? RunOne(string[] sources, string stem, BuildTarget target)
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
-        // A message names files the way the host spells paths (tests\x.te on Windows), and an .error file spells them
+        // A message names files the way the host spells paths (tests\x.li on Windows), and an .error file spells them
         // with '/', so both are compared with '/'.
         bool HasExpectedError(string message) =>
             message.Replace('\\', '/').Contains(expectedError!.Replace('\\', '/'), StringComparison.Ordinal);

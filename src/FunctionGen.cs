@@ -2,9 +2,9 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
-/// A value in the IR being built: an LLVM operand and its Tessera type.
+/// A value in the IR being built: an LLVM operand and its Lapila type.
 public sealed record Val(string Op, DType Type);
 
 /// Lowers one routine instance to an LLVM function.
@@ -1523,7 +1523,7 @@ public sealed partial class FunctionGen
     /// A build error inside something a `@source` names is reported at that place, with the generated line after it:
     /// the generator's input is what its author reads.
     private static CompileError FromSource(CompileError e, Pos source) =>
-        new(source, $"{e.Text} (in the generated Tessera at {e.Pos})") { Final = e.Final, FromSource = true };
+        new(source, $"{e.Text} (in the generated Lapila at {e.Pos})") { Final = e.Final, FromSource = true };
 
     private void EmitRoutine()
     {
@@ -1802,7 +1802,7 @@ public sealed partial class FunctionGen
         int file = _c.DiFile(at.File);
         var types = new[] { _c.DiTypeRef(_inst.Ret) }.Concat(_inst.Params.Select(_c.DiTypeRef));
         int fnType = _c.MetaUnique($"!DISubroutineType(types: !{{{string.Join(", ", types)}}})");
-        // No linkageName: a debugger then shows the Tessera name (`S32.to[S64]`) instead of the mangled symbol.
+        // No linkageName: a debugger then shows the Lapila name (`S32.to[S64]`) instead of the mangled symbol.
         _sp = _c.Meta($"distinct !DISubprogram(name: {Compiler.MetaString(_decl.DisplayName)}, "
             + $"scope: !{file}, file: !{file}, line: {at.Line}, "
             + $"type: !{fnType}, scopeLine: {at.Line}, spFlags: {(_c.Optimized ? "DISPFlagDefinition | DISPFlagOptimized" : "DISPFlagDefinition")}, unit: !{_c.DiUnit()}, retainedNodes: !{{}})");
@@ -3755,7 +3755,7 @@ public sealed partial class FunctionGen
         (Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && Crashing.IsCrashable(leaf);
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
-    /// failure's number in the high half (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
+    /// failure's number in the high half (Trace.li's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTag(DType leaf, VariantType vt, uint id, Pos at)
     {
         if (!_c.Trace || _c.Prechecking || !_traced || !IsFailure(leaf, vt)) return $"{id}";
@@ -4363,7 +4363,7 @@ public sealed partial class FunctionGen
         Terminate($"br i1 {present}, label %{presentLabel}, label %{noneLabel}");
     }
 
-    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.te).
+    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.li).
     private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
         if (!_c.Trace || _c.Prechecking || !(IsFailure(observed, vt) || Crashing.IsUnion(observed))) return null;
@@ -4414,7 +4414,7 @@ public sealed partial class FunctionGen
             BindAtoms(binding.Name, observed, branch);
             if (MemOn && PointsAtMemory(branch) && FrameView(observed) is { } sees) _frameViews[binding.Name] = sees;
         }
-        // A failure made in an arm that observed one wraps it (Trace.te).
+        // A failure made in an arm that observed one wraps it (Trace.li).
         if (_c.Trace && !_c.Prechecking && (IsFailure(branch, vt) || Crashing.IsUnion(branch)))
         {
             string tagAt = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 0");
@@ -4661,7 +4661,7 @@ public sealed partial class FunctionGen
         t is RecordType { Decl.Name: "PointedSlice", Args.Count: 1 } slice && slice.Decl.Module == Compiler.SystemModule;
 
     /// `x.represent_into(out)` and `x.diagnose_into(out)` on a memory cell that holds no entity: the cell never reads the
-    /// value it holds, so it writes what it is, the same for both (Standard/System/Text/MemoryCell.te): `@S64(0x...)`,
+    /// value it holds, so it writes what it is, the same for both (Standard/System/Text/MemoryCell.li): `@S64(0x...)`,
     /// `@[S64](data: 0x..., count: 3)`, `&S64(at: 0x..., manager: HEAP)`, `&[S64](data: 0x..., count: 3, manager:
     /// HEAP)`. In a template hole or `Console.show(x)` the builder warns that the cell is shown, and says how to write
     /// the value. Null for any other call. A cell of an entity isn't one of these: the entity's routine takes the place.
@@ -5003,7 +5003,7 @@ public sealed partial class FunctionGen
                 return e;
             case BinaryExpr b:
             {
-                string name = Operators.Routine(b.Op) ?? throw Err(b.Pos, $"'{b.Op}' is not an operator Tessera has");
+                string name = Operators.Routine(b.Op) ?? throw Err(b.Pos, $"'{b.Op}' is not an operator Lapila has");
                 // `/` is true division: an integer divides with `//` (the Euclidean quotient) or `.div_trunc()` (toward zero).
                 if (b.Op == "/" && TryInfer(b.Left is IntLit or FloatLit ? b.Right : b.Left) is IntType)
                     throw Err(b.Pos, "'/' is true division: integers divide with '//' (the Euclidean quotient, whose remainder is never negative), or '.div_trunc()' for the quotient toward zero");
@@ -5299,9 +5299,9 @@ public sealed partial class FunctionGen
         if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
         // A call through a Callable passes BF16 (and on 32-bit x86 a returned B32 or B64) as its integer bits, as
-        // Tessera routines do. An external C routine takes the real float, so it can't sit behind one.
+        // Lapila routines do. An external C routine takes the real float, so it can't sit behind one.
         if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, _c.Target))
-            throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
+            throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
         // The first routine at a place is the one written there: `f.to[Work](...)` also names the block's runner at the
         // place of `f`, which isn't what the work runs.
         _routineValueSymbols.TryAdd(r.Pos, inst.Symbol);
@@ -5531,7 +5531,7 @@ public sealed partial class FunctionGen
                 + "an address. Write the address as an Addr (a literal such as base: Addr = 0x30010000, or inttoptr[U64, Addr](n) for "
                 + "one worked out), then convert it with .to[@T]() (a crash on zero) or .to[@T?]() (None for zero)");
         if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
-            && !_decl.IsLibrary && !Tessera.Derive.IsImplicit(_decl)
+            && !_decl.IsLibrary && !Lapila.Derive.IsImplicit(_decl)
             && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
             throw Err(plan.Pos, $"bitcast doesn't check that every bit on is one of {flags.Name}'s members: convert the "
                 + $"bitmask with to[{flags.Name}](), which throws UnknownBitsError for a bit no member has "
@@ -6545,7 +6545,7 @@ public sealed partial class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
-        // `failure_of(result)`: the number of the failure a Result holds (Trace.te), 0 for none or a value.
+        // `failure_of(result)`: the number of the failure a Result holds (Trace.li), 0 for none or a value.
         if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args: [var held] } && _c.FindFree("failure_of", _env.File, e.Pos) is null)
         {
             // Only the failure's number is read: a Result holding an entity isn't copied by it.
@@ -7043,13 +7043,13 @@ public sealed partial class FunctionGen
         return ReceiveFailable(new Val(EmitTmp($"load {carrier}, ptr {slot}"), valueType), carrier, ct.Ret, ct.Throws, pos);
     }
 
-    /// A call argument as the callee's ABI wants it: a BF16 goes to a Tessera routine as its i16 bits.
+    /// A call argument as the callee's ABI wants it: a BF16 goes to a Lapila routine as its i16 bits.
     private string AbiArg(Val a, bool bf16AsBits, string ext = "") =>
         bf16AsBits && Instance.BitsCarrier(a.Type, isReturn: false, _c.Target) is { } carrier
             ? $"{carrier} {EmitTmp($"bitcast {a.Type.Llvm} {a.Op} to {carrier}")}"
             : $"{a.Type.Llvm}{ext} {a.Op}";
 
-    /// A call's result as the caller uses it: a float a Tessera routine returned as its integer bits is bitcast back.
+    /// A call's result as the caller uses it: a float a Lapila routine returned as its integer bits is bitcast back.
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.BitsCarrier(t, isReturn: true, _c.Target) is { } carrier
             ? new Val(EmitTmp($"bitcast {carrier} {op} to {t.Llvm}"), t)
@@ -7566,7 +7566,7 @@ public sealed partial class FunctionGen
                 var step = range.Step is null ? new Val("1", it) : Eval(range.Step, it);
                 if (!literalStep)
                 {
-                    // A step held in a value: 0 crashes before the first round (RangeStepZeroError, as RazorForge's
+                    // A step held in a value: 0 crashes before the first round (RangeStepZeroError, as Revare's
                     // ranges do), and a negative one walks down, whatever the written form looks like.
                     RequireNonzeroStep(step, range.Step!.Pos);
                     if (!it.IsUnsigned) frame.DownwardOp = EmitTmp($"icmp slt {it.Llvm} {step.Op}, 0");

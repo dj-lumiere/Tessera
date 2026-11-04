@@ -5,7 +5,7 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-lan
 import { registerRun } from "./run";
 
 /**
- * Tessera in VS Code: the TextMate grammar colors the text, and the language server (`tessera lsp`) brings the errors,
+ * Lapila in VS Code: the TextMate grammar colors the text, and the language server (`lapila lsp`) brings the errors,
  * semantic colors, hover, completion, go to definition, rename and formatting. The server runs from a copy of its
  * build folder, so it never holds the files a rebuild overwrites, and a rebuild restarts it.
  */
@@ -14,11 +14,11 @@ let watcher: fs.FSWatcher | undefined;
 let restartTimer: NodeJS.Timeout | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    registerRun(context, { id: "tessera", name: "Tessera" }, locateServer);
+    registerRun(context, { id: "lapila", name: "Lapila" }, locateServer);
     context.subscriptions.push(
-        vscode.commands.registerCommand("tessera.restartServer", () => restart(context)),
+        vscode.commands.registerCommand("lapila.restartServer", () => restart(context)),
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration("tessera.builderPath")) void restart(context);
+            if (e.affectsConfiguration("lapila.builderPath")) void restart(context);
         }),
     );
     await start(context);
@@ -41,8 +41,8 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
     if (!server) {
         void vscode.window.showErrorMessage(
             vscode.env.language.startsWith("ko")
-                ? "Tessera 언어 서버를 찾지 못했습니다. 설정의 tessera.builderPath에 지정하거나 Tessera를 빌드하세요."
-                : "The Tessera language server isn't built or set. Set tessera.builderPath, or build Tessera.");
+                ? "Lapila 언어 서버를 찾지 못했습니다. 설정의 lapila.builderPath에 지정하거나 Lapila를 빌드하세요."
+                : "The Lapila language server isn't built or set. Set lapila.builderPath, or build Lapila.");
         return;
     }
     watchBuild(context, path.dirname(server));
@@ -65,30 +65,30 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
                 // Hover and doc text in the editor's language.
                 LSP_LOCALE: vscode.env.language,
         // The standard library the builder there finds: the Standard/ above it.
-        ...(stdlibAbove(path.dirname(server)) ? { TESSERA_STDLIB: stdlibAbove(path.dirname(server))! } : {}),
+        ...(stdlibAbove(path.dirname(server)) ? { LAPILA_STDLIB: stdlibAbove(path.dirname(server))! } : {}),
             },
         },
     };
     const clientOptions: LanguageClientOptions = {
-        documentSelector: [{ scheme: "file", language: "tessera" }, { scheme: "untitled", language: "tessera" }],
+        documentSelector: [{ scheme: "file", language: "lapila" }, { scheme: "untitled", language: "lapila" }],
     };
-    client = new LanguageClient("tessera", "Tessera", serverOptions, clientOptions);
+    client = new LanguageClient("lapila", "Lapila", serverOptions, clientOptions);
     await client.start();
 }
 
-/** The server the setting names, else the dev build in a workspace folder, else `tessera` on the PATH. */
+/** The server the setting names, else the dev build in a workspace folder, else `lapila` on the PATH. */
 function locateServer(): string | undefined {
-    const set = vscode.workspace.getConfiguration("tessera").get<string>("builderPath")?.trim();
+    const set = vscode.workspace.getConfiguration("lapila").get<string>("builderPath")?.trim();
     if (set) return fs.existsSync(set) ? set : undefined;
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
         for (const candidate of [
-            path.join(folder.uri.fsPath, "Tessera", "bin", "Debug", "net10.0", "tessera.dll"),
-            path.join(folder.uri.fsPath, "bin", "Debug", "net10.0", "tessera.dll"),
+            path.join(folder.uri.fsPath, "Lapila", "bin", "Debug", "net10.0", "lapila.dll"),
+            path.join(folder.uri.fsPath, "bin", "Debug", "net10.0", "lapila.dll"),
         ]) {
             if (fs.existsSync(candidate)) return candidate;
         }
     }
-    return onPath("tessera");
+    return onPath("lapila");
 }
 
 function onPath(name: string): string | undefined {
@@ -102,11 +102,11 @@ function onPath(name: string): string | undefined {
     return undefined;
 }
 
-/** The nearest `Standard/` (one holding System/Prelude.te) above a folder: where the builder there finds its library. */
+/** The nearest `Standard/` (one holding System/Prelude.li) above a folder: where the builder there finds its library. */
 function stdlibAbove(folder: string): string | undefined {
     for (let dir = folder; ; dir = path.dirname(dir)) {
         const candidate = path.join(dir, "Standard");
-        if (fs.existsSync(path.join(candidate, "System", "Prelude.te"))) return candidate;
+        if (fs.existsSync(path.join(candidate, "System", "Prelude.li"))) return candidate;
         if (path.dirname(dir) === dir) return undefined;
     }
 }
@@ -115,7 +115,7 @@ function stdlibAbove(folder: string): string | undefined {
 function stage(context: vscode.ExtensionContext, server: string): string {
     const folder = path.dirname(server);
     const stamp = String(newest(folder));
-    const root = path.join(context.globalStorageUri.fsPath, "tessera-lsp");
+    const root = path.join(context.globalStorageUri.fsPath, "lapila-lsp");
     const target = path.join(root, stamp);
     if (!fs.existsSync(path.join(target, path.basename(server)))) {
         fs.mkdirSync(root, { recursive: true });

@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// A routine with every type parameter bound: one LLVM function (or one external declaration).
 public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symbol, List<DType> parameters, DType ret)
@@ -53,7 +53,7 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     {
         get
         {
-            // Tessera has no exceptions and no unwinding, so no routine unwinds: not its own, and not a C routine it
+            // Lapila has no exceptions and no unwinding, so no routine unwinds: not its own, and not a C routine it
             // calls either, since a frame unwound into would have nothing to run there. Without it, ARM gets unwind
             // tables that need the C++ personality routine (__aeabi_unwind_cpp_pr0).
             var attrs = new List<string> { "nounwind" };
@@ -70,12 +70,12 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     }
 
     /// At -O0, LLVM's x86 backend treats a bfloat returned from a call as a promoted f32 and truncates it again
-    /// (BF16.from_bits(0xBF80) came back as 0x0001), and likewise for bfloat arguments. So Tessera routines pass BF16 as
+    /// (BF16.from_bits(0xBF80) came back as 0x0001), and likewise for bfloat arguments. So Lapila routines pass BF16 as
     /// its i16 bits and bitcast inside. External and exported routines keep the C ABI: LLVM itself calls the exported
     /// __truncsfbf2.
     public bool PassesBf16AsBits => Decl.AnnotationNamed("external") is null && Decl.AnnotationNamed("export") is null;
 
-    /// The integer type a Tessera routine passes a float as instead of the float itself, or null when it passes the
+    /// The integer type a Lapila routine passes a float as instead of the float itself, or null when it passes the
     /// float: BF16 always (as i16), and on 32-bit x86 a returned B32 or B64 (as i32 or i64). The C ABI there returns
     /// a float on the x87 stack, and loading a signaling NaN there quiets it (B32.from_bits(0x7F800003) came back as
     /// 0x7FC00003).
@@ -211,7 +211,7 @@ public sealed partial class Compiler
         string symbol;
         if (asm && r.AnnotationNamed("export") is null) symbol = MangleRoutine(r, env, ps, ret);
         else if (r.AnnotationNamed("external") is { } external && !asm) symbol = r.AnnotationNamed("symbol")?.First ?? r.Name;
-        // `@export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
+        // `@export("name")` defines the routine under that plain C name: Lapila's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.AnnotationNamed("export") is { } export)
         {
@@ -333,7 +333,7 @@ public sealed partial class Compiler
             + "declaration has and call that one");
     }
 
-    /// Where the target's C ABI for aggregates isn't implemented yet, a record can still pass by value between Tessera
+    /// Where the target's C ABI for aggregates isn't implemented yet, a record can still pass by value between Lapila
     /// routines (as an LLVM value), but not across a C boundary, where C would expect the ABI's own convention.
     private void CheckCBoundary(Instance sig)
     {

@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The crash trace read from the stack: a traced build keeps nothing while it runs. When something crashes (or a failure
 /// is thrown), the running flow's frame pointers are followed to the return addresses of the calls it is in, and a
@@ -10,16 +10,16 @@ namespace Tessera;
 /// is in and where: one frame for the routine that makes it, and one more for each traced routine LLVM inlined it
 /// into, with the line and column of the call in each. The normal path pays for the frame pointers only.
 ///
-/// The table is made in two steps around LLVM's code generation, for the RazorForge and Suflae builder too:
+/// The table is made in two steps around LLVM's code generation, for the Revare and Mielia builder too:
 ///
-/// 1. Annotate, on the optimized IR. The builder names its traced routines in the named metadata `!tessera.trace`
+/// 1. Annotate, on the optimized IR. The builder names its traced routines in the named metadata `!lapila.trace`
 ///    (`!{!subprogram, !"name", !"file", i32 hidesPosition}`), and gives each call a traced routine makes the debug
 ///    location of the call. For every call whose location (with the locations it was inlined at) is in a traced
 ///    routine, the chain of frames is collected, and the call's location gets a discriminator that names the chain.
 ///    Every routine gets `"frame-pointer"="all"` and no tail calls, so each call keeps a frame record. The frames and
-///    chains go into the module as constants (`tessera_trace_chains`, `tessera_trace_frames`).
+///    chains go into the module as constants (`lapila_trace_chains`, `lapila_trace_frames`).
 /// 2. Patch the assembly. After each call instruction whose `.loc` carries such a discriminator, a label marks the
-///    return address. The table (`tessera_trace_table`) lists, per section, each routine's start and end and each
+///    return address. The table (`lapila_trace_table`) lists, per section, each routine's start and end and each
 ///    marked return address with its chain, as 32-bit offsets from the entry (read-only, no relocation at load).
 ///
 /// Where the walk isn't ready (other platforms, the debug JIT, a program without an operating system) the builder keeps
@@ -35,11 +35,11 @@ public static class TraceTable
     public const int PlaceColumn = 65535;
 
     /// The named metadata a builder lists its traced routines in.
-    public const string NamedMetadata = "!tessera.trace";
+    public const string NamedMetadata = "!lapila.trace";
 
-    public const string TableSymbol = "tessera_trace_table";
-    public const string ChainsSymbol = "tessera_trace_chains";
-    public const string FramesSymbol = "tessera_trace_frames";
+    public const string TableSymbol = "lapila_trace_table";
+    public const string ChainsSymbol = "lapila_trace_chains";
+    public const string FramesSymbol = "lapila_trace_frames";
 
     /// A chain's discriminator is this plus its index: the optimizer's own discriminators stay far below.
     public const int DiscriminatorBase = 1 << 24;
@@ -94,7 +94,7 @@ public static class TraceTable
                 maxId = Math.Max(maxId, int.Parse(line.AsSpan(1, end - 1), CultureInfo.InvariantCulture));
             }
         }
-        // `!tessera.trace = !{!a, !b}`, each `!a = !{!sp, !"name", !"file", i32 hides}`.
+        // `!lapila.trace = !{!a, !b}`, each `!a = !{!sp, !"name", !"file", i32 hides}`.
         var tuples = new Dictionary<int, string>();
         foreach (string line in lines)
         {
@@ -271,7 +271,7 @@ public static class TraceTable
         string Str(string s)
         {
             if (strings.TryGetValue(s, out var name)) return name;
-            name = $"@tessera_trace_s.{strings.Count}";
+            name = $"@lapila_trace_s.{strings.Count}";
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             sb.Append(CultureInfo.InvariantCulture, $"{name} = private unnamed_addr constant [{bytes.Length + 1} x i8] c\"{IrBytes(bytes)}\\00\"\n");
             return strings[s] = name;
@@ -488,7 +488,7 @@ public static class TraceTable
 
         // The table: the groups (one per section), then each group's routines and calls.
         var groups = sectionOrder.Where(s => routines[s].Count > 0 || sites[s].Count > 0).ToList();
-        output.Append("\t.section\t.rodata.tessera_trace,\"a\",@progbits\n");
+        output.Append("\t.section\t.rodata.lapila_trace,\"a\",@progbits\n");
         output.Append("\t.p2align\t3\n");
         output.Append($"\t.globl\t{TableSymbol}\n\t.hidden\t{TableSymbol}\n\t.type\t{TableSymbol},@object\n");
         output.Append($"{TableSymbol}:\n");

@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Keeps every `bfloat` value inside the block that makes it. At -O0, LLVM's x86 backend carries a value from one
 /// block to another in a register of its promoted type: a bfloat goes over as an f32 and is truncated back with

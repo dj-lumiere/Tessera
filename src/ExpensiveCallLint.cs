@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The warning for an expensive call on a loop. A routine marked `#expensive` costs a lot on every target, every time
 /// it runs: it allocates or frees, asks the operating system for something, or does work in software that the hardware
@@ -13,7 +13,7 @@ namespace Tessera;
 /// Only direct calls are followed: the call has to resolve to an `#expensive` routine itself. A routine that calls one
 /// is not expensive by that, so calling it on a loop isn't reported. Which routine a call resolves to is the build's
 /// answer, so the lint runs where routines are built (FunctionGen), and its warnings come out with the build's:
-/// `check`, `build`, and `run` print them for the program's own files, `tessera lint` for any file, and the language
+/// `check`, `build`, and `run` print them for the program's own files, `lapila lint` for any file, and the language
 /// server shows them in the editor.
 ///
 /// A routine that is itself `#expensive` isn't checked: its cost is already declared at every call of it, and a loop in

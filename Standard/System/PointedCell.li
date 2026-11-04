@@ -1,0 +1,162 @@
+# Lapila stdlib: @T — typed pointer
+#
+# Maps to LLVM IR ptr (opaque pointer).  The type parameter T records the
+# pointee type for load/store — it is erased at the IR level.
+
+module System
+
+### A typed pointer `@T`, mapped to LLVM `ptr`. `T` records the pointee type for `load` and `store` and is erased in the IR. The pointer does not own what it points at.
+### :typeparam T: The pointee type.
+@llvm("ptr")
+record PointedCell[T]
+    nothing
+
+# -- pointer identity ----------------------------------------------------------
+
+### Whether `me` and `other` hold the same address: `me === other`.
+### :typeparam T: The pointee type.
+### :param other: The right-hand operand.
+### :returns: `true` when the addresses are equal.
+routine PointedCell[T].same(other: Me) -> Bool
+    a: S64 = ptrtoint[Me, S64](me)
+    b: S64 = ptrtoint[Me, S64](other)
+    return ieq[S64](a, b)
+
+### Whether `me` and `other` hold different addresses: `me !== other`.
+### :typeparam T: The pointee type.
+### :param other: The right-hand operand.
+### :returns: `true` when the addresses differ.
+routine PointedCell[T].notsame(other: Me) -> Bool
+    a: S64 = ptrtoint[Me, S64](me)
+    b: S64 = ptrtoint[Me, S64](other)
+    return ine[S64](a, b)
+
+# -- predicates ----------------------------------------------------------------
+
+### Refused: an `@T` always points at a value.
+### :typeparam T: The pointee type.
+### :returns: Never returns: every call is a build error.
+@refused("this asks whether an @T points at nothing, and an @T always points at a value. Declare what may be missing as @T? and take it apart with when, or ask is_absent()")
+routine PointedCell[T].is_hollow() -> Bool
+    a: S64 = ptrtoint[Me, S64](me)
+    return ieq[S64](a, 0)
+
+### Refused: an `@T` always points at a value.
+### :typeparam T: The pointee type.
+### :returns: Never returns: every call is a build error.
+@refused("this asks whether an @T points at something, and an @T always does. Declare what may be missing as @T? and take it apart with when, or ask is_present()")
+routine PointedCell[T].is_not_hollow() -> Bool
+    a: S64 = ptrtoint[Me, S64](me)
+    return ine[S64](a, 0)
+
+### Whether the value at this address is hollow: every byte of it zero, as a place with no value starts and as `steal` leaves it.
+### :typeparam T: The pointee type.
+### :returns: `true` when every byte of the T here is zero.
+routine PointedCell[T].holds_hollow() -> Bool
+    place: Addr = me
+    bytes: @Byte = place.to[@Byte]()
+    for i in 0 til sizeof[T]()
+        if bytes.stride(i).peek() != 0x00
+            return false
+    then
+        return true
+
+# -- pointer arithmetic --------------------------------------------------------
+
+### Returns a pointer `bytes` bytes further on (back for a negative `bytes`).
+### No bounds checking: the caller is responsible for staying in bounds.
+### :param bytes: The distance in bytes, negative to move back.
+### :returns: The moved pointer, with the same pointee type.
+routine PointedCell[T].offset(bytes: S64) -> Me
+    raw: Addr = me
+    moved: Addr = addr_offset(base: raw, bytes)
+    result: Me = moved.to[Me]()
+    return result
+
+# `p.stride(n)`, the pointer n Ts further on (`offset` counted in elements rather than bytes, with n a U64, or
+# an S64 to move back), is built into the builder: it's a place like a field, so `p.stride(i).f` chains and a
+# load or store through it keeps a dense record's real alignment. No bounds checking.
+
+# -- casting -------------------------------------------------------------------
+
+### Reinterprets this pointer as a pointer to a different type.
+### No-op at the IR level: it only changes the static type.
+### :typeparam TPointee: The new pointee type.
+### :returns: The same address as a `@TPointee`.
+routine PointedCell[T].to[@TPointee]() -> @TPointee
+needs AnyType TPointee
+    result: @TPointee = bitcast[Me, @TPointee](me)
+    return result
+
+### The address alone, without the pointee type: what `{p.to[Addr]()}` prints (`0x7ffd5e8c1a40`), since a pointer
+### itself is neither Representable nor Diagnosable. `{p.peek()}` prints what it points to.
+### :typeparam T: The pointee type.
+### :returns: The same address as an `Addr`.
+routine PointedCell[T].to[Addr]() -> Addr
+    address: Addr = me
+    return address
+
+# -- memory --------------------------------------------------------------------
+
+### Reads the T at this address.
+### :returns: The value stored there.
+@external("llvm")
+@template("{result} = load {T}, ptr {me}")
+routine PointedCell[T].peek() -> T
+
+### Writes `value` to this address.
+### :param value: The value to write.
+@external("llvm")
+@template("store {T} {value}, ptr {me}")
+routine PointedCell[T].poke(value: T) -> None
+
+### Writes this value to `dest`: `dest.poke(me)` read from the value's side, for a chain that ends in memory
+### (`a.add(b).poke_into(sum)`).
+### :param dest: The address to write to.
+@external("llvm")
+@template("store {T} {me}, ptr {dest}")
+routine T.poke_into(dest: @T) -> None
+needs AnyType T
+
+### Reads the T at this address, which may not be aligned for T: a wire format, a packed buffer, a field taken out of a
+### @layout(dense) record. Costs nothing extra where the CPU allows unaligned access (x86, AArch64) and reads byte
+### by byte where it doesn't (Cortex-M0, RISC-V without Zicclsm).
+### :returns: The value stored there.
+@external("llvm")
+@template("{result} = load {T}, ptr {me}, align 1")
+routine PointedCell[T].peek_unaligned() -> T
+
+### Writes `value` to this address, which may not be aligned for T.
+### :param value: The value to write.
+@external("llvm")
+@template("store {T} {value}, ptr {me}, align 1")
+routine PointedCell[T].poke_unaligned(value: T) -> None
+
+### A read the compiler may not remove, merge, or reorder with other volatile accesses: for memory-mapped registers.
+### :returns: The value stored there.
+@external("llvm")
+@template("{result} = load volatile {T}, ptr {me}")
+routine PointedCell[T].peek_volatile() -> T
+
+### A write the compiler may not remove, merge, or reorder with other volatile accesses.
+### :param value: The value to write.
+@external("llvm")
+@template("store volatile {T} {value}, ptr {me}")
+routine PointedCell[T].poke_volatile(value: T) -> None
+
+### Sets `count` Ts from here on to all-zero bytes, padding included.
+### :param count: The number of Ts to clear.
+### :throws: Crashes with `IntegerOverflowError` when `count` times the size of T does not fit in U64.
+routine PointedCell[T].zeroinit(count: U64) -> None
+    elem_size: U64 = sizeof[T]()
+    size: U64 = elem_size * count
+    ptr_zero_bytes(dst: me, bytes: size)
+    return
+
+# llvm.memset, so the core layer needs no libc: without an operating system, Freestanding.li supplies memset.
+### Fills `bytes` bytes at `dst` with zero through `llvm.memset`.
+### :param dst: The first byte to clear.
+### :param bytes: The number of bytes to clear.
+@external("llvm")
+@template("call void @llvm.memset.p0.i64(ptr {dst}, i8 0, i64 {bytes}, i1 false)")
+secret routine ptr_zero_bytes(dst: Addr, bytes: U64) -> None

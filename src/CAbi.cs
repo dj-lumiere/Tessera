@@ -1,7 +1,7 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The C calling convention's demands on a routine's signature, per target, mirroring what clang emits for the same
-/// C types. Every routine uses it except `@callconv("fast")` ones, so a Tessera routine can be a C callback, an
+/// C types. Every routine uses it except `@callconv("fast")` ones, so a Lapila routine can be a C callback, an
 /// `@export`, or the far side of a prebuilt boundary.
 public static class CAbi
 {

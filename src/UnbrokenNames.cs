@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The names of the routines on `@T` that reach memory as one unbroken step: the operation, then `_unbroken`, then an
 /// optional `_raw` (`peek_unbroken`, `fetch_add_unbroken`, `compare_exchange_weak_unbroken_raw`). The memory order is a

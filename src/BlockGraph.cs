@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// A routine's blocks as a graph: each block's edges go to the blocks its terminator and its guard lines name. A loop is
 /// a set of blocks that reach each other again through those edges (a strongly connected component), a block that

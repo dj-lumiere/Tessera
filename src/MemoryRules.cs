@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The memory model's group check, over one routine's blocks. A `BorrowedCell[T]` or a `BorrowedSlice[T]` is memory taken from a
 /// manager, released exactly once. `=` copies its bits, so every handle that names the same memory belongs to one

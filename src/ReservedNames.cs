@@ -1,6 +1,6 @@
-namespace Tessera;
+namespace Lapila;
 
-/// The words the parser keeps for itself. Kept in its own file so tools that generate Tessera source (Mini) can link
+/// The words the parser keeps for itself. Kept in its own file so tools that generate Lapila source (Mini) can link
 /// it without the parser.
 public static class ReservedNames
 {

@@ -1,10 +1,10 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The warnings for a loop name nothing uses, and for an `until` on a literal. `until true` stops before its first round, so its body never runs.
 /// `until false` never ends by itself, which `loop` says, and the language server offers to write `loop` there.
 ///
-/// A warning, like ChainLint's: `tessera check`, `build`, and `run` print it for the program's own files, and
-/// `tessera lint` for any file.
+/// A warning, like ChainLint's: `lapila check`, `build`, and `run` print it for the program's own files, and
+/// `lapila lint` for any file.
 public static class LoopLint
 {
     public static List<string> Check(IEnumerable<Decl> decls)

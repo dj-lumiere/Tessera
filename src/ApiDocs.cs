@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The API reference of a library as MkDocs pages, written from its `///` doc comments: one page per source file,
 /// mirroring the library's folders, with an index page per folder. Each record, choice, variant, and concept gets its
@@ -43,7 +43,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
     public (int Files, int Pages, List<string> Problems) Generate(string outputRoot)
     {
         var problems = new List<string>();
-        var files = Directory.EnumerateFiles(_root, "*.te", SearchOption.AllDirectories)
+        var files = Directory.EnumerateFiles(_root, "*.li", SearchOption.AllDirectories)
             .Select(f => Path.GetRelativePath(_root, f).Replace('\\', '/'))
             .Where(DocLint.IsLibraryFile)
             .Order(StringComparer.Ordinal)
@@ -375,7 +375,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
         return 0;
     }
 
-    private static void AppendCode(StringBuilder sb, string code) => sb.Append($"```tessera\n{code}\n```\n\n");
+    private static void AppendCode(StringBuilder sb, string code) => sb.Append($"```lapila\n{code}\n```\n\n");
 
     private void AppendItem(StringBuilder sb, Page page, string text, int docLine)
     {
@@ -544,7 +544,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
         foreach (string folder in folders)
         {
             var text = new StringBuilder(folder.Length == 0
-                ? "# Tessera Standard Library\n\nThe API reference of the Tessera standard library, generated from the doc "
+                ? "# Lapila Standard Library\n\nThe API reference of the Lapila standard library, generated from the doc "
                   + "comments in its sources.\n\n"
                 : $"# {folder.Replace('/', ' ')}\n\n");
             var subfolders = folders.Where(f => f.Length > 0 && Folder(f) == folder).ToList();

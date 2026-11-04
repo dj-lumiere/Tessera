@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Holds every declaration of a compilation (user files plus the standard library), resolves types and names, and
 /// instantiates routines on demand. Library routines are checked and emitted only when something uses them.
@@ -12,8 +12,8 @@ public sealed partial class Compiler
 
     /// Whether the standard library's exported routines (the default crash report, the half and bfloat conversions LLVM calls)
     /// are emitted even when nothing here calls them. A program needs them, and so does a library whose host resolves
-    /// them from it (Ingrid's runtime). A library built into a RazorForge program next to that runtime (Anvila's
-    /// IngridTessera) leaves them out.
+    /// them from it (Ingrid's runtime). A library built into a Revare program next to that runtime (Anvila's
+    /// IngridLapila) leaves them out.
     public bool EmitLibraryExports { get; init; } = true;
 
     /// The libraries and library directories the build adds to the link (the manifest's `-L` and `-l` flags): with the
@@ -107,7 +107,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _wideStrings = [];
 
     /// <paramref name="trace"/>: whether the program's routines keep the crash trace (Trace.cs). A builder that uses
-    /// Tessera as a library passes false unless it wants Tessera's trace in what it builds.
+    /// Lapila as a library passes false unless it wants Lapila's trace in what it builds.
     /// <paramref name="heapCheck"/>: whether the standard library's `@heap_check("on")` declarations are kept (the
     /// default heap catches a block freed twice) instead of its `@heap_check("off")` ones. It is the manifest's
     /// `[debug] heap-check`, the same in every build mode.
@@ -160,7 +160,7 @@ public sealed partial class Compiler
                     else Add(_methods, (r.Owner.Name, r.Name), r);
                     _allRoutines.Add(r);
                     // A routine derived without being asked for is checked when used, like a library routine.
-                    if (!r.IsLibrary && !Tessera.Derive.IsImplicit(r)) _userRoutines.Add(r);
+                    if (!r.IsLibrary && !Lapila.Derive.IsImplicit(r)) _userRoutines.Add(r);
                     break;
             }
         }
@@ -174,7 +174,7 @@ public sealed partial class Compiler
                 throw new CompileError(imp.Pos, IsUnder(imp.Path, StandardLibrary.IngridRoot)
                     && !_modules.Contains(StandardLibrary.IngridRoot)
                     ? $"unknown module '{imp.Path}': Ingrid's library wasn't found (an Ingrid folder next to the standard "
-                      + "library, or Ingrid/tessera above it); set TESSERA_INGRID to its folder"
+                      + "library, or Ingrid/lapila above it); set LAPILA_INGRID to its folder"
                     : $"unknown module '{imp.Path}'");
             // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
             // start nobody asked for.
@@ -289,8 +289,8 @@ public sealed partial class Compiler
         }
         foreach (var d in walked)
         {
-            if (!d.IsLibrary) _shownDestructs.Add((d, Tessera.Derive.DefaultDestructSource(d, t => needs.Holds(d, t))));
-            foreach (var r in Tessera.Derive.DefaultDestruct(d, t => needs.Holds(d, t)).OfType<RoutineDecl>())
+            if (!d.IsLibrary) _shownDestructs.Add((d, Lapila.Derive.DefaultDestructSource(d, t => needs.Holds(d, t))));
+            foreach (var r in Lapila.Derive.DefaultDestruct(d, t => needs.Holds(d, t)).OfType<RoutineDecl>())
                 AddDerivedRoutine(r);
         }
     }
@@ -299,7 +299,7 @@ public sealed partial class Compiler
     /// the type, in the order of the types in their files.
     private readonly List<(Decl Type, string Source)> _shownDestructs = [];
 
-    /// The `destruct` routines the builder wrote for the program's own types, as Tessera source (`--show-destructs`):
+    /// The `destruct` routines the builder wrote for the program's own types, as Lapila source (`--show-destructs`):
     /// a comment says which type it is for and where that type is, then the routine, marked `@derived(implicit)` as
     /// it is kept. Empty when there is none.
     public string ShownDestructs()
@@ -654,8 +654,8 @@ public sealed partial class Compiler
     {
         if (!RaceCheck) return "";
         const string options = "halt_on_error=1 abort_on_error=0 exitcode=82 allocator_may_return_null=1";
-        return $"@tessera.race_options = private unnamed_addr constant [{options.Length + 1} x i8] c\"{options}\\00\"\n"
-               + "define ptr @__tsan_default_options() nounwind {\n  ret ptr @tessera.race_options\n}\n\n";
+        return $"@lapila.race_options = private unnamed_addr constant [{options.Length + 1} x i8] c\"{options}\\00\"\n"
+               + "define ptr @__tsan_default_options() nounwind {\n  ret ptr @lapila.race_options\n}\n\n";
     }
 
     /// The function attribute the race check instruments a routine by, or nothing.
@@ -680,7 +680,7 @@ public sealed partial class Compiler
         if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
         foreach (var r in _userRoutines) CheckRoot(r);
         if (ExportsNamingCLibrarySymbols() is [var taken, ..]) throw taken;
-        // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
+        // Exported library routines are always emitted: something outside Lapila (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
         if (EmitLibraryExports)
@@ -722,7 +722,7 @@ public sealed partial class Compiler
     private IEnumerable<Decl> GenericDecls(Func<Decl, bool> include) =>
         _records.Values.SelectMany(g => g).Where(d => d.TypeParams.Count > 0).Cast<Decl>()
             .Concat(_variants.Values.SelectMany(g => g).Where(d => d.TypeParams.Count > 0))
-            .Concat(_allRoutines.Where(r => r.Clauses.Count > 0 && !Tessera.Derive.IsImplicit(r)))
+            .Concat(_allRoutines.Where(r => r.Clauses.Count > 0 && !Lapila.Derive.IsImplicit(r)))
             .Where(include);
 
     /// A declaration's value type parameters and defaults, checked where they are written, before any use: a kind a
@@ -752,7 +752,7 @@ public sealed partial class Compiler
     }
 
     /// Checks every non-generic routine, library included, and returns all errors instead of stopping at the
-    /// first. Used by `tessera check` to validate the standard library.
+    /// first. Used by `lapila check` to validate the standard library.
     public int InstanceCount => _instances.Count;
 
     /// The expensive-call warnings (ExpensiveCallLint) of every routine built so far, by the call's place: a generic
@@ -827,7 +827,7 @@ public sealed partial class Compiler
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
         // A library export the program replaces (a C name the program defines itself) isn't part of the program.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
-        foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
+        foreach (var r in _allRoutines.Where(r => !Lapila.Derive.IsImplicit(r)
                      && !(r.IsLibrary && r.AnnotationNamed("export") is { } e && programExports.Contains(e.First))
                      && (scope is null || scope(r.File))))
         {
@@ -973,7 +973,7 @@ public sealed partial class Compiler
             throw new CompileError(c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
     }
 
-    /// `@export("tessera_pool_next")` above a global defines it under that C name, so code outside the program (a
+    /// `@export("lapila_pool_next")` above a global defines it under that C name, so code outside the program (a
     /// language runtime's library linked with it) reads and writes the same variable through an `@external("c")`
     /// declaration of the name.
     private static void CheckExportedVariable(PresetDecl c, Annotation export)
@@ -1072,14 +1072,14 @@ public sealed partial class Compiler
         return functions;
     }
 
-    /// `@tessera.reset_thread_locals`, what the stdlib's `ThreadLocalManager.reset()` calls: it stores each `@threadlocal`
+    /// `@lapila.reset_thread_locals`, what the stdlib's `ThreadLocalManager.reset()` calls: it stores each `@threadlocal`
     /// global's starting value in the running thread's copy. A thread manager's worker calls it before each ticket's
     /// work, so the work starts from the values a new thread would.
     private string ResetThreadLocals()
     {
         var f = new StringBuilder();
         // Nothing unwinds through it: without nounwind a 32-bit ARM object would ask for an unwinding personality.
-        f.AppendLine($"define internal void @tessera.reset_thread_locals() nounwind{UnwindTable} {{");
+        f.AppendLine($"define internal void @lapila.reset_thread_locals() nounwind{UnwindTable} {{");
         for (int i = 0; i < _threadLocals.Count; i++)
         {
             var (name, llvm, init) = _threadLocals[i];
@@ -1418,7 +1418,7 @@ public sealed partial class Compiler
     }
 
     /// Sets the trace sizes the manifest gives (`[debug] trace-frames`, `failure-traces`): the standard library's
-    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.te). Null keeps a size as the library has it.
+    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.li). Null keeps a size as the library has it.
     public void SetTraceSizes(int? frames, int? failures)
     {
         if (frames is { } f)
@@ -1430,14 +1430,14 @@ public sealed partial class Compiler
     }
 
     /// Sets the size of the Crash service's message buffer the manifest gives (`[crash] message-size`): the standard
-    /// library's CRASH_MESSAGE_SIZE (Crash.te). Null keeps the library's.
+    /// library's CRASH_MESSAGE_SIZE (Crash.li). Null keeps the library's.
     public void SetCrashMessageSize(int? bytes)
     {
         if (bytes is { } n) SetLibraryPreset("CRASH_MESSAGE_SIZE", "U64", n, "[crash] message-size", required: true);
     }
 
     /// Sets the AccessManager's checks the manifest or the mode gives: the standard library's DEADLOCK_CHECK
-    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.te). A check the
+    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.li). A check the
     /// manifest leaves out (null) takes the mode's default for the deadlock check and stays as the library has it for
     /// the order check, and a program that doesn't link the AccessManager has neither preset.
     public void SetAccessChecks(bool? deadlockCheck, bool deadlockDefault, bool? accessOrder)
@@ -2817,7 +2817,7 @@ public sealed partial class Compiler
             var used = failing && CanRecover(routine) ? RecoveringOf(routine) : routine;
             var inst = RequireInstance(used, routineEnv);
             if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, Target))
-                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
+                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Lapila routine");
             // Memory open to any failure holds the address with its kind beside it.
             return want.IsOpen
                 ? $"{{ ptr @{Quote(inst.Symbol)}, i8 {(inst.IsFailable ? CallableType.KindFailing : CallableType.KindPlain)} }}"

@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The language server's semantic tokens: an entity's name is sent as <c>entityType</c> wherever it stands (its
@@ -63,9 +63,9 @@ public class SemanticTokenTests
 
     private static List<(int Line, string Text, string Kind)> Classify()
     {
-        string dir = Path.Combine(Path.GetTempPath(), "tessera-semantic-tokens-" + Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Path.GetTempPath(), "lapila-semantic-tokens-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
-        string file = Path.Combine(dir, "ledger.te");
+        string file = Path.Combine(dir, "ledger.li");
         File.WriteAllText(file, Source);
         try
         {
@@ -80,7 +80,7 @@ public class SemanticTokenTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te")))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
                 return dir.FullName;
         throw new InvalidOperationException("no Standard/ above the test assembly");
     }

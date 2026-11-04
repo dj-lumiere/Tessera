@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The memory-cell warning: a memory cell (<c>@T</c>, <c>@[T]</c>, <c>&amp;T</c>, <c>&amp;[T]</c>) in a template hole or
@@ -20,7 +20,7 @@ public class MemoryCellLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.te:6:20: warning: this shows the cell 'sum' itself (its address and manager): if you meant "
+        Assert.Contains("t.li:6:20: warning: this shows the cell 'sum' itself (its address and manager): if you meant "
             + "its value, write sum.load()", warning);
     }
 
@@ -58,7 +58,7 @@ public class MemoryCellLintTests
         var warnings = Lint("""
             routine start() -> None
                 sum: &S64 <- 5
-                name: @[Byte] = "Tessera"
+                name: @[Byte] = "Lapila"
                 words: &List[S64] <- List[S64].of(values: [1, 2], manager: HEAP)
                 Console.show("{sum.load()} {name} {words}")
                 return
@@ -97,12 +97,12 @@ public class MemoryCellLintTests
     {
         var decls = Parse("import Collections\nimport Hosted\n\n" + source);
         var compiler = new Compiler(BuildTarget.Host(), WithStdlib(decls));
-        Assert.Empty(compiler.CheckAll(scope: f => f == "t.te"));
+        Assert.Empty(compiler.CheckAll(scope: f => f == "t.li"));
         return StyleLint.Check(decls, built: [compiler]).Where(w => w.Contains("shows the cell")).ToList();
     }
 
     private static List<Decl> Parse(string source) =>
-        new Parser(new Lexer("t.te", source).Lex(), "t.te").ParseModule().Decls;
+        new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls;
 
     private static List<Decl> WithStdlib(List<Decl> decls) =>
         [.. decls, .. StandardLibrary.Load(Path.Combine(FindRoot(), "Standard"))];
@@ -110,9 +110,9 @@ public class MemoryCellLintTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

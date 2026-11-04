@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The escape check across routines (rule 3 followed out of a routine). While a routine is built, FunctionGen records
 /// what it does with values that may reach memory: each store (`poke` and its family), each call to a routine of the

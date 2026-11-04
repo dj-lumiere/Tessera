@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The operators and the routines they stand for: `a + b` is `a.add(b)`, `-x` is `x.neg()`. A type takes an operator
 /// by obeying the operator's protocol (`Addable[T]` for `+`), which asks for the routine: declaring the routine alone

@@ -1,8 +1,8 @@
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
-/// The canonical layout of a Tessera source file. It works line by line, so comments and line breaks stay where they
+/// The canonical layout of a Lapila source file. It works line by line, so comments and line breaks stay where they
 /// are:
 /// - indentation is spaces, 4 per level (a tab becomes 4 spaces);
 /// - one blank line between blocks, and between a routine and the next top-level declaration or comment;

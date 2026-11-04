@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Numerics;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 public enum TokenKind
 {
@@ -113,7 +113,7 @@ public static class SourceText
 /// never a keyword.
 public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default, bool Escaped = false);
 
-public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error: {message}")
+public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error[LI]: {message}")
 {
     public Pos Pos { get; } = pos;
 
@@ -190,7 +190,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 
             if (c == '`')
             {
-                // `fadd.d`: a name holding characters Tessera's own spelling can't, never a keyword.
+                // `fadd.d`: a name holding characters Lapila's own spelling can't, never a keyword.
                 _tokens.Add(new Token(TokenKind.Ident, ReadEscapedName(pos), pos, Escaped: true));
                 continue;
             }
@@ -215,8 +215,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 string name = ReadIdent();
                 if (name is "self" or "Self")
                     throw new CompileError(pos, name == "self"
-                        ? "'self' isn't a Tessera name: the receiver is written me"
-                        : "'Self' isn't a Tessera name: the type a routine is on is written Me");
+                        ? "'self' isn't a Lapila name: the receiver is written me"
+                        : "'Self' isn't a Lapila name: the type a routine is on is written Me");
                 _tokens.Add(new Token(TokenKind.Ident, name, pos));
                 continue;
             }

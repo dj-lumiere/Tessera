@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 using Atom = EscapeCheck.Atom;
 using FrameAtom = EscapeCheck.FrameAtom;

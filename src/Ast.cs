@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 
-namespace Tessera;
+namespace Lapila;
 
 // ── Types as written ────────────────────────────────────────────────────────
 

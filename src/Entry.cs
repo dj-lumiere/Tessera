@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The program's entry. A program's entry point is `routine start() -> None`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
@@ -58,7 +58,7 @@ public sealed partial class Compiler
     public RoutineDecl? MainRoutine => _userRoutines.FirstOrDefault(r => r.Owner is null && r.Name == "main");
 
     /// Checks an entry routine's declaration: `routine start() -> None` or `routine when_power_on() -> None`, a routine
-    /// with a body that Tessera calls, and `when_power_on` only on a target without an operating system.
+    /// with a body that Lapila calls, and `when_power_on` only on a target without an operating system.
     private void CheckEntryRoutine(RoutineDecl r)
     {
         string shape = $"routine {r.Name}() -> None";
@@ -145,7 +145,7 @@ public sealed partial class Compiler
         _entry.AppendLine($"define i32 @main(i32 %argc, ptr %argv) {EntryAttrs(start.Pos)} {{");
         _entry.AppendLine("entry:");
         _entry.AppendLine($"  call {setArguments.CcPrefix(Target)}void @{Quote(setArguments.Symbol)}(i32 %argc, ptr %argv)");
-        // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.te). The race check
+        // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.li). The race check
         // reports faults itself.
         if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(HostedModule, "install_fault_handlers", start.Pos))}");
         // The entry has no debug location to keep `start`'s frame in if LLVM inlined it there: with the trace read
@@ -175,7 +175,7 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board, startInst, halt };
-        // The CpuEventManager's table calls tessera_cpu_event, Unhosted's routine for the target.
+        // The CpuEventManager's table calls lapila_cpu_event, Unhosted's routine for the target.
         string? cpuEvent = Target.Arch switch
         {
             "aarch64" => "aarch64_cpu_event",
@@ -187,7 +187,7 @@ public sealed partial class Compiler
         if (ExposeDefinitions) NoteExposed(WhenPowerOnName);
 
         string attrs = EntryAttrs(start.Pos);
-        string body = armM ? WhenPowerOnName : "tessera_boot";
+        string body = armM ? WhenPowerOnName : "lapila_boot";
         _entry.AppendLine("; The program's entry without an operating system: when_power_on readies the core, then start, then a halt.");
         _entry.AppendLine($"define void @{body}() noreturn {attrs} {{");
         _entry.AppendLine("entry:");
@@ -204,10 +204,10 @@ public sealed partial class Compiler
             // flash.
             var slots = new List<string> { "ptr @__stack_top", $"ptr @{WhenPowerOnName}" };
             for (int exception = 2; exception < 16; exception++)
-                slots.Add(exception is 7 or 8 or 9 or 10 or 13 ? "ptr null" : "ptr @tessera_cortex_m_exception");
-            _entry.AppendLine("declare void @tessera_cortex_m_exception()");
-            _entry.AppendLine($"@tessera_vectors = constant [16 x ptr] [{string.Join(", ", slots)}], section \".isr_vector\", align 4");
-            _entry.AppendLine("@llvm.used = appending global [1 x ptr] [ptr @tessera_vectors], section \"llvm.metadata\"");
+                slots.Add(exception is 7 or 8 or 9 or 10 or 13 ? "ptr null" : "ptr @lapila_cortex_m_exception");
+            _entry.AppendLine("declare void @lapila_cortex_m_exception()");
+            _entry.AppendLine($"@lapila_vectors = constant [16 x ptr] [{string.Join(", ", slots)}], section \".isr_vector\", align 4");
+            _entry.AppendLine("@llvm.used = appending global [1 x ptr] [ptr @lapila_vectors], section \"llvm.metadata\"");
             ModuleAsm(CortexMExceptionAsm);
             return;
         }
@@ -215,12 +215,12 @@ public sealed partial class Compiler
         if (Target.Arch == "riscv32") ModuleAsm(RiscvTrapAsm(cpu.Has("d", start.Pos) ? 8 : cpu.Has("f", start.Pos) ? 4 : 0));
         string asm = Target.Arch switch
         {
-            "x86_64" => "xor %ebp, %ebp\\0Alea __stack_top(%rip), %rsp\\0Acall tessera_boot\\0Aud2",
+            "x86_64" => "xor %ebp, %ebp\\0Alea __stack_top(%rip), %rsp\\0Acall lapila_boot\\0Aud2",
             // A build with the FP and SIMD registers turns them on first (CPACR_EL1.FPEN): an optimized build uses
             // them anywhere, the program's when_power_on before prepare_core included.
             "aarch64" => (cpu.Has("fp-armv8", start.Pos) ? "mov x0, #0x300000\\0Amsr cpacr_el1, x0\\0Aisb\\0A" : "")
-                + "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl tessera_boot\\0Abrk #0",
-            _ => "la sp, __stack_top\\0Amv s0, zero\\0Acall tessera_boot\\0Aunimp",
+                + "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl lapila_boot\\0Abrk #0",
+            _ => "la sp, __stack_top\\0Amv s0, zero\\0Acall lapila_boot\\0Aunimp",
         };
         // Its own section, which the board's link script puts first: a loader that jumps to the start of the image
         // lands here.
@@ -242,16 +242,16 @@ public sealed partial class Compiler
 
     /// The Cortex-M system exceptions' handler: the core has pushed R0 to R3, R12, LR, PC, and xPSR on the stack it was
     /// using (MSP or PSP, bit 2 of the EXC_RETURN in LR says which), so a routine of the C convention may run. It
-    /// passes the exception number (IPSR), the frame, and the frame's PC to tessera_cpu_event, and returns through the
+    /// passes the exception number (IPSR), the frame, and the frame's PC to lapila_cpu_event, and returns through the
     /// EXC_RETURN. ARMv6-M instructions only, so every Cortex-M runs it.
     private static readonly string[] CortexMExceptionAsm =
     [
-        ".section .text.tessera_cortex_m_exception,\"ax\",%progbits",
+        ".section .text.lapila_cortex_m_exception,\"ax\",%progbits",
         ".balign 4",
-        ".globl tessera_cortex_m_exception",
-        ".type tessera_cortex_m_exception,%function",
+        ".globl lapila_cortex_m_exception",
+        ".type lapila_cortex_m_exception,%function",
         ".thumb_func",
-        "tessera_cortex_m_exception:",
+        "lapila_cortex_m_exception:",
         "  mov r3, lr",
         "  movs r1, #4",
         "  tst r3, r1",
@@ -264,26 +264,26 @@ public sealed partial class Compiler
         "  mrs r0, ipsr",
         "  ldr r2, [r1, #24]",
         "  push {r3, lr}",
-        "  bl tessera_cpu_event",
+        "  bl lapila_cpu_event",
         "  pop {r3, pc}",
-        ".size tessera_cortex_m_exception, . - tessera_cortex_m_exception",
+        ".size lapila_cortex_m_exception, . - lapila_cortex_m_exception",
         ".text",
     ];
 
-    /// The AArch64 vector table, `tessera_vectors`: 16 entries of 128 bytes (synchronous, IRQ, FIQ, SError, for each of
+    /// The AArch64 vector table, `lapila_vectors`: 16 entries of 128 bytes (synchronous, IRQ, FIQ, SError, for each of
     /// four sources), 2 KiB aligned for VBAR. Each entry saves X0 and X1, puts its number in X0, and goes to the common
     /// part, which saves the registers a routine may change (with the floating-point and SIMD registers when the build
-    /// has them), and the level's ELR and SPSR, reads the level's ESR, ELR, and FAR, calls tessera_cpu_event, puts
+    /// has them), and the level's ELR and SPSR, reads the level's ESR, ELR, and FAR, calls lapila_cpu_event, puts
     /// everything back, and returns with ERET.
     private static IEnumerable<string> Aarch64VectorAsm(bool fp)
     {
         int frame = fp ? 704 : 192;
         var l = new List<string>
         {
-            ".section .text.tessera_vectors,\"ax\",%progbits",
+            ".section .text.lapila_vectors,\"ax\",%progbits",
             ".balign 2048",
-            ".globl tessera_vectors",
-            "tessera_vectors:",
+            ".globl lapila_vectors",
+            "lapila_vectors:",
         };
         for (int k = 0; k < 16; k++)
         {
@@ -291,9 +291,9 @@ public sealed partial class Compiler
             l.Add($"  sub sp, sp, #{frame}");
             l.Add("  stp x0, x1, [sp, #0]");
             l.Add($"  mov x0, #{k}");
-            l.Add("  b tessera_vector_common");
+            l.Add("  b lapila_vector_common");
         }
-        l.Add("tessera_vector_common:");
+        l.Add("lapila_vector_common:");
         for (int r = 2; r < 18; r += 2) l.Add($"  stp x{r}, x{r + 1}, [sp, #{r * 8}]");
         l.Add("  stp x18, x29, [sp, #144]");
         l.Add("  str x30, [sp, #160]");
@@ -315,7 +315,7 @@ public sealed partial class Compiler
         l.Add("  stp x2, x10, [sp, #168]");
         if (fp)
             for (int q = 0; q < 32; q += 2) l.Add($"  stp q{q}, q{q + 1}, [sp, #{192 + q * 16}]");
-        l.Add("  bl tessera_cpu_event");
+        l.Add("  bl lapila_cpu_event");
         if (fp)
             for (int q = 0; q < 32; q += 2) l.Add($"  ldp q{q}, q{q + 1}, [sp, #{192 + q * 16}]");
         l.Add("  ldp x2, x10, [sp, #168]");
@@ -342,9 +342,9 @@ public sealed partial class Compiler
         return l;
     }
 
-    /// The RISC-V trap entry, `tessera_vectors` (mtvec in direct mode, so every trap comes here): it saves the registers
+    /// The RISC-V trap entry, `lapila_vectors` (mtvec in direct mode, so every trap comes here): it saves the registers
     /// a routine may change (the floating-point ones too when the build has them, `fpBytes` each), calls
-    /// tessera_cpu_event with mcause, mepc, and mtval, sets mepc to the place it returns, puts everything back, and
+    /// lapila_cpu_event with mcause, mepc, and mtval, sets mepc to the place it returns, puts everything back, and
     /// returns with MRET.
     private static IEnumerable<string> RiscvTrapAsm(int fpBytes)
     {
@@ -355,10 +355,10 @@ public sealed partial class Compiler
         string store = fpBytes == 8 ? "fsd" : "fsw", load = fpBytes == 8 ? "fld" : "flw";
         var l = new List<string>
         {
-            ".section .text.tessera_vectors,\"ax\",@progbits",
+            ".section .text.lapila_vectors,\"ax\",@progbits",
             ".balign 4",
-            ".globl tessera_vectors",
-            "tessera_vectors:",
+            ".globl lapila_vectors",
+            "lapila_vectors:",
             $"  addi sp, sp, -{frame}",
         };
         for (int i = 0; i < ints.Length; i++) l.Add($"  sw {ints[i]}, {i * 4}(sp)");
@@ -367,7 +367,7 @@ public sealed partial class Compiler
         l.Add("  csrr a0, mcause");
         l.Add("  csrr a1, mepc");
         l.Add("  csrr a2, mtval");
-        l.Add("  call tessera_cpu_event");
+        l.Add("  call lapila_cpu_event");
         l.Add("  csrw mepc, a0");
         if (fpBytes != 0)
             for (int i = 0; i < floats.Length; i++) l.Add($"  {load} {floats[i]}, {intBytes + i * fpBytes}(sp)");

@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Hex float literals (`0x1p-25`, `-0x1.8p3`): hex digits scaled by a power of two, so each spells one value exactly.
 /// A binary float takes one only when it holds that value exactly, as a normal or a subnormal: B16, BF16, B32, B64,

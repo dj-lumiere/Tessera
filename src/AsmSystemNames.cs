@@ -1,12 +1,12 @@
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The names an instruction set gives to what an assembly operand can be besides a general, vector or float register:
 /// system registers (AArch64's RNDR and CNTVCT_EL0, 32-bit ARM's PRIMASK and FPSCR, RISC-V's CSRs, x86's control,
 /// debug and segment registers) and the named options some instructions take (a barrier's domain, a cache or TLB
 /// operation, a coprocessor and its registers, a fence's sets, a rounding mode). Each is written as the architecture's
-/// manual spells it, so it never collides with Tessera's own register names (R0, V3, S3, SP, FLAGS), and the builder
+/// manual spells it, so it never collides with Lapila's own register names (R0, V3, S3, SP, FLAGS), and the builder
 /// passes it to the assembler as written.
 internal static partial class AsmSystemNames
 {
@@ -165,7 +165,7 @@ internal static partial class AsmSystemNames
     ];
 
     /// x86's control and debug registers (`mov rax, cr3`) and the segment registers as selectors (`mov ax, ds`). FS
-    /// and GS are Tessera's own names already: as an operand they are the selector too.
+    /// and GS are Lapila's own names already: as an operand they are the selector too.
     private static readonly HashSet<string> X86Registers =
         [.. Numbered("CR", 0, 15), .. Numbered("DR", 0, 7), "CS", "DS", "ES", "SS"];
 }

@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 // Buildtime layout: `sizeof` / `alignof` in presets and generic arguments, `@layout(align: N)` on records, and
 // `@aligned` on fields.

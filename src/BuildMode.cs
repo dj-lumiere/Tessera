@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// How a build is optimized: `debug` (-O0), `release` (-O2), `release-time` (-O3), or `release-space` (-Os). Every
 /// mode carries debug information. A manifest's `mode` and the command line's `--mode` take the same names.
@@ -28,7 +28,7 @@ public static class BuildModes
 
     public static bool IsOptimized(this BuildMode mode) => mode != BuildMode.Debug;
 
-    /// Whether the mode keeps the crash trace unless told otherwise: debug and release do, as RazorForge's do;
+    /// Whether the mode keeps the crash trace unless told otherwise: debug and release do, as Revare's do;
     /// release-time and release-space, the modes for the last bit of speed or size, leave it out.
     public static bool TracedByDefault(this BuildMode mode) => mode is BuildMode.Debug or BuildMode.Release;
 

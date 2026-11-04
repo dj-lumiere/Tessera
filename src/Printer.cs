@@ -2,9 +2,9 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
-/// Writes statements and expressions back as Tessera source, in the current spelling: operators for the routines
+/// Writes statements and expressions back as Lapila source, in the current spelling: operators for the routines
 /// they stand for, `if` / `for` / `while` bodies by indentation, `return x`, `local` slots. The
 /// comments of the lines it writes (Comments) go before the first line that followed them.
 public sealed class Printer

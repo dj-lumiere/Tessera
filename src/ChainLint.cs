@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The style warning for long chains: a chain (a value, then calls one after another on what each gives back) holds at
 /// most MaxOperations calls, so a reader follows at most three steps before a name says what came out (a
@@ -8,8 +8,8 @@ namespace Tessera;
 /// is never too long, however many steps it has, since the steps' names say what each does.
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
-/// It's a warning, not an error: `tessera check`, `build`, and `run` print it for the program's own files, and
-/// `tessera lint` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
+/// It's a warning, not an error: `lapila check`, `build`, and `run` print it for the program's own files, and
+/// `lapila lint` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
 public static class ChainLint
 {
     public const int MaxOperations = 3;

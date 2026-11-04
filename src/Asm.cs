@@ -1,7 +1,7 @@
 using System.Numerics;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// An `@external("asm")` routine lowered to one LLVM inline-assembly call: its text, the operands the builder places,
 /// and what it changes. Outputs come first in LLVM's operand numbering, then the inputs, each tied to its parameter's
@@ -290,7 +290,7 @@ internal sealed class AsmLowering
         return r;
     }
 
-    /// What a bare name that isn't one of Tessera's registers is on this architecture: a system register (RNDR,
+    /// What a bare name that isn't one of Lapila's registers is on this architecture: a system register (RNDR,
     /// mstatus, CR3), a named option of an instruction (ISH, rw), or nothing.
     private AsmSystemNames.Kind? SystemName(string name) =>
         AsmSystemNames.Lookup(_arch switch { Arch.X86 => "x86_64", Arch.A64 => "aarch64", Arch.Arm => "arm", _ => "riscv" }, name);
@@ -328,7 +328,7 @@ internal sealed class AsmLowering
         name.StartsWith("APSR", StringComparison.Ordinal) || name.StartsWith("CPSR", StringComparison.Ordinal)
         || name is "XPSR" or "IAPSR" or "EAPSR";
 
-    /// Tessera's register by this name, or null when it names none on this architecture.
+    /// Lapila's register by this name, or null when it names none on this architecture.
     private Reg? TryRegister(string name) => _arch == Arch.Arm ? ArmRegister(name) : name switch
     {
         "SP" => _arch switch { Arch.X86 => new Reg(RegClass.Gpr, 4, name), Arch.A64 => new Reg(RegClass.Sp, 31, name), _ => new Reg(RegClass.Gpr, 2, name) },
@@ -459,7 +459,7 @@ internal sealed class AsmLowering
         _ => throw new CompileError(_r.Pos, $"{r.Written} isn't a register a value can be in"),
     };
 
-    /// `RDX=R2`: the architecture's name next to Tessera's, as a build error shows a register.
+    /// `RDX=R2`: the architecture's name next to Lapila's, as a build error shows a register.
     private string Shown(Reg r) => r.Class switch
     {
         RegClass.Gpr or RegClass.Vec or RegClass.Fpr or RegClass.Single or RegClass.Double

@@ -1,1 +1,1 @@
-rootProject.name = "tessera-rider"
+rootProject.name = "lapila-rider"

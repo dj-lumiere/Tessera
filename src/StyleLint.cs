@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// Every style warning: the chain lint's, the finish lint's, the record-parameter lint's, the loop lint's, (given the
 /// source lines) the

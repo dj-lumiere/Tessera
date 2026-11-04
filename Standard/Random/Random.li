@@ -1,0 +1,220 @@
+# Lapila stdlib: xoshiro256**, a seedable pseudo-random number generator
+#
+# xoshiro256** (Blackman and Vigna, 2018) keeps 256 bits of state, four U64 words, and steps them with xors, shifts,
+# and rotations. Each output scrambles one state word (multiply by 5, rotate left by 7, multiply by 9). Its period is
+# 2^256 - 1 and every output passes the usual statistical batteries, so it serves simulations, games, sampling, and
+# shuffling. It is NOT cryptographically secure: 4 outputs give the state away.
+#
+# A generator starts from one of:
+#   Xoshiro256.from_seed(seed)    a U64 seed spread over the four words with splitmix64, so equal seeds replay equal
+#                                 streams and a small or zero seed still starts well mixed
+#   Xoshiro256.from_state(...)    the four words themselves (not all zero)
+#   Xoshiro256.from_entropy()     256 secret random bits from the source the hash key comes from (HashKey.li): the
+#                                 OS's random source, a CPU random number instruction, or the program's own
+#
+# Draws: next[T]() for an integer T (U8 to U128, S8 to S128) is that type over its full range (the high bits of a draw,
+# two draws for 128 bits, the first the high half), and for B32 / B64 a value in [0, 1) (the top 24 / 53 bits of a
+# draw). below(bound) is an unbiased U64 in [0, bound). This file is also the body Revare's and Mielia's `Random` call
+# through Ingrid, so the streams of a seed are part of its contract: changing a formula here changes theirs.
+
+module Random
+
+### The splitmix64 increment, 2^64 divided by the golden ratio.
+secret preset GOLDEN_GAMMA: U64 = 0x9E3779B97F4A7C15
+### 2^-53, the weight of the lowest of the 53 bits a [0, 1) draw keeps.
+secret preset UNIT_STEP: B64 = B64.from_bits(0x3CA0000000000000)
+### 2^-24, the weight of the lowest of the 24 bits a B32 [0, 1) draw keeps.
+secret preset UNIT_STEP_B32: B32 = B32.from_bits(0x33800000)
+
+### The state of a xoshiro256** generator: four 64-bit words, never all zero.
+record Xoshiro256
+    s0: U64
+    s1: U64
+    s2: U64
+    s3: U64
+
+### One round of the splitmix64 mixer (Steele, Lea, and Flood, 2014): adds the golden gamma to `x` and mixes the sum
+### with two multiply-xorshift steps. Fed its own output, it gives the chain `from_seed` spreads a seed with. The
+### splitmix64 generator itself is `splitmix64(state)` with the state stepping by the gamma between outputs.
+### :param x: The running accumulator.
+### :returns: The mixed value.
+@inline
+routine splitmix64(x: U64) -> U64
+    z: U64 = x +% GOLDEN_GAMMA
+    a: U64 = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9
+    b: U64 = (a ^ (a >> 27)) *% 0x94D049BB133111EB
+    return b ^ (b >> 31)
+
+### The double in [0, 1) that 64 random bits stand for: their top 53 bits times 2^-53, exact, so every multiple of
+### 2^-53 below 1 is equally likely.
+### :param bits: The random bits.
+### :returns: A value in [0, 1).
+@inline
+routine unit_b64(bits: U64) -> B64
+    top: B64 = (bits >> 11).to[B64]()
+    return top * UNIT_STEP
+
+### The float in [0, 1) that 64 random bits stand for: their top 24 bits times 2^-24, exact, so every multiple of 2^-24
+### below 1 is equally likely.
+### :param bits: The random bits.
+### :returns: A value in [0, 1).
+@inline
+routine unit_b32(bits: U64) -> B32
+    top: B32 = (bits >> 40).to[B32]()
+    return top * UNIT_STEP_B32
+
+### A generator from its four state words, as the reference code starts one.
+### :param s0: State word 0.
+### :param s1: State word 1.
+### :param s2: State word 2.
+### :param s3: State word 3.
+### :returns: The generator.
+### :throws: Throws `UnacceptedValueError` when all four words are zero (the one state that stays zero forever).
+@inline
+@track_caller
+common routine Xoshiro256.from_state(s0: U64, s1: U64, s2: U64, s3: U64) -> Me
+    low: U64 = s0 | s1
+    high: U64 = s2 | s3
+    if low | high == 0
+        throw UnacceptedValueError(description: "The value is not one the routine accepts.")
+    return (s0: s0, s1: s1, s2: s2, s3: s3)
+
+### A generator seeded from one U64: each state word is splitmix64 of the one before it, starting from the seed
+### (s0 = splitmix64(seed), s1 = splitmix64(s0), ...). Equal seeds replay equal streams.
+### :param seed: The seed.
+### :returns: The generator.
+@inline
+common routine Xoshiro256.from_seed(seed: U64) -> Me
+    s0: U64 = splitmix64(seed)
+    s1: U64 = splitmix64(s0)
+    s2: U64 = splitmix64(s1)
+    s3: U64 = splitmix64(s2)
+    return (s0: s0, s1: s1, s2: s2, s3: s3)
+
+### A generator seeded with 256 secret random bits from the program's key source (`entropy_key()`), so every run gets
+### a stream of its own.
+### :returns: The generator.
+common routine Xoshiro256.from_entropy() -> Me
+    # An all-zero state gives zeros forever, so such a draw is drawn again.
+    loop
+        first: SipKey = entropy_key()
+        second: SipKey = entropy_key()
+        state: Me = (s0: first.k0, s1: first.k1, s2: second.k0, s3: second.k1)
+        low: U64 = first.k0 | first.k1
+        high: U64 = second.k0 | second.k1
+        if low | high == 0
+            continue
+        return state
+
+### The output this state gives: state word 1 scrambled by multiply by 5, rotate left by 7, multiply by 9.
+### :returns: The next 64 random bits.
+@inline
+routine Xoshiro256.output() -> U64
+    return (me.s1 *% 5).rotl(7) *% 9
+
+### The state after this one: the xoshiro linear step.
+### :returns: The next state.
+@inline
+routine Xoshiro256.step() -> Me
+    t: U64 = me.s1 << 17
+    s2: U64 = me.s2 ^ me.s0
+    s3: U64 = me.s3 ^ me.s1
+    s1: U64 = me.s1 ^ s2
+    s0: U64 = me.s0 ^ s3
+    return (s0: s0, s1: s1, s2: s2 ^ t, s3: s3.rotl(45))
+
+### The next 64 random bits, stepping the generator: `rng.next[U64]()`.
+### :returns: A uniform U64.
+@inline
+routine @Xoshiro256.next[U64]() -> U64
+    state: Me = me.peek()
+    state.step().poke_into(me)
+    return state.output()
+
+### The next S64 over its full range: the bits of one draw.
+### :returns: A uniform S64.
+@inline
+routine @Xoshiro256.next[S64]() -> S64
+    return me.next[U64]().to_wrap[S64]()
+
+### The next U8 over its full range: the high 8 bits of a draw.
+### :returns: A uniform U8.
+@inline
+routine @Xoshiro256.next[U8]() -> U8
+    return (me.next[U64]() >> 56).to_wrap[U8]()
+
+### The next U16 over its full range: the high 16 bits of a draw.
+### :returns: A uniform U16.
+@inline
+routine @Xoshiro256.next[U16]() -> U16
+    return (me.next[U64]() >> 48).to_wrap[U16]()
+
+### The next U32 over its full range: the high 32 bits of a draw.
+### :returns: A uniform U32.
+@inline
+routine @Xoshiro256.next[U32]() -> U32
+    return (me.next[U64]() >> 32).to_wrap[U32]()
+
+### The next S8 over its full range: the high 8 bits of a draw.
+### :returns: A uniform S8.
+@inline
+routine @Xoshiro256.next[S8]() -> S8
+    return (me.next[U64]() >> 56).to_wrap[S8]()
+
+### The next S16 over its full range: the high 16 bits of a draw.
+### :returns: A uniform S16.
+@inline
+routine @Xoshiro256.next[S16]() -> S16
+    return (me.next[U64]() >> 48).to_wrap[S16]()
+
+### The next S32 over its full range: the high 32 bits of a draw.
+### :returns: A uniform S32.
+@inline
+routine @Xoshiro256.next[S32]() -> S32
+    return (me.next[U64]() >> 32).to_wrap[S32]()
+
+### The next U128 over its full range: two draws, the first the high 64 bits.
+### :returns: A uniform U128.
+@inline
+routine @Xoshiro256.next[U128]() -> U128
+    high: U64 = me.next[U64]()
+    low: U64 = me.next[U64]()
+    return (high.to[U128]() << 64) | low.to[U128]()
+
+### The next S128 over its full range: the bits of `next[U128]()`.
+### :returns: A uniform S128.
+@inline
+routine @Xoshiro256.next[S128]() -> S128
+    return me.next[U128]().to_wrap[S128]()
+
+### The next double in [0, 1), from the top 53 bits of a draw (`unit_b64`).
+### :returns: A uniform B64 in [0, 1).
+@inline
+routine @Xoshiro256.next[B64]() -> B64
+    return unit_b64(me.next[U64]())
+
+### The next float in [0, 1), from the top 24 bits of a draw (`unit_b32`).
+### :returns: A uniform B32 in [0, 1).
+@inline
+routine @Xoshiro256.next[B32]() -> B32
+    return unit_b32(me.next[U64]())
+
+### A uniform value in [0, bound), without the bias of a draw modulo `bound`: Lemire's multiply-and-reject (2019). The
+### high 64 bits of draw times bound are the value, and a draw whose low 64 bits fall below 2^64 mod bound is drawn
+### again, so each value has exactly the same number of draws behind it. Takes one draw almost always.
+### :param bound: The exclusive upper bound.
+### :returns: A uniform U64 in [0, bound).
+### :throws: Throws `UnacceptedValueError` when `bound` is 0 (the range is empty).
+@track_caller
+routine @Xoshiro256.below(bound: U64) -> U64
+    if bound == 0
+        throw UnacceptedValueError(description: "The value is not one the routine accepts.")
+    loop
+        product2: U128 = me.next[U64]().mul_wide(bound)
+        low2: U64 = product2.to_wrap[U64]()
+        if low2 < bound
+            threshold: U64 = U64.sub_wrap(0, bound) % bound
+            if low2 < threshold
+                continue
+            return (product2 >> 64).to[U64]()
+        return (product2 >> 64).to[U64]()

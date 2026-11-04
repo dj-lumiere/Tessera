@@ -1,0 +1,100 @@
+# Lapila stdlib: Optional[T] and KVPair[TKey, TValue]
+#
+# Optional[T] is a value that may be absent: a T, or None when there is none. `try` in front of a failable call gives
+# one, `try iter.emit()` included. A T goes where an Optional[T] is expected as it is, and so does None():
+#
+#     return(value)
+#     return(None())
+#
+# Read it with when:
+#
+#     when item
+#         is S64 as value => use(value)
+#         is None => done()
+#
+# KVPair[TKey, TValue] is a plain value pair used by Dict and SortedDict emitters.
+
+module System
+
+# -- Optional ---------------------------------------------------------------------
+
+### A value that may be absent: a `T`, or `Unit` when there is none. A `T` or `Unit()` goes where an `Optional[T]` is
+### expected as it is, and `when` observes which with `is T as value` / `is Unit`. `try` in front of a failable call
+### gives one. An `Optional[None]` can't exist (both branches would be `Unit`), nor an `Optional[Optional[T]]`.
+### `Optional` is the one named type whose kind follows what it holds: for a value `T` it is a value laid out as
+### `{ i1, T }`, and for an entity `T` it is one address of the place the entity lives in.
+### :typeparam T: The type of the present value.
+@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
+variant Optional[T]
+    T
+    None
+
+### Ends the value it holds, if any: an `Optional`'s entity ends with it.
+routine @Optional[T].destruct() -> None
+    when steal me.stride(0)
+        is T as value =>
+            drop value
+        is None => return
+    return
+
+### Whether `me` holds a value.
+### :typeparam T: The type of the present value.
+### :returns: `true` for a `T`, `false` for `Unit`.
+routine Optional[T].is_present() -> Bool
+    when me
+        is T => return true
+        is None => return false
+
+### Whether `me` holds no value.
+### :typeparam T: The type of the present value.
+### :returns: `true` for `Unit`, `false` for a `T`.
+routine Optional[T].is_absent() -> Bool
+    when me
+        is T => return false
+        is None => return true
+
+### The value. Crashes if it's absent.
+### :returns: The present value.
+### :throws: Throws `AbsentValueError` when `me` is `Unit`.
+@track_caller
+routine Optional[T].unwrap() -> T
+    when steal me
+        is T as value => return value
+        is None => throw AbsentValueError()
+
+### The value if present, otherwise `default`.
+### :param default: The value to return when `me` is `Unit`.
+### :returns: The present value, or `default`.
+routine Optional[T].unwrap_or(default: T) -> T
+    when me
+        is T as value => return value
+        is None => return default
+
+### The address an optional view `@T?` holds, or the zero address for None: how a link that outlives the place it
+### views is kept (an Addr has no lifetime the build follows), turned back with `to[@T?]()` and a `when`.
+### :typeparam T: The view type, a `@T`.
+### :returns: The view's address, or `Addr.zero()`.
+routine Optional[T].to[Addr]() -> Addr
+    when me
+        is T as view => return bitcast[T, Addr](view)
+        is None => return Addr.zero()
+
+# -- KVPair --------------------------------------------------------------------
+
+### Yielded by Dict and SortedDict emitters.
+@derive(Equatable, Hashable)
+record KVPair[TKey, TValue]
+needs RecordType TKey, RecordType TValue
+    key: TKey
+    value: TValue
+
+### Makes a `KVPair` from its fields.
+### :param key: Its `key`.
+### :param value: Its `value`.
+### :returns: The new value.
+common routine KVPair[TKey, TValue].construct(key: TKey, value: TValue) -> Me
+    return Me(key, value)
+
+### Releases nothing: a `KVPair` holds no memory of its own.
+routine @KVPair[TKey, TValue].destruct() -> None
+    return

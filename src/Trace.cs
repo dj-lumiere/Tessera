@@ -1,9 +1,9 @@
-namespace Tessera;
+namespace Lapila;
 
 /// The crash trace: a traced build can say which of the program's routines a crash is in. An executable for a target
 /// TraceTable supports reads it from the stack (TraceFromStack): nothing below is placed, each call a traced routine
 /// makes carries its place as its debug location, and TraceTable writes the table of return addresses. Elsewhere the
-/// build keeps, per thread, a shadow stack of the program's routines it is in (Standard/Trace.te holds the storage and
+/// build keeps, per thread, a shadow stack of the program's routines it is in (Standard/Trace.li holds the storage and
 /// the routines the builder calls). Each
 /// traced routine calls trace_push on entry with its name, file, and declaration's place, keeping the frame's place it
 /// gives, trace_at before each call it makes with that place and the call's line and column, and trace_pop just before
@@ -22,7 +22,7 @@ public sealed partial class Compiler
     /// traced routines are listed for the table. Set (by the constructor) for an executable on a target TraceTable supports.
     public bool TraceFromStack { get; }
 
-    /// The traced routines' subprograms with their frames' names and files, for `!tessera.trace`.
+    /// The traced routines' subprograms with their frames' names and files, for `!lapila.trace`.
     private readonly List<(int Subprogram, string Name, string File)> _tracedSubprograms = [];
 
     /// Lists a traced routine for the table: its subprogram, name, and file.
@@ -84,7 +84,7 @@ public sealed partial class Compiler
     /// The LLVM value that holds a traced routine's frame, from its trace_push, for its trace_at calls.
     public const string TraceFrameValue = "%trace.frame";
 
-    /// The instance of one of Standard/Trace.te's routines the builder places.
+    /// The instance of one of Standard/Trace.li's routines the builder places.
     private Instance TraceRoutine(string name)
     {
         if (!_traceRoutines.TryGetValue(name, out var inst))
@@ -96,7 +96,7 @@ public sealed partial class Compiler
         return inst;
     }
 
-    /// A call to one of Standard/Trace.te's routines the builder places (trace_push, trace_at, trace_pop), with
+    /// A call to one of Standard/Trace.li's routines the builder places (trace_push, trace_at, trace_pop), with
     /// these LLVM operands. They are @inline, so the call is their few loads and stores. trace_push's result is
     /// bound to TraceFrameValue. trace_at_moving, the twin TraceOutOfLine puts in trace_at's place, is made with
     /// trace_at so that it is there when the program turns out to need it.

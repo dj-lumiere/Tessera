@@ -1,6 +1,6 @@
-namespace Tessera;
+namespace Lapila;
 
-// What the builder does for `Stamped[T]` (Standard/System/Memory/Stamped.te): the hidden slot of an entity it stamps,
+// What the builder does for `Stamped[T]` (Standard/System/Memory/Stamped.li): the hidden slot of an entity it stamps,
 // and the calls that end the slot where the entity ends or leaves its address.
 public sealed partial class FunctionGen
 {
@@ -15,7 +15,7 @@ public sealed partial class FunctionGen
 
     /// `stamp_slot[T](at)`: the address of the hidden slot of the entity `at` points at, a build error for a type that
     /// has none. `stamp_slot_kept[T](at)`: the same as an `@U32?`, None for a type that has none. The standard
-    /// library's own (Stamped.te).
+    /// library's own (Stamped.li).
     private Val StampSlot(CallExpr c)
     {
         if (!_decl.IsLibrary)
@@ -50,7 +50,7 @@ public sealed partial class FunctionGen
             + $"Stamped[{t.Name}] somewhere in its source, so write that type where the stamp is kept (s: Stamped[{t.Name}] = x.stamp())");
     }
 
-    /// Calls `release_stamp[T]` or `move_stamp[T]` (Stamped.te) on the entity `at` names, for an entity type the program
+    /// Calls `release_stamp[T]` or `move_stamp[T]` (Stamped.li) on the entity `at` names, for an entity type the program
     /// stamps. Nothing otherwise.
     private void StampCall(string routine, DType? held, Expr at, Pos pos)
     {
@@ -64,7 +64,7 @@ public sealed partial class FunctionGen
         finally { _memMuted = muted; }
     }
 
-    /// Runs `routine` (Stamped.te, taking `at: @T`) on every entity with a hidden slot that the value at `at` holds: the
+    /// Runs `routine` (Stamped.li, taking `at: @T`) on every entity with a hidden slot that the value at `at` holds: the
     /// value itself when its type is stamped, and the fields that hold one, at any depth. Nothing for a type that holds
     /// none, so a program that stamps nothing pays nothing.
     private void StampWalk(string routine, DType? held, Val at, Pos pos)
@@ -117,7 +117,7 @@ public sealed partial class FunctionGen
 
     /// `holds_stamps[T]()`: whether a value of T holds a hidden slot, known when the program is built. `follow_stamps[T](at)`:
     /// gives the slots of the value at `at` that address (StampWalk with move_stamp). The standard library's own, for a
-    /// collection that moved its elements by bytes (Stamped.te's move_stamps).
+    /// collection that moved its elements by bytes (Stamped.li's move_stamps).
     private Val StampsBuiltin(CallExpr c)
     {
         if (!_decl.IsLibrary)

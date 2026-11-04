@@ -1,0 +1,108 @@
+# JSON strings (System/Serialization): every ASCII code point between two letters through the code-point path, in the form
+# Revare's JSON encoder printed before it called these (`34: "a\"z"`), then UTF-8 text through the Writer path
+# (escapes, multi-byte characters, DEL, a stray continuation byte, the empty text), and the two paths and the
+# widths agreeing on every code point up to U+10FFFF.
+
+import Collections
+import Hosted
+
+### Quotes `a`, `c`, `z` through the code-point path and writes the result, which is ASCII here.
+routine ascii_line(c: U32) -> None
+    chars: &Items[U32, 3] <- [0x61, c, 0x7A]
+    quoted: &Items[U32, 16]
+    text: @[U32] = chars.getview()
+    count: U64 = text.json_quoted_count()
+    written: U64 = text.json_quote_into(quoted.getview())
+
+    if not (count == written)
+        throw LogicBreachedError()
+    Console.show("{c}: ", end: "")
+
+    for i in 0 til written
+        byte: Byte = quoted[i].to[U8]().bits()
+        one: &Items[Byte, 1] <- [byte]
+        Console.output().write_bytes(data: one.getview().to[@Byte](), count: 1)
+    Console.show("")
+    return
+
+### Quotes UTF-8 text through the Writer path.
+routine quote_line(text: @[Byte]) -> None
+    buffer: &List[Byte] <- .construct(HEAP)
+
+    text.json_quote_into(buffer)
+    Console.show("{buffer.getview()}")
+    drop buffer
+    return
+
+### Checks every code point up to U+10FFFF: the code-point path's length is the sum of the widths, a character that
+### needs no escape comes out as itself, and the escape bytes are the ones the Writer path writes for the same ASCII.
+@generated
+routine agree() -> None
+    chars: &Items[U32, 1] <- [0]
+    quoted: &Items[U32, 8]
+    bytes: &List[Byte] <- .construct(HEAP)
+
+    block entry()
+        jump each(0, 0)
+
+    block each(c: U32, bad: U32)
+        if c > 0x10FFFF
+            jump report(bad)
+        chars[0] = c
+        text: @[U32] = chars.getview()
+        written: U64 = text.json_quote_into(quoted.getview())
+        width: U64 = c.json_escaped_width()
+        fits: Bool = written == width + 2
+        if width == 1
+            jump itself(c, bad, fits)
+        else
+            jump escaped(c, bad, fits, written)
+
+    block itself(c: U32, bad: U32, fits: Bool)
+        same: Bool = quoted[1] == c
+        good: Bool = fits and same
+        bad_after: U32 = when
+            good => bad
+            else => bad + 1
+        jump each(c + 1, bad_after)
+
+    block escaped(c: U32, bad: U32, fits: Bool, written: U64)
+        byte: Byte = c.to[U8]().bits()
+        one: &Items[Byte, 1] <- [byte]
+        bytes.clear()
+        single: @[Byte] = @[Byte].construct(data: one.getview().to[@Byte](), count: 1)
+        single.json_quote_into(bytes)
+        jump compare(c, bad, fits, written, 0)
+
+    block compare(c: U32, bad: U32, fits: Bool, written: U64, i: U64)
+        bad_after: U32 = when
+            fits => bad
+            else => bad + 1
+        if i >= written
+            jump each(c + 1, bad_after)
+        from_bytes: U32 = bytes[i].to[U8]().to[U32]()
+        if quoted[i] == from_bytes
+            jump compare(c, bad, fits, written, i + 1)
+        else
+            jump each(c + 1, bad + 1)
+
+    block report(bad: U32)
+        Console.show("code points where the paths or widths disagree: {bad}")
+        drop bytes
+        return
+
+routine start() -> None
+    until c >= 0x80 with c: U32 = 0
+        ascii_line(c)
+        continue with c: c + 1
+    quote_line("")
+    quote_line("plain")
+    quote_line("q\"\\\n\t end")
+    quote_line("\r")
+    quote_line("caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80")
+    quote_line("stray \x80 byte")
+    empty: &Items[U32, 1] <- [0]
+    none: @[U32] = empty.getview().getslice(start: 0, count: 0)
+    Console.show("empty count: {none.json_quoted_count()}")
+    agree()
+    return

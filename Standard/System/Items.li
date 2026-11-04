@@ -1,0 +1,211 @@
+# Lapila stdlib collection: Items[T, COUNT], COUNT values in a row
+#
+# Maps to LLVM IR [COUNT x T], stored in place: no memory from a manager and no
+# address to follow. COUNT is a buildtime constant U64. An Items is a record, so
+# its elements hold nothing with a release duty. Slots[T, COUNT] (Slots.li) is the
+# entity with the same layout, which takes any T.
+#
+# The helpers below also operate on Items[T, COUNT] fields inside larger
+# structures. The range convention is half-open: [start, end).
+
+module System
+
+### `COUNT` values of `T` in a row, stored in place as the LLVM type `[COUNT x T]`: no memory from a manager and no
+### address to follow. `COUNT` is a buildtime constant and every index is bounds-checked. An `Items` is a record, so it
+### is a value (copied with `=`, a preset), and its elements hold nothing with a release duty: entities go in a
+### {Slots[T, COUNT]}.
+### :typeparam T: The element type, a type whose values hold nothing with a release duty.
+### :typeparam COUNT: The number of elements, fixed at build time.
+@llvm("[{COUNT} x {T}]")
+record Items[T, COUNT]
+obeys Equatable[Items[T, COUNT]] when RecordType T, U64 COUNT, T obeys Equatable
+needs RecordType T, U64 COUNT
+obeys ViewingIndexable[Items[T, COUNT], T], ModifyingIndexable[Items[T, COUNT], T]
+    nothing
+
+# -- metadata ------------------------------------------------------------------
+
+### The number of elements, which is the buildtime constant `COUNT`.
+### :returns: `COUNT`.
+common routine Items[T, COUNT].count() -> U64
+needs RecordType T, U64 COUNT
+    return COUNT
+
+# -- construction --------------------------------------------------------------
+
+# An array literal `[a, b, ...]` where an `Items[T, COUNT]` is expected makes an Items value, built into the builder like a record literal.
+# COUNT values already in memory are read through a pointer of the Items type: `first.to[@Items[T, COUNT]]().peek()`.
+
+# -- element access ------------------------------------------------------------
+
+### Reads the element at `index` of an array value: `primes.getitem(i)` where `primes: Items[U64, 3] = [2, 3, 5]`. The
+### index is a runtime value, so the array goes in a slot and the pointer form reads it.
+### :param index: The zero-based position to read.
+### :returns: A copy of the element at `index`.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine Items[T, COUNT].getitem(index: U64) -> T
+needs RecordType T, U64 COUNT
+    slot: &Me <- me
+
+    value: T = slot[index]
+    return value
+
+### Reads the element at `index`.
+### :param index: The zero-based position to read.
+### :returns: A copy of the element at `index`.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine @Items[T, COUNT].getitem(index: U64) -> T
+needs RecordType T, U64 COUNT
+    if index < COUNT
+        base: @T = bitcast[@Me, @T](me)
+        value: T = base.stride(index).peek()
+        return value
+    throw IndexOutOfBoundsError(index, count: COUNT)
+
+### Writes `value` into the element at `index`, replacing the old value in place.
+### :param index: The zero-based position to write.
+### :param value: The value to store.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine @Items[T, COUNT].setitem(index: U64, value: T) -> None
+needs RecordType T, U64 COUNT
+    if index < COUNT
+        base: @T = bitcast[@Me, @T](me)
+        base.stride(index).poke(value)
+        return
+    throw IndexOutOfBoundsError(index, count: COUNT)
+
+### The address of element index, checked like getitem: a place to read or write in place (`a.getslot(i).poke(v)`).
+### :param index: The element's index.
+### :returns: The element's address.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= COUNT`.
+@track_caller
+routine @Items[T, COUNT].getslot(index: U64) -> @T
+needs RecordType T, U64 COUNT
+    if index < COUNT
+        base: @T = bitcast[@Me, @T](me)
+        element: @T = base.stride(index)
+        return element
+    throw IndexOutOfBoundsError(index, count: COUNT)
+
+### Exchanges the elements at `first` and `second` in place. The same index twice changes nothing.
+### :param first: The zero-based position of one element.
+### :param second: The zero-based position of the other element.
+### :throws: Crashes with `IndexOutOfBoundsError` when `first >= COUNT` or `second >= COUNT`.
+@track_caller
+routine @Items[T, COUNT].swap(first: U64, second: U64) -> None
+needs RecordType T, U64 COUNT
+    me.getview().swap(first, second)
+    return
+
+# -- equality ------------------------------------------------------------------
+
+### Whether two arrays are equal: every pair of elements at the same index compares equal.
+### :param other: The array to compare with.
+### :returns: `true` when all `COUNT` element pairs are equal.
+routine Items[T, COUNT].eq(other: Me) -> Bool
+needs RecordType T, U64 COUNT, T obeys Equatable
+    a: &Me <- me
+    b: &Me <- other
+
+    return a.eq_at(b)
+
+### `eq`, through pointers to the two arrays.
+### :param other: The array to compare with.
+### :returns: True when all `COUNT` element pairs are equal.
+secret routine @Items[T, COUNT].eq_at(other: @Me) -> Bool
+needs RecordType T, U64 COUNT, T obeys Equatable
+    pa: @T = bitcast[@Me, @T](me)
+    pb: @T = bitcast[@Me, @T](other)
+
+    for i in 0 til COUNT
+        x: T = pa.stride(i).peek()
+        y: T = pb.stride(i).peek()
+        if x == y
+            continue
+        return false
+    then
+        return true
+
+# -- a view of every element --------------------------------------------------
+
+### A view of every element: their first address and `COUNT`, valid as long as the Items is. `getview().to[@T]()` is the
+### first address.
+### :returns: A span of all `COUNT` elements.
+routine @Items[T, COUNT].getview() -> @[T]
+needs RecordType T, U64 COUNT
+    first: @T = bitcast[@Me, @T](me)
+    return @[T].construct(data: first, count: COUNT)
+
+### Moves elements [`start`, `end`) one slot right, to [`start` + 1, `end` + 1), leaving the element at `start` for
+### the caller to write. Writes index `end`.
+### :param start: The first index to move.
+### :param end: The index past the last one to move.
+### :throws: Crashes with `IndexOutOfBoundsError` when `end >= COUNT` and `end > start`.
+routine @Items[T, COUNT].shift_right(start: U64, end: U64) -> None
+needs RecordType T, U64 COUNT
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `start` is
+    # left for it to fill.
+    base: @T = bitcast[@Me, @T](me)
+    until i <= start with i: U64 = end
+        from: U64 = i - 1
+        me.getslot(i).poke(steal base.stride(from))
+        continue with i: from
+    then
+        return
+
+### Closes the hole at `start`: moves elements [`start` + 1, `end`) one slot left, to [`start`, `end` - 1).
+### :param start: The index of the hole.
+### :param end: The index past the last element to move.
+### :throws: Throws `IntegerOverflowError` when `end` is 0, and with `IndexOutOfBoundsError` when `end > COUNT`.
+routine @Items[T, COUNT].shift_left(start: U64, end: U64) -> None
+needs RecordType T, U64 COUNT
+    if end > COUNT
+        throw IndexOutOfBoundsError(index: end - 1, count: COUNT)
+    # The places are walked as raw memory: the caller's count says which hold a value, and the place at `end` - 1 is
+    # left out of it.
+    base: @T = bitcast[@Me, @T](me)
+    until i >= end - 1 with i: U64 = start
+        from: U64 = i + 1
+        me.getslot(i).poke(steal base.stride(from))
+        continue with i: from
+    then
+        return
+
+### Takes the element at `index` out and moves elements [`index` + 1, `end`) one slot left, to [`index`, `end` - 1), so the
+### elements in use stay in a row. The place at `end` - 1 is left out of them: for an array whose count of used places
+### is kept beside it, which becomes `end` - 1.
+### :param index: The index of the element to take out.
+### :param end: The index past the last element in use.
+### :returns: The element that was at `index`.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= end` or `end > COUNT`.
+@track_caller
+routine @Items[T, COUNT].take_at(index: U64, end: U64) -> T
+needs RecordType T, U64 COUNT
+    if index < end
+        from: @T = me.getslot(index)
+        taken: &T <- steal from.stride(0)
+        me.shift_left(start: index, end)
+        return steal taken
+    throw IndexOutOfBoundsError(index, count: end)
+
+### Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front.
+### :param dst_start: The first index written in this array.
+### :param src: The array to read from.
+### :param src_start: The first index read in `src`.
+### :param count: The number of elements to copy.
+### :throws: Crashes with `IndexOutOfBoundsError` when either range runs past `COUNT`.
+### :note: Overlapping ranges within one array are only safe when `dst_start` is below `src_start`.
+routine @Items[T, COUNT].copy(dst_start: U64, src: @Me, src_start: U64, count: U64) -> None
+needs RecordType T, U64 COUNT
+    # The source places are walked as raw memory once getslot has checked them: the caller's count says which hold a
+    # value.
+    for i in 0 til count
+        src_index: U64 = src_start + i
+        dst_index: U64 = dst_start + i
+        from: @T = src.getslot(src_index)
+        me.getslot(dst_index).poke(steal from.stride(0))
+    then
+        return

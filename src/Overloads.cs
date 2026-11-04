@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Overloading by parameter type. Routines of one name under one parent (the free routines of a module, the routines on
 /// a type, the routines on every type `T.name`) may differ in their parameter types; a call picks the one whose

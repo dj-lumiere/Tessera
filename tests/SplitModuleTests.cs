@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// A program split over two modules, the way a builder's dev loop splits it: a base built once with
@@ -58,7 +58,7 @@ public class SplitModuleTests
 
     private static List<Decl> Decls()
     {
-        var decls = new Parser(new Lexer("split.te", Source).Lex(), "split.te").ParseModule().Decls;
+        var decls = new Parser(new Lexer("split.li", Source).Lex(), "split.li").ParseModule().Decls;
         decls.AddRange(StandardLibrary.Load(Path.Combine(FindRoot(), "Standard")));
         return decls;
     }
@@ -66,9 +66,9 @@ public class SplitModuleTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

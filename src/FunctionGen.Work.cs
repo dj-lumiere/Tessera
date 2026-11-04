@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// `f.to[Work](param: value, ...)`: a piece of work, the routine `f` with its arguments named by its parameters, a
 /// plain value bound with `=`. The builder puts the work's block (the routine, the arguments, room for the result: a

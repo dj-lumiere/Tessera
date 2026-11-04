@@ -1,11 +1,11 @@
 using Tomlyn;
 using Tomlyn.Model;
 
-namespace Tessera;
+namespace Lapila;
 
-/// A solution's `config.toml`: what it builds, for which target. `tessera build` and `tessera run` without files read
+/// A solution's `config.toml`: what it builds, for which target. `lapila build` and `lapila run` without files read
 /// it from the working directory or the nearest directory above; with a manifest the build takes no flags, since the
-/// manifest is the build configuration. The layout is RazorForge's and Suflae's.
+/// manifest is the build configuration. The layout is Revare's and Mielia's.
 ///
 /// ```toml
 /// [package]
@@ -13,11 +13,11 @@ namespace Tessera;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "src/main.te"          # the entry file (it has start), the output build/main. Without it the build
+/// executable = "src/main.li"          # the entry file (it has start), the output build/main. Without it the build
 ///                                     # is a library linked into another program: the `sources` files as LLVM IR,
 ///                                     # build/<package name>.ll, every routine keeping a frame record
 /// module-paths = ["../shared"]        # folders whose modules join this solution
-/// sources = ["../lib/hash.te"]        # files (or directories of them) built in whatever the entry imports
+/// sources = ["../lib/hash.li"]        # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os). Every mode has debug information.
 /// triple = "arm-none-eabi"            # default: the host
@@ -25,7 +25,7 @@ namespace Tessera;
 /// library-paths = ["vendor/lib"]      # -L directories
 /// board = "raspi4b"                   # a target without an operating system: the board it runs on, which gives
 ///                                     # the triple and the memory map the builder writes the link script from
-///                                     # (Board.cs): a board of Tessera's by name, or "boards/my-board.toml"
+///                                     # (Board.cs): a board of Lapila's by name, or "boards/my-board.toml"
 ///
 /// [debug]
 /// emit-llvm = true                    # keep the IR next to the output (a library build writes only the IR)
@@ -37,7 +37,7 @@ namespace Tessera;
 ///                                     # debug on Linux and macOS on x86_64 and aarch64, off in the release modes
 ///                                     # and on other targets)
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
-///                                     # every mode (default: off, plain malloc and free; `tessera test` always
+///                                     # every mode (default: off, plain malloc and free; `lapila test` always
 ///                                     # turns it on)
 /// deadlock-check = false              # threads or fibers waiting on each other for accesses stop the program
 ///                                     # with a crash naming them (default: on in debug, off in the release modes)
@@ -49,7 +49,7 @@ namespace Tessera;
 ///                                     # is cut and marked with an ellipsis, default: 512)
 /// ```
 ///
-/// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
+/// The build is the entry file and what it imports, found as Revare finds modules: the files under the
 /// manifest's directory and the module-paths folders that declare an imported module (`module Greeting`), and in
 /// turn what those import. So a directory may hold several programs, each its own entry, and a file only one of them
 /// imports isn't built into the others. The standard library is always there. `sources` adds files to the build as
@@ -143,7 +143,7 @@ public sealed record Manifest(
 
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
-        ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
+        ["package"] = ["name", "version", "description", "authors", "license", "repository", "lapila-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "board"],
         ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "trace-frames", "failure-traces",
             "deadlock-check", "access-order"],
@@ -167,7 +167,9 @@ public sealed record Manifest(
             if (value is not TomlTable table) throw new ManifestError(path, $"'{key}' must be a section: [{key}]");
             foreach (var field in table.Keys)
                 // An old link-script gets its own message below.
-                if (!allowed.Contains(field) && !(key == "target" && field == "link-script"))
+                if (key == "package" && field == "tessera-version")
+                    throw new ManifestError(path, "[package] tessera-version is named lapila-version now: rename the key");
+                else if (!allowed.Contains(field) && !(key == "target" && field == "link-script"))
                     throw new ManifestError(path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
         }
 
@@ -180,7 +182,7 @@ public sealed record Manifest(
 
         if (target.ContainsKey("link-script"))
             throw new ManifestError(path, "[target] takes no link-script: the builder writes the link script from the board's " +
-                "memory map, so name the board, board = \"raspi4b\" (one of Tessera's) or board = \"boards/my-board.toml\"");
+                "memory map, so name the board, board = \"raspi4b\" (one of Lapila's) or board = \"boards/my-board.toml\"");
         // board = "raspi4b": the board's triple, CPU, and features, which triple, cpu, and features below may refine.
         var board = Str(target, "board", path) is { } boardName ? Board.Load(boardName, dir) : null;
         BuildTarget triple;
@@ -196,7 +198,7 @@ public sealed record Manifest(
         if (board is not null) triple = triple with { Cpu = board.Target.Cpu, Features = board.Target.Features, Rtc = board.Target.Rtc, Serial = board.Target.Serial };
         if (board is null && !triple.HasOs)
             throw new ManifestError(path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
-                "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Tessera's) " +
+                "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Lapila's) " +
                 "or board = \"boards/my-board.toml\" (a board file of the project)");
         // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as check's --cpu and --feature.
         if (Str(target, "cpu", path) is { } cpu) triple = triple with { Cpu = cpu };
@@ -212,9 +214,11 @@ public sealed record Manifest(
         string? entryName = Str(target, "executable", path);
         string? entry = entryName is null ? null : Resolve(entryName);
         if (entry is not null && !File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
-        if (entry is not null && !entry.EndsWith(".te", StringComparison.OrdinalIgnoreCase))
+        if (entry is not null && Cli.OldSourceMessage(entryName!) is { } oldExtension)
+            throw new ManifestError(path, $"[target] executable: {oldExtension}");
+        if (entry is not null && !entry.EndsWith(".li", StringComparison.OrdinalIgnoreCase))
             throw new ManifestError(path,
-                $"[target] executable: {entryName} is not a Tessera source (Tessera sources end in .te)");
+                $"[target] executable: {entryName} is not a Lapila source (Lapila sources end in .li)");
 
         var roots = new List<string> { dir };
         // `module-paths` lists folders whose modules join the solution, found by import like the manifest's own folder.
@@ -233,14 +237,14 @@ public sealed record Manifest(
         {
             string full = Resolve(extra);
             string[] files = System.IO.Directory.Exists(full)
-                ? System.IO.Directory.GetFiles(full, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
-                : File.Exists(full) && full.EndsWith(".te", StringComparison.OrdinalIgnoreCase)
+                ? System.IO.Directory.GetFiles(full, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
+                : File.Exists(full) && full.EndsWith(".li", StringComparison.OrdinalIgnoreCase)
                     ? [full]
-                    : throw new ManifestError(path, $"[target] sources: no such .te file or directory: {extra}");
+                    : throw new ManifestError(path, $"[target] sources: no such .li file or directory: {extra}");
             rootFiles.AddRange(files.Select(System.IO.Path.GetFullPath));
         }
         if (entry is null && rootFiles.Count == 0)
-            throw new ManifestError(path, "[target] needs the entry file of a program, executable = \"main.te\", or the files of " +
+            throw new ManifestError(path, "[target] needs the entry file of a program, executable = \"main.li\", or the files of " +
                 "a library linked into another program, sources = [\"src\"]");
         var sources = new List<string>();
         foreach (var start in entry is null ? rootFiles : [entry])
@@ -290,7 +294,7 @@ public sealed record Manifest(
 
     /// The files under the roots (not under buildDir) that declare a module, by the module they declare. In a
     /// solution (`rootFiles` given: the roots are a manifest's folder and its `module-paths` folders) a file without a
-    /// `module` line is the module its place names, under the deepest root that holds it (`money/tax.te` is
+    /// `module` line is the module its place names, under the deepest root that holds it (`money/tax.li` is
     /// Money/Tax), and PlaceModules records it for the parser. The entry and the `sources` files (`rootFiles`) stay in
     /// the root module.
     internal static Dictionary<string, List<string>> ModuleFiles(List<string> roots, string buildDir,
@@ -301,7 +305,7 @@ public sealed record Manifest(
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var root in roots.OrderByDescending(r => System.IO.Path.GetFullPath(r).Length))
-            foreach (var file in System.IO.Directory.GetFiles(root, "*.te", SearchOption.AllDirectories)
+            foreach (var file in System.IO.Directory.GetFiles(root, "*.li", SearchOption.AllDirectories)
                          .Where(f => !IsUnder(f, buildDir)).Order(StringComparer.Ordinal))
             {
                 string full = System.IO.Path.GetFullPath(file);

@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 
-namespace Tessera;
+namespace Lapila;
 
 /// A resolved type. Two types are equal when their keys are equal.
 public abstract class DType : IEquatable<DType>
@@ -411,7 +411,7 @@ public static class Crashing
     public static readonly VariantDecl CrashablesDecl = new("<builder>", [new Annotation("union", [], default)], "Crashables", [], [], [], default)
         { Module = Compiler.SystemModule };
 
-    /// The crashable that marks an open list of failures (Crash.te's `OpenFailure`).
+    /// The crashable that marks an open list of failures (Crash.li's `OpenFailure`).
     public static bool IsOpenMarker(DType? t) => t is RecordType { Decl: { IsCrashable: true, IsLibrary: true, Name: "OpenFailure" } };
 
     /// A crashable record: one a `throw` gives.

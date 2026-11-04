@@ -1,9 +1,9 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
-/// The golden tests in tests/ and examples/, one theory case each, run the way <c>tessera test</c> runs them: a
+/// The golden tests in tests/ and examples/, one theory case each, run the way <c>lapila test</c> runs them: a
 /// program's stdout must equal its .expected, its exit code its .exit, and a .error names the build error it must
 /// fail with. A test whose .arch leaves out the host's architecture is not a case here, so nothing passes without
 /// running.
@@ -27,7 +27,7 @@ public class GoldenTests
     [MemberData(nameof(Cases))]
     public void Passes(string test)
     {
-        // Paths in the expected output and errors are relative to the repository root, as `tessera test` prints them.
+        // Paths in the expected output and errors are relative to the repository root, as `lapila test` prints them.
         Directory.SetCurrentDirectory(Root);
         string stem = Path.GetFullPath(Path.Combine(Root, test));
         var (_, sources) = Cli.TestsIn(Path.GetDirectoryName(stem)!)
@@ -40,9 +40,9 @@ public class GoldenTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
-        throw new InvalidOperationException("can't find the Tessera repository above the test assembly");
+        throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
     }
 }

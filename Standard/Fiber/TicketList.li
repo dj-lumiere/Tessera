@@ -1,0 +1,277 @@
+# Lapila stdlib: lists of fiber and passable fiber tickets
+#
+# Work spread over several fibers or ThreadPoolManager passable fibers keeps their tickets in a List[Fiber[T]] or a
+# List[PassableFiber[T]], and these routines handle them together: take every result (waiting for each), give all back,
+# wait for whichever finishes first, cancel all, and take out or give back the ones that have finished.
+
+module Fiber
+
+import Collections
+import Hosted
+
+### The results of the fiber tickets' work, in the list's order, each waited for, in a list from `manager`.
+### :param manager: Where the list comes from.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].retrieve_all(manager: @MemoryManager) -> List[T]
+    results: &List[T] <- .construct(manager)
+
+    for i in 0 til me.count()
+        results.add_last(me.getslot(i).retrieve())
+    then
+        return results
+
+### The results of the fiber tickets' work, in the list's order, each waited for, in a list from HEAP.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].retrieve_all() -> List[T]
+    return me.retrieve_all(manager: HEAP)
+
+### Gives every fiber ticket in the list back, and empties the list.
+### :throws: Crashes as each ticket's `drop` does, when its work still runs.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].give_back_all() -> None
+    for i in 0 til me.count()
+        drop me.getslot(i)
+    me.clear()
+    return
+
+### Waits until the work of every fiber ticket in the list has finished, without taking the results: they stay in
+### the tickets, and `give_back_all()` or `drop` ends them. On the thread that drives a ticket's manager, outside a
+### fiber, the manager runs its fibers until that work is done, and elsewhere the wait is a ticket's wait. A ticket
+### with no work counts as finished. The wait isn't cancellable.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].wait_all_finished() -> None
+    for i in 0 til me.count()
+        me.getslot(i).wait_finished()
+    then
+        return
+
+### Asks the work of every fiber ticket in the list to stop.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].cancel_all() -> None
+    for i in 0 til me.count()
+        me.getslot(i).cancel()
+    then
+        return
+
+### Waits until the work of one of the fiber tickets in the list has finished, and says which: the first in the list
+### among those finished when it looks.
+### :returns: The position of a ticket whose work has finished.
+### :throws: Throws `UnacceptedValueError` for an empty list.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].wait_any_finished() -> U64
+    waiter: Waiter = current_waiter()
+
+    if me.count() == 0
+        throw UnacceptedValueError(description: "wait_any_finished of an empty list waits for nothing.")
+    # Each ticket keeps the waiter, so the first to finish wakes it: then it forgets every one.
+    loop with i: U64 = 0
+        values2: (U64, U64) = when
+            i >= me.count() =>
+                waiter.park()
+                becomes (0, me.count())
+            else =>
+                if me.getslot(i).work_slot().register(waiter)
+                    becomes (0, i)
+                else
+                    continue with i: i + 1
+        k, result = values2
+
+        for k2 in k til me.count()
+            me.getslot(k2).work_slot().unregister(waiter)
+        then
+            # After a park, the tickets are looked at again.
+            if result < me.count()
+                return result
+            continue with i: 0
+
+### Takes the fiber tickets whose work has finished out of the list, into a list from `manager`, keeping the others
+### in order.
+### :param manager: Where the list of finished tickets comes from.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].take_finished(manager: @MemoryManager) -> Me
+    finished: &Me <- .construct(manager)
+
+    for i in 0 til me.count() with kept: U64 = 0
+        steal me.getslot(i) as ticket inject lateinit
+        if ticket.check_finished()
+            finished.add_last(steal ticket)
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: Fiber[T] <- me.remove_last()
+            drop removed
+        then
+            return finished
+
+### Takes the fiber tickets whose work has finished out of the list, into a list from HEAP.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].take_finished() -> Me
+    return me.take_finished(manager: HEAP)
+
+### Gives back the fiber tickets whose work has finished, and takes them out of the list: for work whose result
+### nobody needs.
+@target(os: not "none")
+@track_caller
+routine @List[Fiber[T]].give_back_finished() -> None
+    for i in 0 til me.count() with kept: U64 = 0
+        steal me.getslot(i) as ticket inject lateinit
+        if ticket.check_finished()
+            drop ticket
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: Fiber[T] <- me.remove_last()
+            drop removed
+        then
+            return
+
+### The results of the passable fiber tickets' work, in the list's order, each waited for, in a list from `manager`.
+### :param manager: Where the list comes from.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].retrieve_all(manager: @MemoryManager) -> List[T]
+    results: &List[T] <- .construct(manager)
+
+    for i in 0 til me.count()
+        results.add_last(me.getslot(i).retrieve())
+    then
+        return results
+
+### The results of the passable fiber tickets' work, in the list's order, each waited for, in a list from HEAP.
+### :returns: The results.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].retrieve_all() -> List[T]
+    return me.retrieve_all(manager: HEAP)
+
+### Gives every passable fiber ticket in the list back, and empties the list.
+### :throws: Crashes as each ticket's `drop` does, when its work still runs.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].give_back_all() -> None
+    for i in 0 til me.count()
+        drop me.getslot(i)
+    me.clear()
+    return
+
+### Waits until the work of every passable fiber ticket in the list has finished, without taking the results: they
+### stay in the tickets, and `give_back_all()` or `drop` ends them. A ticket with no work counts as finished. The wait
+### isn't cancellable.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].wait_all_finished() -> None
+    for i in 0 til me.count()
+        me.getslot(i).work_slot().wait()
+    then
+        return
+
+### Asks the work of every passable fiber ticket in the list to stop.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].cancel_all() -> None
+    for i in 0 til me.count()
+        me.getslot(i).cancel()
+    then
+        return
+
+### Waits until the work of one of the passable fiber tickets in the list has finished, and says which: the first in the
+### list among those finished when it looks.
+### :returns: The position of a ticket whose work has finished.
+### :throws: Throws `UnacceptedValueError` for an empty list.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].wait_any_finished() -> U64
+    waiter: Waiter = current_waiter()
+
+    if me.count() == 0
+        throw UnacceptedValueError(description: "wait_any_finished of an empty list waits for nothing.")
+    # Each ticket keeps the waiter, so the first to finish wakes it: then it forgets every one.
+    loop with i: U64 = 0
+        values2: (U64, U64) = when
+            i >= me.count() =>
+                waiter.park()
+                becomes (0, me.count())
+            else =>
+                if me.getslot(i).work_slot().register(waiter)
+                    becomes (0, i)
+                else
+                    continue with i: i + 1
+        k, result = values2
+
+        for k2 in k til me.count()
+            me.getslot(k2).work_slot().unregister(waiter)
+        then
+            # After a park, the tickets are looked at again.
+            if result < me.count()
+                return result
+            continue with i: 0
+
+### Takes the passable fiber tickets whose work has finished out of the list, into a list from `manager`, keeping the
+### others in order.
+### :param manager: Where the list of finished tickets comes from.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].take_finished(manager: @MemoryManager) -> Me
+    finished: &Me <- .construct(manager)
+
+    for i in 0 til me.count() with kept: U64 = 0
+        steal me.getslot(i) as ticket inject lateinit
+        if ticket.check_finished()
+            finished.add_last(steal ticket)
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: PassableFiber[T] <- me.remove_last()
+            drop removed
+        then
+            return finished
+
+### Takes the passable fiber tickets whose work has finished out of the list, into a list from HEAP.
+### :returns: The finished tickets, in the order they had.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].take_finished() -> Me
+    return me.take_finished(manager: HEAP)
+
+### Gives back the passable fiber tickets whose work has finished, and takes them out of the list: for work whose result
+### nobody needs.
+@target(os: not "none")
+@track_caller
+routine @List[PassableFiber[T]].give_back_finished() -> None
+    for i in 0 til me.count() with kept: U64 = 0
+        steal me.getslot(i) as ticket inject lateinit
+        if ticket.check_finished()
+            drop ticket
+            continue with kept: kept
+        me.getslot(kept).poke(steal ticket)
+        continue with kept: kept + 1
+    then
+        until me.count() <= kept
+            removed: PassableFiber[T] <- me.remove_last()
+            drop removed
+        then
+            return

@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// A type parameter of a generic routine (or conformance) while its body is checked against its constraints, before
 /// any instantiation. It is a type of its own: two parameters are never the same type, even when they share a name.
@@ -83,7 +83,7 @@ public sealed partial class Compiler
     /// asked holds only when its payloads allow it, so it is checked where it's used, and an assembly routine is checked
     /// as assembly.
     private static bool NeedsPrecheck(RoutineDecl r) =>
-        r.Blocks is not null && r.AnnotationNamed("external") is null && !IsAsm(r) && !Tessera.Derive.IsImplicit(r)
+        r.Blocks is not null && r.AnnotationNamed("external") is null && !IsAsm(r) && !Lapila.Derive.IsImplicit(r)
         && (r.TypeParams.Count > 0 || OwnerTypeParams(r).Count > 0);
 
     private void PrecheckRoutine(RoutineDecl r)

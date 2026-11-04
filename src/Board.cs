@@ -3,11 +3,11 @@ using System.Text;
 using Tomlyn;
 using Tomlyn.Model;
 
-namespace Tessera;
+namespace Lapila;
 
 /// A board a program without an operating system runs on: its target (triple, CPU, features) and its memory map, read
 /// from a board file. `[target] board = "raspi4b"` in config.toml names a board file that comes
-/// with Tessera (`boards/raspi4b.toml`, next to `Standard/`), and `board = "boards/my-board.toml"` (any name with a `/`
+/// with Lapila (`boards/raspi4b.toml`, next to `Standard/`), and `board = "boards/my-board.toml"` (any name with a `/`
 /// or ending in `.toml`) a file of the project, relative to config.toml (to the working directory for `--board`).
 ///
 /// ```toml
@@ -53,11 +53,11 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
         public bool Holds(ulong address) => address >= Start && address < End;
     }
 
-    /// Where the boards that come with Tessera are: `boards/` next to the standard library.
+    /// Where the boards that come with Lapila are: `boards/` next to the standard library.
     public static string ShippedDirectory() =>
         System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(Cli.StdlibDir()))!, "boards");
 
-    /// The names of the boards that come with Tessera, for messages.
+    /// The names of the boards that come with Lapila, for messages.
     private static string ShippedNames()
     {
         string dir = ShippedDirectory();
@@ -66,14 +66,14 @@ public sealed record Board(string Path, string Name, BuildTarget Target, Board.R
             .Order(StringComparer.Ordinal));
     }
 
-    /// The board file `spec` names: a board of Tessera's by its name, or a file relative to `baseDir`.
+    /// The board file `spec` names: a board of Lapila's by its name, or a file relative to `baseDir`.
     public static string Locate(string spec, string baseDir)
     {
         bool isFile = spec.Contains('/') || spec.Contains('\\') || spec.EndsWith(".toml", StringComparison.OrdinalIgnoreCase);
         if (isFile) return System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, spec));
         string shipped = System.IO.Path.Combine(ShippedDirectory(), spec + ".toml");
         if (!File.Exists(shipped))
-            throw new ManifestError(spec, $"Tessera has no board named '{spec}' (its boards: {ShippedNames()}); a board " +
+            throw new ManifestError(spec, $"Lapila has no board named '{spec}' (its boards: {ShippedNames()}); a board " +
                 "file of your own is named by its path, such as board = \"boards/my-board.toml\"");
         return shipped;
     }

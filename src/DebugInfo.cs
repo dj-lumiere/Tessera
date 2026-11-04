@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Tessera;
+namespace Lapila;
 
 /// Debug information, in every build mode: DWARF, or CodeView on Windows, built as LLVM metadata. A routine is a DISubprogram, each
 /// of its blocks a DILexicalBlock (a block is a naming scope), each operation carries the DILocation of the statement
@@ -18,7 +18,7 @@ public sealed partial class Compiler
     /// The directory `Standard/...` file names are relative to, so a debugger finds the stdlib's sources.
     public string? StdlibParent { get; init; }
 
-    /// The directory `Ingrid/...` file names are relative to (Ingrid's `tessera` folder), so a debugger finds them.
+    /// The directory `Ingrid/...` file names are relative to (Ingrid's `lapila` folder), so a debugger finds them.
     public string? IngridDir { get; init; }
 
     private readonly List<string> _meta = [];
@@ -88,8 +88,8 @@ public sealed partial class Compiler
         if (_diUnit >= 0) return _diUnit;
         _diUnit = MetaReserve();
         string version = typeof(Compiler).Assembly.GetName().Version?.ToString(3) ?? "0";
-        MetaSet(_diUnit, $"distinct !DICompileUnit(language: DW_LANG_C99, file: !{DiFile(_rootFile ?? "main.te")}, "
-            + $"producer: {MetaString("tessera " + version)}, isOptimized: {(Optimized ? "true" : "false")}, "
+        MetaSet(_diUnit, $"distinct !DICompileUnit(language: DW_LANG_C99, file: !{DiFile(_rootFile ?? "main.li")}, "
+            + $"producer: {MetaString("lapila " + version)}, isOptimized: {(Optimized ? "true" : "false")}, "
             + "runtimeVersion: 0, emissionKind: FullDebug)");
         return _diUnit;
     }
@@ -113,7 +113,7 @@ public sealed partial class Compiler
         return _diFiles[shown] = MetaUnique($"!DIFile(filename: {MetaString(name)}, directory: {MetaString(dir)})");
     }
 
-    /// The debug type of a Tessera type, or null for Void.
+    /// The debug type of a Lapila type, or null for Void.
     public string DiTypeRef(DType t) => t is VoidType ? "null" : $"!{DiType(t)}";
 
     public int DiType(DType t)

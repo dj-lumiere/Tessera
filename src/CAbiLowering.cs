@@ -1,4 +1,4 @@
-namespace Tessera;
+namespace Lapila;
 
 /// How one value crosses a call under the C ABI.
 public enum AbiPass
@@ -44,7 +44,7 @@ public sealed partial class Compiler
     };
 
     /// Whether the target's C ABI for aggregates is implemented; elsewhere they pass as LLVM values, which is
-    /// consistent between Tessera routines but not C's.
+    /// consistent between Lapila routines but not C's.
     public bool AggregateAbiKnown => Target.Arch is "x86_64" or "x86" or "aarch64" or "arm" or "riscv64" or "riscv32";
 
     /// The C ABI lowering of a routine's parameters and return value. `@callconv("fast")` routines keep LLVM's own

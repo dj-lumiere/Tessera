@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Tessera;
+namespace Lapila;
 
 /// The names that are gone, each with what takes its place: a program that names one gets a build error
 /// that says what to write instead.

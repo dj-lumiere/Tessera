@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Tessera.Tests;
+namespace Lapila.Tests;
 
 /// <summary>
 /// The rewrite that carries a bfloat between blocks as its i16 bits finds each function by its <c>define</c> line and

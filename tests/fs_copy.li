@@ -1,0 +1,64 @@
+# OsFileManager.copy_result reports the bytes it copied (an empty file, a small one, and one of several chunks), each
+# copy the same size as its source, and a copy that fails (the source is a directory) leaves nothing at the
+# destination: on Linux and macOS the destination used to stay behind, made and empty, after the read failed.
+
+import Collections
+import Hosted
+
+### The size of a file, or U64.MAX when it can't be read.
+### :param f: The file.
+### :returns: Its size in bytes.
+routine size_of(f: @File) -> U64
+    m: Check[Metadata] = check OsFileManager.metadata(at: f)
+    when m
+        is Metadata as info => return info.size
+        is FsError => return U64.MAX
+
+### Writes `count` bytes to a file in `root`, copies it, and prints what the copy reported.
+### :param root: The test's directory.
+### :param count: The file's size.
+### :param manager: The memory manager for the paths and the text.
+routine copy_of(root: @Directory, count: U64, manager: @MemoryManager) -> None
+    text: &List[Byte] <- .construct(manager)
+
+    for i in 0 til count
+        letter: U8 = (i % 26).to[U8]() + 97
+        text.add_last(letter.bits())
+    source: &File <- root.file(name: "source.txt", manager)
+    target: &File <- root.file(name: "target.txt", manager)
+    discard_made: Check[None] = check OsFileManager.make_file(at: source, replacing: true)
+    discard_written: Check[None] = check OsFileManager.write_all(at: source, data: text.getview())
+    r: Check[U64] = check OsFileManager.copy(from: source, to: target, replacing: true)
+    when r
+        is U64 as n =>
+            same: Bool = size_of(target) == n
+            Console.show("{count} bytes: copied {n}, the copy has as many {same}")
+        is FsError => Console.show("{count} bytes: failed")
+    drop target
+    drop source
+    drop text
+    return
+
+routine start() -> None
+    manager: @MemoryManager = HEAP
+    tmp: &Directory <- OsEnvironment.temp_directory(manager)
+    root: &Directory <- tmp.go_to(name: "lapila_fs_copy", manager)
+
+    discard_old: Check[None] = check OsFileManager.delete_all(at: root, manager)
+    discard_made: Check[None] = check OsFileManager.make_directory(at: root, parents: true)
+    copy_of(root, count: 0, manager)
+    copy_of(root, count: 5, manager)
+    copy_of(root, count: 100000, manager)
+    inner: &Directory <- root.go_to(name: "inner", manager)
+    target: &File <- root.file(name: "from_directory.txt", manager)
+    discard_inner: Check[None] = check OsFileManager.make_directory(at: inner, parents: false)
+    r: Optional[U64] = try OsFileManager.copy(from: File.at(inner.path.peek()), to: target,
+        replacing: false)
+    left: Bool = OsFileManager.is_present(at: target)
+    Console.show("copying a directory fails: {r.is_absent()}, leaves a file behind: {left}")
+    discard_gone: Check[None] = check OsFileManager.delete_all(at: root, manager)
+    drop target
+    drop inner
+    drop root
+    drop tmp
+    return
