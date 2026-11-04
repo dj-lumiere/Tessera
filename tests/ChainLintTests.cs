@@ -90,5 +90,5 @@ public class ChainLintTests
     }
 
     private static List<string> Lint(string source) =>
-        ChainLint.Check(new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls);
+        ChainLint.Check(new Parser(new Lexer("t.lpa", source).Lex(), "t.lpa").ParseModule().Decls);
 }

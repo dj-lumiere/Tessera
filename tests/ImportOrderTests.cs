@@ -12,14 +12,14 @@ public class ImportOrderTests
 {
     private static readonly Dictionary<string, string> Modules = new()
     {
-        ["base.li"] = "module Base\n\nrecord Counter\n    n: S64\n",
+        ["base.lpa"] = "module Base\n\nrecord Counter\n    n: S64\n",
         // Adds a routine to a type of another module: it is seen where Ext is imported.
-        ["ext.li"] = "module Ext\n\nimport Base\n\nroutine Counter.plus_two() -> S64\n    return me.n + 2\n",
-        ["a.li"] = "module A\n\nrecord Thing\n    v: S64\n\nroutine twin() -> S64\n    return 1\n\n"
+        ["ext.lpa"] = "module Ext\n\nimport Base\n\nroutine Counter.plus_two() -> S64\n    return me.n + 2\n",
+        ["a.lpa"] = "module A\n\nrecord Thing\n    v: S64\n\nroutine twin() -> S64\n    return 1\n\n"
             + "routine describe() -> S64\n    return 10\n\nroutine pick(x: S64) -> S64\n    return x + 100\n",
-        ["b.li"] = "module B\n\nroutine twin() -> S64\n    return 2\n\n"
+        ["b.lpa"] = "module B\n\nroutine twin() -> S64\n    return 2\n\n"
             + "routine describe() -> S64\n    return 20\n\nroutine pick(x: Bool) -> S64\n    return 7\n",
-        ["d.li"] = "module D\n\nroutine describe() -> S64\n    return 30\n\nroutine only_d() -> S64\n    return 4\n",
+        ["d.lpa"] = "module D\n\nroutine describe() -> S64\n    return 30\n\nroutine only_d() -> S64\n    return 4\n",
     };
 
     private static readonly string[] Imports = ["import Hosted", "import Base", "import Ext", "import A", "import B", "import D"];
@@ -150,7 +150,7 @@ public class ImportOrderTests
         public TempDir(string main)
         {
             Directory.CreateDirectory(Root);
-            foreach (var (name, text) in Modules.Append(new("main.li", main)))
+            foreach (var (name, text) in Modules.Append(new("main.lpa", main)))
             {
                 string path = Path.Combine(Root, name);
                 File.WriteAllText(path, text);

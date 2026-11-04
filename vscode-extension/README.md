@@ -1,6 +1,6 @@
 # Lapila for VS Code
 
-Lapila (`.li`) in VS Code: highlighting from `../Lapila.tmbundle`, comment toggling and bracket pairing,
+Lapila (`.lpa`) in VS Code: highlighting from `../Lapila.tmbundle`, comment toggling and bracket pairing,
 and the Lapila language server (`lapila lsp`): errors as you type, semantic colors, hover, completion, go to
 definition, rename, find usages and formatting.
 

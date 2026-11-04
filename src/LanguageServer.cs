@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace Lapila;
 
-/// The Lapila language server, `lapila lsp`: the Language Server Protocol over standard input and output. A `.li`
+/// The Lapila language server, `lapila lsp`: the Language Server Protocol over standard input and output. A `.lpa`
 /// document that opens or changes is checked the way `lapila check` checks it (its own routines and presets, and every
 /// instance they reach), as the editor holds it, saved or not, together with the files its solution builds with
 /// (`config.toml`'s import closure, or the file alone) and the standard library. Its errors and its style warnings
@@ -405,7 +405,7 @@ public static partial class LanguageServer
         catch (ManifestError e)
         {
             // A config.toml it can't read, often another language's (a Revare folder that keeps its Lapila
-            // translation, main.li, next to main.rr): the document is checked alone, and says why.
+            // translation, main.lpa, next to main.rvr): the document is checked alone, and says why.
             return (BuildTarget.Host(), [file], Ko($"checked on its own: {e.Message}", $"이 파일만 검사합니다: {e.Message}"));
         }
         if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
@@ -418,7 +418,7 @@ public static partial class LanguageServer
     /// The standard library's declarations, each file parsed again only when it changed on disk.
     private static IEnumerable<Decl> StdlibDecls(string stdlib)
     {
-        var files = Directory.GetFiles(stdlib, "*.li", SearchOption.AllDirectories).Order().ToList();
+        var files = Directory.GetFiles(stdlib, "*.lpa", SearchOption.AllDirectories).Order().ToList();
         foreach (var gone in Stdlib.Keys.Except(files, StringComparer.OrdinalIgnoreCase).ToList()) Stdlib.Remove(gone);
         var all = new List<Decl>();
         foreach (var f in files)
@@ -561,7 +561,7 @@ public static partial class LanguageServer
         return null;
     }
 
-    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.li`).
+    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.lpa`).
     private static string PathOf(string uri)
     {
         if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) return uri;

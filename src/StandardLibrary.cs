@@ -23,13 +23,13 @@ public static class StandardLibrary
     /// The stdlib files parsed so far in this process, by full path.
     private static readonly ConcurrentDictionary<string, ParsedFile> Parsed = new(StringComparer.OrdinalIgnoreCase);
 
-    /// The declarations of every `.li` file under `directory`, in the order of the files' full paths, so they come
-    /// out the same on every run. Each file is named from the directory (`Standard/Collections/List.li`) wherever the
+    /// The declarations of every `.lpa` file under `directory`, in the order of the files' full paths, so they come
+    /// out the same on every run. Each file is named from the directory (`Standard/Collections/List.lpa`) wherever the
     /// build runs. The files are parsed in parallel, those parsed before and unchanged since taken as they were. The
     /// first file in that order that fails to parse is the one reported, as if they had been parsed one after another.
     public static List<Decl> Load(string directory)
     {
-        var files = new DirectoryInfo(directory).GetFiles("*.li", SearchOption.AllDirectories)
+        var files = new DirectoryInfo(directory).GetFiles("*.lpa", SearchOption.AllDirectories)
             .OrderBy(f => f.FullName, StringComparer.Ordinal)
             .ToList();
         var parsed = new List<Decl>?[files.Count];
@@ -59,13 +59,13 @@ public static class StandardLibrary
     internal static string ShownAs(string directory, string path) =>
         Path.Combine("Standard", Path.GetRelativePath(directory, path));
 
-    /// The module a stdlib file is in: its folder below `Standard` (`Standard/System/Memory/Heap.li` is in
+    /// The module a stdlib file is in: its folder below `Standard` (`Standard/System/Memory/Heap.lpa` is in
     /// `System/Memory`). A module line that names another module is a build error.
     /// <param name="shownAs">The file's name from the stdlib directory (ShownAs).</param>
     public static string ModuleOf(string shownAs)
     {
         // The name is split on both separators wherever the builder runs, so a name written on Windows
-        // (Standard\Collections\List.li) gives the same module as one written on Linux.
+        // (Standard\Collections\List.lpa) gives the same module as one written on Linux.
         var names = shownAs.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
         var parts = names.Length > 0 ? names[..^1] : names;
         if (parts is not [Compiler.StandardRoot, _, ..])
@@ -93,7 +93,7 @@ public static class StandardLibrary
     /// The first name of Ingrid's modules: `import Ingrid/Decimal`.
     public const string IngridRoot = "Ingrid";
 
-    /// One file of Ingrid's library: where it is, the name its declarations carry (`Ingrid/decimal/D64.li`), and its
+    /// One file of Ingrid's library: where it is, the name its declarations carry (`Ingrid/decimal/D64.lpa`), and its
     /// module (`Ingrid/Decimal`).
     public readonly record struct IngridFile(string Path, string ShownAs, string Module);
 
@@ -108,8 +108,8 @@ public static class StandardLibrary
         if (!Directory.Exists(directory)) return files;
         foreach (var folder in new DirectoryInfo(directory).GetDirectories().OrderBy(d => d.FullName, StringComparer.Ordinal))
         {
-            string module = IngridRoot + "/" + Manifest.ModuleByPlace(directory, folder.FullName + ".li");
-            var inFolder = folder.GetFiles("*.li", SearchOption.AllDirectories)
+            string module = IngridRoot + "/" + Manifest.ModuleByPlace(directory, folder.FullName + ".lpa");
+            var inFolder = folder.GetFiles("*.lpa", SearchOption.AllDirectories)
                 .OrderBy(f => f.FullName, StringComparer.Ordinal).ToList();
             if (inFolder.Count == 0 || Manifest.DeclaredModule(inFolder[0].FullName) is not { } declared
                 || !Compiler.IsUnder(declared, module))
@@ -119,7 +119,7 @@ public static class StandardLibrary
                 string? sub = Path.GetDirectoryName(Path.GetRelativePath(folder.FullName, f.FullName));
                 string fileModule = string.IsNullOrEmpty(sub)
                     ? module
-                    : module + "/" + Manifest.ModuleByPlace(folder.FullName, Path.Combine(folder.FullName, sub + ".li"));
+                    : module + "/" + Manifest.ModuleByPlace(folder.FullName, Path.Combine(folder.FullName, sub + ".lpa"));
                 files.Add(new IngridFile(f.FullName,
                     Path.Combine(IngridRoot, Path.GetRelativePath(directory, f.FullName)), fileModule));
             }

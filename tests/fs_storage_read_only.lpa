@@ -1,0 +1,37 @@
+# A FileStorage mapped without write crashes on a cell write with InvalidValueError, at the caller's line, instead of
+# the write faulting on a read-only page.
+
+import Hosted
+
+@external("c")
+@symbol("exit")
+@noreturn
+routine exit(status: CInt) -> None
+
+### Reports the crash and whether it names this file, on stdout, and exits with status 3.
+### :param name: The crash kind.
+### :param message: The crash message.
+### :param place: Where the crash was raised.
+@untraced
+routine on_crash(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    file: @[Byte] = place.file.peek()
+    here: Bool = file.has_suffix("fs_storage_read_only.lpa")
+    Console.show("crashed: {name} at this file {here}")
+    exit(3)
+
+routine start() -> None
+    tmp: &Directory <- OsEnvironment.temp_directory(HEAP)
+    f: &File <- tmp.file(name: "lapila_fs_storage_read_only.bin", manager: HEAP)
+
+    Crash.report_with(on_crash.to[Callable]())
+    OsFileManager.make_file(at: f, replacing: true)
+    OsFileManager.write_all(at: f, data: "abc")
+    s: FileStorage[Byte] <- OsFileManager.storage[Byte](at: f, write: false, start: 0,
+        count: U64.MAX)
+    Console.show("read: {s[0].to[U8]()}")
+    s[0] = b'x'
+    Console.show("not reached")
+    drop s
+    drop f
+    drop tmp
+    return

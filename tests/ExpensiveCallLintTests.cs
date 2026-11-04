@@ -49,7 +49,7 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1005]: t.li:24:21: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.lpa:24:21: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself, so it runs on every pass", warning);
         Assert.Contains("Move it out of the loop", warning);
     }
@@ -76,7 +76,7 @@ public class ExpensiveCallLintTests
                     jump head(i + 1, total)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1005]: t.li:28:21: 'unexplained' is @expensive, and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.lpa:28:21: 'unexplained' is @expensive, and this call is on a loop: "
             + "block 'body' is on the loop that 'latch' closes by going back to 'head'", warning);
     }
 
@@ -140,9 +140,9 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains("warning[LI-W1005]: t.li:27:38: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.lpa:27:38: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself", warnings[0]);
-        Assert.Contains("warning[LI-W1005]: t.li:30:21: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("warning[LI-W1005]: t.lpa:30:21: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'even' goes back to 'loop', closing a loop", warnings[1]);
     }
 
@@ -209,7 +209,7 @@ public class ExpensiveCallLintTests
                 n: S64 = costly()
                 return
             """);
-        var errors = new Compiler(BuildTarget.Host(), WithStdlib(decls)).CheckAll(scope: f => f == "t.li");
+        var errors = new Compiler(BuildTarget.Host(), WithStdlib(decls)).CheckAll(scope: f => f == "t.lpa");
         Assert.Contains(errors, e => e.Message.Contains("@expensive takes nothing, or one string"));
     }
 
@@ -217,12 +217,12 @@ public class ExpensiveCallLintTests
     {
         var decls = Parse(Callees + source);
         var compiler = new Compiler(BuildTarget.Host(), WithStdlib(decls));
-        Assert.Empty(compiler.CheckAll(scope: f => f == "t.li"));
+        Assert.Empty(compiler.CheckAll(scope: f => f == "t.lpa"));
         return StyleLint.Check(decls, built: [compiler]).Where(w => w.Contains("@expensive")).ToList();
     }
 
     private static List<Decl> Parse(string source) =>
-        new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls;
+        new Parser(new Lexer("t.lpa", source).Lex(), "t.lpa").ParseModule().Decls;
 
     private static List<Decl> WithStdlib(List<Decl> decls) =>
         [.. decls, .. StandardLibrary.Load(Path.Combine(FindRoot(), "Standard"))];
@@ -230,7 +230,7 @@ public class ExpensiveCallLintTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

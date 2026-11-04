@@ -10,9 +10,9 @@ namespace Lapila.Tests;
 [Collection(WorkingDirectoryCollection.Name)]
 public class MemoryOrderTests
 {
-    private static readonly Lazy<string> Ir = new(() => Compile("memory_order.li"));
+    private static readonly Lazy<string> Ir = new(() => Compile("memory_order.lpa"));
 
-    /// The instructions tests/memory_order.li writes, the defaults included: `peek_unbroken()` is SEQ_CST, and a
+    /// The instructions tests/memory_order.lpa writes, the defaults included: `peek_unbroken()` is SEQ_CST, and a
     /// compare_exchange without its failure order takes ACQUIRE for ACQ_REL, RELAXED (monotonic) for RELEASE, and
     /// the success order otherwise.
     [Theory]
@@ -76,7 +76,7 @@ public class MemoryOrderTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

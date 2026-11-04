@@ -20,7 +20,7 @@ public class MemoryCellLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1004]: t.li:6:20: this shows the cell 'sum' itself (its address and manager): if you meant "
+        Assert.Contains("warning[LI-W1004]: t.lpa:6:20: this shows the cell 'sum' itself (its address and manager): if you meant "
             + "its value, write sum.load()", warning);
     }
 
@@ -97,12 +97,12 @@ public class MemoryCellLintTests
     {
         var decls = Parse("import Collections\nimport Hosted\n\n" + source);
         var compiler = new Compiler(BuildTarget.Host(), WithStdlib(decls));
-        Assert.Empty(compiler.CheckAll(scope: f => f == "t.li"));
+        Assert.Empty(compiler.CheckAll(scope: f => f == "t.lpa"));
         return StyleLint.Check(decls, built: [compiler]).Where(w => w.Contains("shows the cell")).ToList();
     }
 
     private static List<Decl> Parse(string source) =>
-        new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls;
+        new Parser(new Lexer("t.lpa", source).Lex(), "t.lpa").ParseModule().Decls;
 
     private static List<Decl> WithStdlib(List<Decl> decls) =>
         [.. decls, .. StandardLibrary.Load(Path.Combine(FindRoot(), "Standard"))];
@@ -110,7 +110,7 @@ public class MemoryCellLintTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

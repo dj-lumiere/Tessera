@@ -11,11 +11,11 @@ import javax.swing.Icon
 
 internal const val PLUGIN_ID = "com.lapila.rider"
 
-internal fun VirtualFile.isLapila(): Boolean = extension.equals("li", ignoreCase = true)
+internal fun VirtualFile.isLapila(): Boolean = extension.equals("lpa", ignoreCase = true)
 
 /**
  * Registers the TextMate bundle shipped next to the plugin's jar: the grammar from Lapila.tmbundle plus the comment and
- * bracket rules of language-configuration.json. `.li` files open as TextMate files, highlighted by that grammar.
+ * bracket rules of language-configuration.json. `.lpa` files open as TextMate files, highlighted by that grammar.
  */
 class LapilaBundleProvider : TextMateBundleProvider {
     override fun getBundles(): List<TextMateBundleProvider.PluginBundle> {
@@ -24,7 +24,7 @@ class LapilaBundleProvider : TextMateBundleProvider {
     }
 }
 
-/** Gives `.li` files the Lapila icon in place of the generic TextMate one. */
+/** Gives `.lpa` files the Lapila icon in place of the generic TextMate one. */
 class LapilaIconProvider : FileIconProvider {
     override fun getIcon(file: VirtualFile, flags: Int, project: Project?): Icon? =
         if (file.isLapila()) ICON else null

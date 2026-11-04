@@ -1418,7 +1418,7 @@ public sealed partial class Compiler
     }
 
     /// Sets the trace sizes the manifest gives (`[debug] trace-frames`, `failure-traces`): the standard library's
-    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.li). Null keeps a size as the library has it.
+    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.lpa). Null keeps a size as the library has it.
     public void SetTraceSizes(int? frames, int? failures)
     {
         if (frames is { } f)
@@ -1430,14 +1430,14 @@ public sealed partial class Compiler
     }
 
     /// Sets the size of the Crash service's message buffer the manifest gives (`[crash] message-size`): the standard
-    /// library's CRASH_MESSAGE_SIZE (Crash.li). Null keeps the library's.
+    /// library's CRASH_MESSAGE_SIZE (Crash.lpa). Null keeps the library's.
     public void SetCrashMessageSize(int? bytes)
     {
         if (bytes is { } n) SetLibraryPreset("CRASH_MESSAGE_SIZE", "U64", n, "[crash] message-size", required: true);
     }
 
     /// Sets the AccessManager's checks the manifest or the mode gives: the standard library's DEADLOCK_CHECK
-    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.li). A check the
+    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.lpa). A check the
     /// manifest leaves out (null) takes the mode's default for the deadlock check and stays as the library has it for
     /// the order check, and a program that doesn't link the AccessManager has neither preset.
     public void SetAccessChecks(bool? deadlockCheck, bool deadlockDefault, bool? accessOrder)

@@ -275,7 +275,7 @@ public static class Li
     public static readonly Code BadOption = S(1451, "BadOption", "A command line option that is unknown, missing its value, or belongs in config.toml.");
     public static readonly Code TargetMismatch = S(1452, "TargetMismatch", "A request for a target the board or this machine cannot do.");
     public static readonly Code ToolchainMissing = S(1453, "ToolchainMissing", "A tool the build needs (clang, the standard library) that was not found or failed.");
-    public static readonly Code OldExtension = S(1454, "OldExtension", "A source file that still has the old extension .te.");
+    public static readonly Code OldExtension = S(1454, "OldExtension", "A source file that still has an old extension, .te or .li.");
     public static readonly Code CommandUsage = S(1455, "CommandUsage", "A command called without what it needs.");
 
     // Warning, numbers shared with Revare and Mielia

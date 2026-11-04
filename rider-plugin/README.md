@@ -1,6 +1,6 @@
 # Lapila for Rider
 
-A Rider plugin for Lapila (`.li`): syntax highlighting from `../Lapila.tmbundle`, `//` comment toggling and
+A Rider plugin for Lapila (`.lpa`): syntax highlighting from `../Lapila.tmbundle`, `//` comment toggling and
 bracket pairing (`bundle/`), the Lapila file icon, and the Lapila language server (`lapila lsp`): the builder's errors
 and style warnings as you type, semantic colors, hover (declaration, `///` doc, and what each type parameter stands for), go to
 definition, the file structure view, and

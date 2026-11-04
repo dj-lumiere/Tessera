@@ -42,7 +42,7 @@ public class TraceTests
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.li")], BuildTarget.Host(),
+        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.lpa")], BuildTarget.Host(),
             executable: false, lint: false, trace: true);
         string inline = Body(ir, "@_Z4pass");
         Assert.DoesNotContain("trace_push", inline);
@@ -59,7 +59,7 @@ public class TraceTests
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.li")],
+        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.lpa")],
             BuildTarget.Parse("x86_64-linux-gnu"), lint: false, trace: true);
         Assert.DoesNotContain("trace_push", ir);
         Assert.DoesNotContain("trace_pop", ir);
@@ -94,8 +94,8 @@ public class TraceTests
         var target = BuildTarget.Parse(triple);
         if (target.Arch == "arm" && !target.HasOs) target = target with { Cpu = "cortex-m3" };
         string program = target.HasOs
-            ? Path.Combine(root, "tests", "trace_frames", "src", "main.li")
-            : Path.Combine(root, "tests", "freestanding", "main.li");
+            ? Path.Combine(root, "tests", "trace_frames", "src", "main.lpa")
+            : Path.Combine(root, "tests", "freestanding", "main.lpa");
         // IR handed out on its own: a traced build keeps the shadow stack the checks above look for, also on Linux
         // x86-64, where an executable reads its trace from the stack instead.
         return Cli.Compile([program], target, executable: false, lint: false, trace: trace);
@@ -104,7 +104,7 @@ public class TraceTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

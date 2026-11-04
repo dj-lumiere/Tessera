@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace Lapila;
 
-// `Stamped[T]` (Standard/System/Memory/Stamped.li): an entity the program stamps keeps its slot in the PoolManager's
+// `Stamped[T]` (Standard/System/Memory/Stamped.lpa): an entity the program stamps keeps its slot in the PoolManager's
 // table in a hidden U32, the last member of its layout. Only the entity types named as `Stamped[...]`'s argument in
 // some source file get one: every other entity keeps its layout.
 public sealed partial class Compiler
@@ -65,7 +65,7 @@ public sealed partial class Compiler
         return shape.WrapAlign > 0 ? $"1, {last}" : $"{last}";
     }
 
-    /// A routine of System/Memory/Stamped.li the builder calls itself, found by name whatever it is secret to.
+    /// A routine of System/Memory/Stamped.lpa the builder calls itself, found by name whatever it is secret to.
     public RoutineDecl StampRoutine(string name) =>
         _free.GetValueOrDefault(name)?.FirstOrDefault(d => d.IsLibrary && d.Module == "System/Memory")
         ?? throw new InvalidOperationException($"the standard library has no {name}");

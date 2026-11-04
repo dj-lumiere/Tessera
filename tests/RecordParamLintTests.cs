@@ -25,7 +25,7 @@ public class RecordParamLintTests
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
             """));
-        Assert.Contains("warning[LI-W1002]: t.li:1:1: routine 'blend' takes 5 parameters (not counting me)", warning);
+        Assert.Contains("warning[LI-W1002]: t.lpa:1:1: routine 'blend' takes 5 parameters (not counting me)", warning);
         Assert.Contains("into a record", warning);
     }
 
@@ -83,7 +83,7 @@ public class RecordParamLintTests
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
             """;
-        Assert.Empty(Lint(source, "out/generated/t.li"));
+        Assert.Empty(Lint(source, "out/generated/t.lpa"));
         Assert.Empty(Lint("""
             @source("blend.mini", 1, 1)
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
@@ -107,11 +107,11 @@ public class RecordParamLintTests
         var warnings = StyleLint.Check(Parse("""
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
-            """, "t.li"));
+            """, "t.lpa"));
         Assert.Contains(warnings, w => w.Contains("not counting me"));
     }
 
-    private static List<string> Lint(string source, string file = "t.li") =>
+    private static List<string> Lint(string source, string file = "t.lpa") =>
         RecordParamLint.Check(Parse(source, file));
 
     private static List<Decl> Parse(string source, string file) =>

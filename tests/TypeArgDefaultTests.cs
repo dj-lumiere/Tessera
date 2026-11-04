@@ -4,7 +4,7 @@ namespace Lapila.Tests;
 
 /// <summary>
 /// A type argument left out for its default and the same argument written out are one instance: `add(1)` and
-/// `add[SEQ_CST](1)` in tests/type_arg_default.li call one routine, defined once. The golden test locks the values.
+/// `add[SEQ_CST](1)` in tests/type_arg_default.lpa call one routine, defined once. The golden test locks the values.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
 public class TypeArgDefaultTests
@@ -14,7 +14,7 @@ public class TypeArgDefaultTests
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        string ir = Cli.Compile([Path.Combine(root, "tests", "type_arg_default.li")], BuildTarget.Host(), lint: false, trace: false);
+        string ir = Cli.Compile([Path.Combine(root, "tests", "type_arg_default.lpa")], BuildTarget.Host(), lint: false, trace: false);
         var lines = ir.Split('\n');
         // add[SEQ_CST], add[RELAXED] and add[ACQUIRE]: three instances, the default's being the SEQ_CST one.
         Assert.Equal(3, lines.Count(l => l.StartsWith("define ", StringComparison.Ordinal) && l.Contains("@_Z3addIL5Order")));
@@ -24,7 +24,7 @@ public class TypeArgDefaultTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

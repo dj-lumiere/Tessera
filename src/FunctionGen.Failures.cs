@@ -254,7 +254,7 @@ public sealed partial class FunctionGen
 
     // ── The mold ────────────────────────────────────────────────────────────
 
-    /// The address of the running flow's mold (Crash.li's failure_mold): the thread's, or the running fiber's.
+    /// The address of the running flow's mold (Crash.lpa's failure_mold): the thread's, or the running fiber's.
     private string MoldAddr(Pos pos) =>
         EvalAny(new CallExpr("failure_mold", [], [], pos) { Path = Compiler.SystemModule }).Op;
 
@@ -870,7 +870,7 @@ public sealed partial class FunctionGen
     }
 
     /// The tag of a new failure of `leaf`: its type ID, and in a traced routine the failure's number in the high half
-    /// (Trace.li's failure_note), wrapping the failure the arm it is made in observed.
+    /// (Trace.lpa's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTagOp(DType leaf, Pos at)
     {
         uint id = VariantType.TypeId(leaf);

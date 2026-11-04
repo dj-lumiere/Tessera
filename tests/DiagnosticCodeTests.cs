@@ -68,8 +68,8 @@ public class DiagnosticCodeTests
     [Fact]
     public void ACodePrintsInTheSharedScaffold()
     {
-        var error = new CompileError(Li.UnknownName, new Pos("t.li", 3, 5), "unknown name 'x'");
-        Assert.Equal("error[LI-S007]: t.li:3:5: unknown name 'x'", error.Message);
+        var error = new CompileError(Li.UnknownName, new Pos("t.lpa", 3, 5), "unknown name 'x'");
+        Assert.Equal("error[LI-S007]: t.lpa:3:5: unknown name 'x'", error.Message);
         Assert.Equal("LI-W305", Li.NoDocComment.Text);
         Assert.Equal("warning[LI-W305]", Li.NoDocComment.Head);
         Assert.Equal("LI-S1000", Li.ModuleCollision.Text);
@@ -78,9 +78,9 @@ public class DiagnosticCodeTests
     [Fact]
     public void ALexerErrorCarriesItsCode()
     {
-        var e = Assert.Throws<CompileError>(() => new Lexer("t.li", "x: Text = \"abc\n").Lex());
+        var e = Assert.Throws<CompileError>(() => new Lexer("t.lpa", "x: Text = \"abc\n").Lex());
         Assert.Equal(Li.UnterminatedString, e.Code);
-        Assert.StartsWith("error[LI-G001]: t.li:1:", e.Message);
+        Assert.StartsWith("error[LI-G001]: t.lpa:1:", e.Message);
     }
 
     private static Dictionary<(DiagFamily Family, int Number), string> RevareMielia()

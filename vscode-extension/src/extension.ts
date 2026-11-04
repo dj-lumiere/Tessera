@@ -102,11 +102,11 @@ function onPath(name: string): string | undefined {
     return undefined;
 }
 
-/** The nearest `Standard/` (one holding System/Prelude.li) above a folder: where the builder there finds its library. */
+/** The nearest `Standard/` (one holding System/Prelude.lpa) above a folder: where the builder there finds its library. */
 function stdlibAbove(folder: string): string | undefined {
     for (let dir = folder; ; dir = path.dirname(dir)) {
         const candidate = path.join(dir, "Standard");
-        if (fs.existsSync(path.join(candidate, "System", "Prelude.li"))) return candidate;
+        if (fs.existsSync(path.join(candidate, "System", "Prelude.lpa"))) return candidate;
         if (path.dirname(dir) === dir) return undefined;
     }
 }

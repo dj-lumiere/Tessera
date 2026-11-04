@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit
 private val LOG = logger<LapilaLanguageServer>()
 
 /**
- * Starts the Lapila language server (`lapila lsp`) when a `.li` file opens. Rider asks this provider only about files in
+ * Starts the Lapila language server (`lapila lsp`) when a `.lpa` file opens. Rider asks this provider only about files in
  * project content, which in Rider means files a .csproj includes, so LapilaFileOpenListener starts the server for the rest.
  */
 class LapilaLanguageServer : LspIntegrationProvider {
@@ -63,7 +63,7 @@ class LapilaLanguageServer : LspIntegrationProvider {
 }
 
 /**
- * Starts the server for every `.li` file that opens, including the ones outside project content (the stdlib,
+ * Starts the server for every `.lpa` file that opens, including the ones outside project content (the stdlib,
  * playgrounds and tests, which no .csproj includes). Rider keeps one client per provider and descriptor, so
  * starting it again for each file is free.
  */
@@ -78,7 +78,7 @@ internal class LapilaFileOpenListener(private val project: Project) : FileEditor
 }
 
 /**
- * Starts the server when an editor for a `.li` file is created. In a remote-development backend the editors a client
+ * Starts the server when an editor for a `.lpa` file is created. In a remote-development backend the editors a client
  * opens go through the guest editor manager, which doesn't publish `FileEditorManagerListener.fileOpened` on the backend,
  * so LapilaFileOpenListener alone never sees them. An editor is created on the backend either way.
  */
@@ -178,11 +178,11 @@ private fun locateServer(project: Project): Path {
         )
 }
 
-/** The nearest `Standard/` (one holding System/Prelude.li) above a folder: where the builder there finds its library. */
+/** The nearest `Standard/` (one holding System/Prelude.lpa) above a folder: where the builder there finds its library. */
 private fun stdlibAbove(folder: Path): Path? =
     generateSequence(folder) { it.parent }
         .map { it.resolve("Standard") }
-        .firstOrNull { Files.isRegularFile(it.resolve("System").resolve("Prelude.li")) }
+        .firstOrNull { Files.isRegularFile(it.resolve("System").resolve("Prelude.lpa")) }
 
 /** The newest file time in a server's folder: changes whenever a rebuild writes into it. */
 private fun buildStamp(folder: Path): Long =

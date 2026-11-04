@@ -15,18 +15,18 @@ public class StandardModuleTests
     private static string StdlibDir()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa")))
                 return Path.Combine(dir.FullName, "Standard");
         throw new InvalidOperationException("no Standard/ above the test assembly");
     }
 
     [Theory]
-    [InlineData("Standard/System/Memory/Heap.li", "System/Memory")]
-    [InlineData("Standard/System/Prelude.li", "System")]
-    [InlineData("Standard/Collections/List.li", "Collections")]
-    [InlineData("Standard/Text/Patterns/Regex.li", "Text/Patterns")]
-    [InlineData(@"Standard\Collections\List.li", "Collections")]
-    [InlineData(@"Standard\System\Memory\Heap.li", "System/Memory")]
+    [InlineData("Standard/System/Memory/Heap.lpa", "System/Memory")]
+    [InlineData("Standard/System/Prelude.lpa", "System")]
+    [InlineData("Standard/Collections/List.lpa", "Collections")]
+    [InlineData("Standard/Text/Patterns/Regex.lpa", "Text/Patterns")]
+    [InlineData(@"Standard\Collections\List.lpa", "Collections")]
+    [InlineData(@"Standard\System\Memory\Heap.lpa", "System/Memory")]
     public void The_folder_is_the_module(string shownAs, string module)
     {
         Assert.Equal(module, StandardLibrary.ModuleOf(shownAs));
@@ -35,14 +35,14 @@ public class StandardModuleTests
     [Fact]
     public void A_module_line_that_repeats_the_folder_builds()
     {
-        var decls = Parse("Standard/System/Text/Format.li", "module System/Text\n\npreset WIDTH: U64 = 8\n");
+        var decls = Parse("Standard/System/Text/Format.lpa", "module System/Text\n\npreset WIDTH: U64 = 8\n");
         Assert.All(decls, d => Assert.Equal("System/Text", d.Module));
     }
 
     [Fact]
     public void A_file_without_a_module_line_is_in_its_folders_module()
     {
-        var decls = Parse("Standard/System/Text/Format.li", "preset WIDTH: U64 = 8\n");
+        var decls = Parse("Standard/System/Text/Format.lpa", "preset WIDTH: U64 = 8\n");
         Assert.All(decls, d => Assert.Equal("System/Text", d.Module));
     }
 
@@ -50,7 +50,7 @@ public class StandardModuleTests
     public void A_module_line_that_names_another_module_is_a_build_error()
     {
         var e = Assert.Throws<CompileError>(() =>
-            Parse("Standard/System/Text/Format.li", "module Format\n\npreset WIDTH: U64 = 8\n"));
+            Parse("Standard/System/Text/Format.lpa", "module Format\n\npreset WIDTH: U64 = 8\n"));
         Assert.Contains("this file is in the folder of module System/Text", e.Message);
     }
 

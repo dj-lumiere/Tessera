@@ -411,7 +411,7 @@ public static class Crashing
     public static readonly VariantDecl CrashablesDecl = new("<builder>", [new Annotation("union", [], default)], "Crashables", [], [], [], default)
         { Module = Compiler.SystemModule };
 
-    /// The crashable that marks an open list of failures (Crash.li's `OpenFailure`).
+    /// The crashable that marks an open list of failures (Crash.lpa's `OpenFailure`).
     public static bool IsOpenMarker(DType? t) => t is RecordType { Decl: { IsCrashable: true, IsLibrary: true, Name: "OpenFailure" } };
 
     /// A crashable record: one a `throw` gives.

@@ -1,0 +1,187 @@
+# Lapila stdlib collection: PartialSlots[T, COUNT], up to COUNT places in a row with a count
+#
+# The entity with the room of a Slots[T, COUNT] (Slots.lpa) and the number of places in use kept beside it: the room is
+# fixed at build time and lives in the value, no memory from a manager, and the count changes while the program runs.
+# Dropping one ends the elements in use, the last first.
+
+module System
+
+### Up to `COUNT` places of `T` in a row, stored in place, with `used` of them in use, for any `T`: an element may be an entity. A `PartialSlots` is an entity: it lives in a place (`s: &PartialSlots[Counter, 8] <- PartialSlots[Counter, 8].construct()`), is handed over with `steal`, and `drop` ends the elements in use, the last first. The room is fixed at build time (no memory from a manager), and adding to a full one throws {FullCollectionError}, which `try` and `check` receive. An element is reached through `getslot`, and taken out with `remove_last`.
+### :typeparam T: The element type.
+### :typeparam COUNT: The most elements held, fixed at build time.
+entity PartialSlots[T, COUNT]
+obeys Destructible[PartialSlots[T, COUNT]]
+obeys Representable[PartialSlots[T, COUNT]] when T obeys Diagnosable
+obeys Diagnosable[PartialSlots[T, COUNT]] when T obeys Diagnosable
+needs U64 COUNT
+    places: Slots[T, COUNT]
+    used: U64
+
+### Makes a `PartialSlots` that holds no element yet.
+### :returns: An empty `PartialSlots` with room for `COUNT` elements.
+common routine PartialSlots[T, COUNT].construct() -> Me
+needs U64 COUNT
+    lateinit places: &Slots[T, COUNT]
+    places.zeroinit(1)
+    return Me(places: steal places, used: 0)
+
+### The number of elements held.
+### :returns: The count, at most `COUNT`.
+routine @PartialSlots[T, COUNT].count() -> U64
+needs U64 COUNT
+    return me.used.peek()
+
+### The most elements this holds, the buildtime constant `COUNT`.
+### :returns: `COUNT`.
+routine @PartialSlots[T, COUNT].capacity() -> U64
+needs U64 COUNT
+    return COUNT
+
+### Whether no place holds an element.
+### :returns: `true` when the count is `0`.
+routine @PartialSlots[T, COUNT].is_empty() -> Bool
+needs U64 COUNT
+    return me.used.peek() == 0
+
+### Whether every place holds an element, so `add_last` would throw.
+### :returns: `true` when the count is `COUNT`.
+routine @PartialSlots[T, COUNT].is_full() -> Bool
+needs U64 COUNT
+    return me.used.peek() >= COUNT
+
+### Puts `value` in the next place, after the elements held.
+### :param value: The element to add, taken over.
+### :throws: Throws `FullCollectionError` when all `COUNT` places hold an element; the element that did not fit ends.
+@track_caller
+routine @PartialSlots[T, COUNT].add_last(value: T) -> None
+needs U64 COUNT
+    used: U64 = me.used.peek()
+    if used >= COUNT
+        # nothing took the value: it ends here
+        drop value
+        throw FullCollectionError(capacity: COUNT)
+    me.places.getslot(used).poke(steal value)
+    me.used.poke(used + 1)
+    return
+
+### Adds the steps that run next, given in the order they run, so that `remove_last` gives them back in that order:
+### `stack.add_next([a, b, c])` leaves `a` at the back, then `b`, then `c`. When they do not all fit, none is added and
+### they all end.
+### :typeparam N: The number of steps.
+### :param steps: The steps, in the order they should come back out, taken over.
+### :throws: Throws `FullCollectionError` when there is not room for every step.
+@track_caller
+routine @PartialSlots[T, COUNT].add_next[N](steps: Slots[T, N]) -> None
+needs U64 COUNT, U64 N
+    used: U64 = me.used.peek()
+    if N > COUNT - used
+        drop steps
+        throw FullCollectionError(capacity: COUNT)
+    if N == 0
+        drop steps
+        return
+    # The steps go in as they are, then the N places are reversed so the first step is the last place.
+    base: @T = me.places.getslot(used)
+    base.to[@Slots[T, N]]().poke(steal steps)
+    window: @[T] = @[T].construct(data: base, count: N)
+    for i in 0 til N
+        j: U64 = N - 1 - i
+        if i < j
+            window.swap(i, j)
+    me.used.poke(used + N)
+    return
+
+### Removes the last element and returns it.
+### :returns: The removed element.
+### :throws: Throws `AbsentValueError` when no place holds an element.
+routine @PartialSlots[T, COUNT].remove_last() -> T
+needs U64 COUNT
+    used: U64 = me.used.peek()
+    if used == 0
+        throw AbsentValueError()
+    me.used.poke(used - 1)
+    return steal me.places.getslot(used - 1).stride(0)
+
+### The address of element `index`, checked against the count: a place to read or write in place. It stays valid until
+### the `PartialSlots` is changed in shape or dropped.
+### :param index: The zero-based position.
+### :returns: The element's address.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
+routine @PartialSlots[T, COUNT].getslot(index: U64) -> @T
+needs U64 COUNT
+    used: U64 = me.used.peek()
+    if index >= used
+        throw IndexOutOfBoundsError(index, count: used)
+    return me.places.getslot(index)
+
+### Overwrites the element at `index` with `value`: the element there is ended first, then `value` takes its place.
+### :param index: The zero-based position to write.
+### :param value: The value to store, taken over.
+### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @PartialSlots[T, COUNT].setitem(index: U64, value: T) -> None
+needs U64 COUNT
+    used: U64 = me.used.peek()
+    if index >= used
+        drop value
+        throw IndexOutOfBoundsError(index, count: used)
+    slot: @T = me.places.getslot(index)
+    drop slot
+    slot.poke(steal value)
+    return
+
+### The elements held, borrowed: valid until the `PartialSlots` is changed in shape or dropped.
+### :returns: A span of the `count` elements.
+routine @PartialSlots[T, COUNT].getview() -> @[T]
+needs U64 COUNT
+    return @[T].construct(data: me.places.getslot(0), count: me.used.peek())
+
+### Ends every element held, the last first. The places are free for `add_last` again.
+routine @PartialSlots[T, COUNT].clear() -> None
+needs U64 COUNT
+    first: @T = me.places.getslot(0)
+    loop with i: U64 = me.used.peek()
+        if i == 0
+            me.used.poke(0)
+            return
+        drop first.stride(i - 1)
+        continue with i: i - 1
+
+### Ends the elements held, the last first. The places that hold none are not touched, so an element's own `destruct`
+### never runs on a place that holds nothing.
+routine @PartialSlots[T, COUNT].destruct() -> None
+needs U64 COUNT
+    me.clear()
+    # The places in use ended one by one above, and the rest hold nothing. `used` never goes past `COUNT`, so the Slots
+    # is not dropped whole (that would end all COUNT places): this path is the one the build wants to see.
+    if me.used.peek() > COUNT
+        drop me.places
+    return
+
+# -- text ----------------------------------------------------------------------
+
+### The elements held in order, each diagnosed (strings quoted): [1, 2, 3].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @PartialSlots[T, COUNT].represent_into[TWriter](out: @TWriter) -> None
+needs U64 COUNT, T obeys Diagnosable, TWriter obeys Writer
+    write_str(out, text: "[")
+    for i in 0 til me.used.peek()
+        if i != 0
+            write_str(out, text: ", ")
+        me.places.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
+    return
+
+### The elements held in order, each diagnosed: [1, 2, 3].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @PartialSlots[T, COUNT].diagnose_into[TWriter](out: @TWriter) -> None
+needs U64 COUNT, T obeys Diagnosable, TWriter obeys Writer
+    write_str(out, text: "[")
+    for i in 0 til me.used.peek()
+        if i != 0
+            write_str(out, text: ", ")
+        me.places.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
+    return

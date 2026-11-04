@@ -48,7 +48,7 @@ public class FinishLintTests
                     return result
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1001]: t.li:6:9: a return outside finish here: jump finish(...) instead", warning);
+        Assert.Contains("warning[LI-W1001]: t.lpa:6:9: a return outside finish here: jump finish(...) instead", warning);
     }
 
     [Fact]
@@ -115,5 +115,5 @@ public class FinishLintTests
     private static List<string> Lint(string source) => FinishLint.Check(Parse(source));
 
     private static List<Decl> Parse(string source) =>
-        new Parser(new Lexer("t.li", source).Lex(), "t.li").ParseModule().Decls;
+        new Parser(new Lexer("t.lpa", source).Lex(), "t.lpa").ParseModule().Decls;
 }

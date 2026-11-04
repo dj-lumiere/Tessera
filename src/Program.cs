@@ -9,15 +9,15 @@ static class Cli
 {
     private const string Usage = """
         usage:
-          lapila new   [<folder>]      start a solution: config.toml, main.li, .gitignore, VS Code files
-          lapila check [<target>] [<trace>] [<file.li>...]   type-check every non-generic routine, the stdlib included
+          lapila new   [<folder>]      start a solution: config.toml, main.lpa, .gitignore, VS Code files
+          lapila check [<target>] [<trace>] [<file.lpa>...]   type-check every non-generic routine, the stdlib included
           lapila build                 build the solution its config.toml describes (here or above)
-          lapila build <file.li>...    build the files: one file with a config.toml in its own folder takes that
+          lapila build <file.lpa>...    build the files: one file with a config.toml in its own folder takes that
                                         config.toml's settings, others build for this machine in debug
           lapila run                   build it and run it
-          lapila run   <file.li>... [-- <argument>...]   build the files the same way and run the program
-          lapila test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.li>...
-          lapila fmt   [--check] <file-or-dir>...   format .li files in place (--check: list files that would change)
+          lapila run   <file.lpa>... [-- <argument>...]   build the files the same way and run the program
+          lapila test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.lpa>...
+          lapila fmt   [--check] <file-or-dir>...   format .lpa files in place (--check: list files that would change)
           lapila fmt   -               format the source on standard input to standard output (for an editor)
           lapila lsp                   run the language server on standard input and output (for an editor)
           lapila lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
@@ -50,7 +50,7 @@ static class Cli
                   name is a board that comes with Lapila (boards/<name>.toml), a path a board file of your own.
 
         All input files form one compilation unit.
-        test: every <name>.li in each <dir>, and every subdirectory <name>/ (its files compiled together), is
+        test: every <name>.lpa in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
@@ -148,7 +148,7 @@ static class Cli
             return 0;
         }
         var files = paths.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.li", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.lpa", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         int changed = 0;
         foreach (var file in files)
@@ -200,7 +200,7 @@ static class Cli
     {
         if (args.Length == 0) return Fail("lint: give files or directories to lint");
         var files = args.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.li", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.lpa", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         foreach (var file in files)
             if (!File.Exists(file)) throw new ToolError(Li.NoSuchFile, $"no such file: {file}");
@@ -411,12 +411,18 @@ static class Cli
 
     /// The files of `lapila build` or `lapila run`. The commands take files and nothing else: a flag that config.toml
     /// can say is an error that names the key, and one that is gone is an error that says what does its work now.
-    /// The message for a source file that still has the extension Lapila sources had before 0.5 (`.te`), or null.
+    /// The message for a source file that still has an extension Lapila sources had before (`.te`, then `.li`), or null.
     public static string? OldSourceMessage(string file) =>
-        file.EndsWith(".te", StringComparison.OrdinalIgnoreCase)
-            ? $"{file} has the old extension .te: Lapila sources end in .li now. Rename it to " +
-              $"{Path.ChangeExtension(Path.GetFileName(file), ".li")} (every .te file of the program the same way)"
+        OldSourceExtensions.FirstOrDefault(old => file.EndsWith(old, StringComparison.OrdinalIgnoreCase)) is { } old
+            ? $"{file} has the old extension {old}: Lapila sources end in {SourceExtension} now. Rename it to " +
+              $"{Path.ChangeExtension(Path.GetFileName(file), SourceExtension)} (every {old} file of the program the same way)"
             : null;
+
+    /// The extension of a Lapila source.
+    public const string SourceExtension = ".lpa";
+
+    /// The extensions Lapila sources had before, oldest first.
+    public static readonly string[] OldSourceExtensions = [".te", ".li"];
 
     private static List<string> FilesOnly(string[] args)
     {
@@ -595,14 +601,14 @@ static class Cli
         var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp),
                 Module: (string?)null))
             .ToList();
-        // Stdlib files are named from the stdlib directory (Standard/Collections/List.li) wherever the build runs, so
+        // Stdlib files are named from the stdlib directory (Standard/Collections/List.lpa) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
         // reported after the inputs' own errors, as when the inputs were read first.
         ExceptionDispatchInfo? stdlibError = null;
         try
         {
             string stdlib = StdlibDir();
-            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.li", SearchOption.AllDirectories)
+            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.lpa", SearchOption.AllDirectories)
                          .OrderBy(f => f.FullName))
                 if (!inputs.Contains(f.FullName))
                     jobs.Add((f.FullName, true, StandardLibrary.ShownAs(stdlib, f.FullName),
@@ -701,7 +707,7 @@ static class Cli
         return _ingrid;
     }
 
-    /// The standard library: $LAPILA_STDLIB, or the nearest `Standard/` (with System/Prelude.li) above the working
+    /// The standard library: $LAPILA_STDLIB, or the nearest `Standard/` (with System/Prelude.lpa) above the working
     /// directory or the builder binary.
     internal static string StdlibDir()
     {
@@ -710,7 +716,7 @@ static class Cli
             return _stdlib = env;
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
+                if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa")))
                     return _stdlib = Path.Combine(dir.FullName, "Standard");
         throw new ToolError(Li.ToolchainMissing, "cannot find the standard library; set LAPILA_STDLIB to the stdlib directory");
     }
@@ -759,7 +765,7 @@ static class Cli
             "--no-race-check" => "`race-check = false` under [debug]",
             "--trace" => "`trace = true` under [debug]",
             "--no-trace" => "`trace = false` under [debug]",
-            "-o" => "the entry file, whose name the output takes (build/<name>), as `executable = \"main.li\"` under [target]",
+            "-o" => "the entry file, whose name the output takes (build/<name>), as `executable = \"main.lpa\"` under [target]",
             _ => null,
         };
         string? gone = flag switch
@@ -919,7 +925,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
-            // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.li) live in synchronization.lib, not kernel32.
+            // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.lpa) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
@@ -1089,8 +1095,8 @@ static class Cli
         }
         var target = targetArgs.Build();
         args = [.. dirs];
-        if (args.Length == 0) throw new ToolError(Li.CommandUsage, "test takes one or more directories or .li files");
-        // A test is one file, or a subdirectory whose .li files are compiled together (several modules); its
+        if (args.Length == 0) throw new ToolError(Li.CommandUsage, "test takes one or more directories or .lpa files");
+        // A test is one file, or a subdirectory whose .lpa files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
         // A subdirectory with a config.toml builds through it.
         var tests = new List<(string Stem, string[] Sources)>();
@@ -1104,8 +1110,8 @@ static class Cli
                     tests.Add((Path.GetDirectoryName(dir)!, [dir]));
                     continue;
                 }
-                if (Path.GetExtension(dir) != ".li")
-                    throw new ToolError(Li.OldExtension, $"{dir} is not a Lapila source (Lapila sources end in .li)");
+                if (Path.GetExtension(dir) != ".lpa")
+                    throw new ToolError(Li.OldExtension, $"{dir} is not a Lapila source (Lapila sources end in .lpa)");
                 tests.Add((Path.ChangeExtension(dir, null), [dir]));
                 continue;
             }
@@ -1116,11 +1122,11 @@ static class Cli
             {
                 tests.Add((stem, File.Exists(Path.Combine(stem, Manifest.FileName))
                     ? [Path.Combine(stem, Manifest.FileName)]
-                    : Directory.GetFiles(stem, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()));
+                    : Directory.GetFiles(stem, "*.lpa", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()));
                 continue;
             }
             var found = TestsIn(dir);
-            if (found.Count == 0) throw new ToolError(Li.NoSuchFile, $"no .li files in {dir}");
+            if (found.Count == 0) throw new ToolError(Li.NoSuchFile, $"no .lpa files in {dir}");
             tests.AddRange(found);
         }
         bool qualify = args.Length > 1;
@@ -1206,14 +1212,14 @@ static class Cli
     /// A <name>.serial file marks a test that runs by itself, with no other test building or running beside it.
     internal static bool RunsAlone(string stem) => File.Exists(stem + ".serial");
 
-    /// The golden tests in a directory: every <name>.li, and every subdirectory <name>/ (its .li files compiled
+    /// The golden tests in a directory: every <name>.lpa, and every subdirectory <name>/ (its .lpa files compiled
     /// together, or built through its config.toml). A test's .expected / .exit / .error files sit next to it.
     internal static List<(string Stem, string[] Sources)> TestsIn(string dir) =>
-        Directory.GetFiles(dir, "*.li").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
+        Directory.GetFiles(dir, "*.lpa").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
             .Concat(Directory.GetDirectories(dir)
                 .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
                     ? [Path.Combine(d, Manifest.FileName)]
-                    : Directory.GetFiles(d, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                    : Directory.GetFiles(d, "*.lpa", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
                 .Where(t => t.Item2.Length > 0))
             .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
 
@@ -1238,7 +1244,7 @@ static class Cli
     internal static string? RunOne(string[] sources, string stem, BuildTarget target)
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
-        // A message names files the way the host spells paths (tests\x.li on Windows), and an .error file spells them
+        // A message names files the way the host spells paths (tests\x.lpa on Windows), and an .error file spells them
         // with '/', so both are compared with '/'.
         bool HasExpectedError(string message) =>
             message.Replace('\\', '/').Contains(expectedError!.Replace('\\', '/'), StringComparison.Ordinal);

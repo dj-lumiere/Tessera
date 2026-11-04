@@ -32,7 +32,7 @@ public class DocLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W305]: lib/t.li:2:8: routine 'helper' has no doc comment", warning);
+        Assert.Contains("warning[LI-W305]: lib/t.lpa:2:8: routine 'helper' has no doc comment", warning);
     }
 
     [Fact]
@@ -114,11 +114,11 @@ public class DocLintTests
     }
 
     [Theory]
-    [InlineData("tests/t.li")]
-    [InlineData("../Ingrid/tests/decimal64/t.li")]
-    [InlineData("playground/main.li")]
-    [InlineData("scratch/probe/t.li")]
-    [InlineData("../Ingrid/lapila/generated/t.li")]
+    [InlineData("tests/t.lpa")]
+    [InlineData("../Ingrid/tests/decimal64/t.lpa")]
+    [InlineData("playground/main.lpa")]
+    [InlineData("scratch/probe/t.lpa")]
+    [InlineData("../Ingrid/lapila/generated/t.lpa")]
     public void TestAndScratchFilesAreExempt(string file)
     {
         var warnings = Lint("""
@@ -146,12 +146,12 @@ public class DocLintTests
             routine helper() -> None
                 return
             """;
-        var decls = Parse(source, "lib/t.li");
+        var decls = Parse(source, "lib/t.lpa");
         Assert.Empty(StyleLint.Check(decls));
         Assert.Contains(StyleLint.Check(decls, _ => source.Split('\n')), w => w.Contains("has no doc comment"));
     }
 
-    private static List<string> Lint(string source, string file = "lib/t.li") =>
+    private static List<string> Lint(string source, string file = "lib/t.lpa") =>
         DocLint.Check(Parse(source, file), f => f == file ? source.Split('\n') : null);
 
     private static List<Decl> Parse(string source, string file) =>

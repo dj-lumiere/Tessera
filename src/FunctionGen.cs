@@ -3755,7 +3755,7 @@ public sealed partial class FunctionGen
         (Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && Crashing.IsCrashable(leaf);
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
-    /// failure's number in the high half (Trace.li's failure_note), wrapping the failure the arm it is made in observed.
+    /// failure's number in the high half (Trace.lpa's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTag(DType leaf, VariantType vt, uint id, Pos at)
     {
         if (!_c.Trace || _c.Prechecking || !_traced || !IsFailure(leaf, vt)) return $"{id}";
@@ -4363,7 +4363,7 @@ public sealed partial class FunctionGen
         Terminate($"br i1 {present}, label %{presentLabel}, label %{noneLabel}");
     }
 
-    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.li).
+    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.lpa).
     private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
         if (!_c.Trace || _c.Prechecking || !(IsFailure(observed, vt) || Crashing.IsUnion(observed))) return null;
@@ -4414,7 +4414,7 @@ public sealed partial class FunctionGen
             BindAtoms(binding.Name, observed, branch);
             if (MemOn && PointsAtMemory(branch) && FrameView(observed) is { } sees) _frameViews[binding.Name] = sees;
         }
-        // A failure made in an arm that observed one wraps it (Trace.li).
+        // A failure made in an arm that observed one wraps it (Trace.lpa).
         if (_c.Trace && !_c.Prechecking && (IsFailure(branch, vt) || Crashing.IsUnion(branch)))
         {
             string tagAt = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 0");
@@ -4661,7 +4661,7 @@ public sealed partial class FunctionGen
         t is RecordType { Decl.Name: "PointedSlice", Args.Count: 1 } slice && slice.Decl.Module == Compiler.SystemModule;
 
     /// `x.represent_into(out)` and `x.diagnose_into(out)` on a memory cell that holds no entity: the cell never reads the
-    /// value it holds, so it writes what it is, the same for both (Standard/System/Text/MemoryCell.li): `@S64(0x...)`,
+    /// value it holds, so it writes what it is, the same for both (Standard/System/Text/MemoryCell.lpa): `@S64(0x...)`,
     /// `@[S64](data: 0x..., count: 3)`, `&S64(at: 0x..., manager: HEAP)`, `&[S64](data: 0x..., count: 3, manager:
     /// HEAP)`. In a template hole or `Console.show(x)` the builder warns that the cell is shown, and says how to write
     /// the value. Null for any other call. A cell of an entity isn't one of these: the entity's routine takes the place.
@@ -6545,7 +6545,7 @@ public sealed partial class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
-        // `failure_of(result)`: the number of the failure a Result holds (Trace.li), 0 for none or a value.
+        // `failure_of(result)`: the number of the failure a Result holds (Trace.lpa), 0 for none or a value.
         if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args: [var held] } && _c.FindFree("failure_of", _env.File, e.Pos) is null)
         {
             // Only the failure's number is read: a Result holding an entity isn't copied by it.

@@ -43,7 +43,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
     public (int Files, int Pages, List<string> Problems) Generate(string outputRoot)
     {
         var problems = new List<string>();
-        var files = Directory.EnumerateFiles(_root, "*.li", SearchOption.AllDirectories)
+        var files = Directory.EnumerateFiles(_root, "*.lpa", SearchOption.AllDirectories)
             .Select(f => Path.GetRelativePath(_root, f).Replace('\\', '/'))
             .Where(DocLint.IsLibraryFile)
             .Order(StringComparer.Ordinal)

@@ -267,7 +267,7 @@ public sealed partial class Compiler
         return errors;
     }
 
-    /// The LLVM type of a flow's mold: the tagged layout of every crashable the program throws (Crash.li's
+    /// The LLVM type of a flow's mold: the tagged layout of every crashable the program throws (Crash.lpa's
     /// failure_mold).
     public const string MoldLlvm = "%lapila.mold";
 

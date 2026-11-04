@@ -10,7 +10,7 @@ namespace Lapila.Tests;
 [Collection(WorkingDirectoryCollection.Name)]
 public class ChoiceTypeArgTests
 {
-    /// The routines of tests/choice_type_arg.li that branch on their order, by the start of their symbols, and how many
+    /// The routines of tests/choice_type_arg.lpa that branch on their order, by the start of their symbols, and how many
     /// members each is instantiated with there.
     [Theory]
     [InlineData("_Z4rankIL5Order", 4)]
@@ -18,7 +18,7 @@ public class ChoiceTypeArgTests
     [InlineData("_Z7purposeIL5Order", 3)]
     public void BranchOnTheOrderIsGone(string symbol, int instances)
     {
-        var bodies = Bodies(Compile("choice_type_arg.li"), symbol);
+        var bodies = Bodies(Compile("choice_type_arg.lpa"), symbol);
         Assert.Equal(instances, bodies.Count);
         foreach (string body in bodies)
         {
@@ -53,7 +53,7 @@ public class ChoiceTypeArgTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

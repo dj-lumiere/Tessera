@@ -145,7 +145,7 @@ public sealed partial class Compiler
         _entry.AppendLine($"define i32 @main(i32 %argc, ptr %argv) {EntryAttrs(start.Pos)} {{");
         _entry.AppendLine("entry:");
         _entry.AppendLine($"  call {setArguments.CcPrefix(Target)}void @{Quote(setArguments.Symbol)}(i32 %argc, ptr %argv)");
-        // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.li). The race check
+        // A traced build reports a hardware fault the way it reports a crash (Standard/Hosted/Faults.lpa). The race check
         // reports faults itself.
         if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(HostedModule, "install_fault_handlers", start.Pos))}");
         // The entry has no debug location to keep `start`'s frame in if LLVM inlined it there: with the trace read

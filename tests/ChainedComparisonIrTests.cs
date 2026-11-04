@@ -4,13 +4,13 @@ using Xunit;
 namespace Lapila.Tests;
 
 /// <summary>
-/// A chained comparison evaluates each operand once: the IR of `1 &lt; f() &lt; 3` (tests/chained_middle_call.li) calls
+/// A chained comparison evaluates each operand once: the IR of `1 &lt; f() &lt; 3` (tests/chained_middle_call.lpa) calls
 /// f once, both comparisons read that one result, and the second comparison runs only when the first holds.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
 public class ChainedComparisonIrTests
 {
-    private static readonly Lazy<string> Start = new(() => Body(Compile("chained_middle_call.li"), "@_Z5startv("));
+    private static readonly Lazy<string> Start = new(() => Body(Compile("chained_middle_call.lpa"), "@_Z5startv("));
 
     [Fact]
     public void TheMiddleIsCalledOnce()
@@ -52,7 +52,7 @@ public class ChainedComparisonIrTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");

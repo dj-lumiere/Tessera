@@ -13,11 +13,11 @@ namespace Lapila;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "src/main.li"          # the entry file (it has start), the output build/main. Without it the build
+/// executable = "src/main.lpa"          # the entry file (it has start), the output build/main. Without it the build
 ///                                     # is a library linked into another program: the `sources` files as LLVM IR,
 ///                                     # build/<package name>.ll, every routine keeping a frame record
 /// module-paths = ["../shared"]        # folders whose modules join this solution
-/// sources = ["../lib/hash.li"]        # files (or directories of them) built in whatever the entry imports
+/// sources = ["../lib/hash.lpa"]        # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os). Every mode has debug information.
 /// triple = "arm-none-eabi"            # default: the host
@@ -216,9 +216,9 @@ public sealed record Manifest(
         if (entry is not null && !File.Exists(entry)) throw new ManifestError(Li.ManifestPath, path, $"[target] executable: no such file: {entryName}");
         if (entry is not null && Cli.OldSourceMessage(entryName!) is { } oldExtension)
             throw new ManifestError(Li.ManifestRenamed, path, $"[target] executable: {oldExtension}");
-        if (entry is not null && !entry.EndsWith(".li", StringComparison.OrdinalIgnoreCase))
+        if (entry is not null && !entry.EndsWith(".lpa", StringComparison.OrdinalIgnoreCase))
             throw new ManifestError(Li.ManifestTarget, path,
-                $"[target] executable: {entryName} is not a Lapila source (Lapila sources end in .li)");
+                $"[target] executable: {entryName} is not a Lapila source (Lapila sources end in .lpa)");
 
         var roots = new List<string> { dir };
         // `module-paths` lists folders whose modules join the solution, found by import like the manifest's own folder.
@@ -237,14 +237,14 @@ public sealed record Manifest(
         {
             string full = Resolve(extra);
             string[] files = System.IO.Directory.Exists(full)
-                ? System.IO.Directory.GetFiles(full, "*.li", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
-                : File.Exists(full) && full.EndsWith(".li", StringComparison.OrdinalIgnoreCase)
+                ? System.IO.Directory.GetFiles(full, "*.lpa", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
+                : File.Exists(full) && full.EndsWith(".lpa", StringComparison.OrdinalIgnoreCase)
                     ? [full]
-                    : throw new ManifestError(Li.ManifestPath, path, $"[target] sources: no such .li file or directory: {extra}");
+                    : throw new ManifestError(Li.ManifestPath, path, $"[target] sources: no such .lpa file or directory: {extra}");
             rootFiles.AddRange(files.Select(System.IO.Path.GetFullPath));
         }
         if (entry is null && rootFiles.Count == 0)
-            throw new ManifestError(Li.ManifestMissing, path, "[target] needs the entry file of a program, executable = \"main.li\", or the files of " +
+            throw new ManifestError(Li.ManifestMissing, path, "[target] needs the entry file of a program, executable = \"main.lpa\", or the files of " +
                 "a library linked into another program, sources = [\"src\"]");
         var sources = new List<string>();
         foreach (var start in entry is null ? rootFiles : [entry])
@@ -294,7 +294,7 @@ public sealed record Manifest(
 
     /// The files under the roots (not under buildDir) that declare a module, by the module they declare. In a
     /// solution (`rootFiles` given: the roots are a manifest's folder and its `module-paths` folders) a file without a
-    /// `module` line is the module its place names, under the deepest root that holds it (`money/tax.li` is
+    /// `module` line is the module its place names, under the deepest root that holds it (`money/tax.lpa` is
     /// Money/Tax), and PlaceModules records it for the parser. The entry and the `sources` files (`rootFiles`) stay in
     /// the root module.
     internal static Dictionary<string, List<string>> ModuleFiles(List<string> roots, string buildDir,
@@ -305,7 +305,7 @@ public sealed record Manifest(
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var root in roots.OrderByDescending(r => System.IO.Path.GetFullPath(r).Length))
-            foreach (var file in System.IO.Directory.GetFiles(root, "*.li", SearchOption.AllDirectories)
+            foreach (var file in System.IO.Directory.GetFiles(root, "*.lpa", SearchOption.AllDirectories)
                          .Where(f => !IsUnder(f, buildDir)).Order(StringComparer.Ordinal))
             {
                 string full = System.IO.Path.GetFullPath(file);

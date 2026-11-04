@@ -17,7 +17,7 @@ public class LoopLintTests
                     nothing
                 return
             """));
-        Assert.Contains("warning[LI-W057]: t.li:2:5: this loop's body never runs", warning);
+        Assert.Contains("warning[LI-W057]: t.lpa:2:5: this loop's body never runs", warning);
     }
 
     [Fact]
@@ -53,12 +53,12 @@ public class LoopLintTests
                 while true
                     break
                 return
-            """, "t.li"));
+            """, "t.lpa"));
         Assert.Contains("'until'", error.Message);
         Assert.Contains("'loop'", error.Message);
     }
 
-    private static List<string> Lint(string source, string file = "t.li") => LoopLint.Check(Parse(source, file));
+    private static List<string> Lint(string source, string file = "t.lpa") => LoopLint.Check(Parse(source, file));
 
     private static List<Decl> Parse(string source, string file) =>
         new Parser(new Lexer(file, source).Lex(), file).ParseModule().Decls;

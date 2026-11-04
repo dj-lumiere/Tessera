@@ -25,7 +25,7 @@
   <a href="https://github.com/dj-lumiere/Revare">Revare</a>
 </p>
 
-Lapila (`.li`) keeps every step of a program on the page, and keeps writing it bearable. Nothing happens between
+Lapila (`.lpa`) keeps every step of a program on the page, and keeps writing it bearable. Nothing happens between
 the lines: a value is bound once and never reassigned, a load and a store are calls you can see (`p.peek()`,
 `p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
@@ -114,7 +114,7 @@ dotnet test tests                # optional: every golden test and example as an
 ### Hello, world
 
 ```bash
-dotnet run -- run examples/hello.li
+dotnet run -- run examples/hello.lpa
 ```
 
 [`examples/`](examples/README.md) continues from there, one idea per program, in reading order.
@@ -129,14 +129,14 @@ starting points.
 ## Command line
 
 ```
-lapila new   [<folder>]                      Start a solution: config.toml, main.li, .gitignore, .vscode/
+lapila new   [<folder>]                      Start a solution: config.toml, main.lpa, .gitignore, .vscode/
 lapila build                                 Build the solution its config.toml describes (here or above)
 lapila run                                   Build it and run it
-lapila build <file.li>...                    Build an executable from these files
-lapila run   <file.li>... [-- <argument>...]  Build and run these files
+lapila build <file.lpa>...                    Build an executable from these files
+lapila run   <file.lpa>... [-- <argument>...]  Build and run these files
 lapila test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
-lapila check [<target>] [<file.li>...]       Type-check every non-generic routine, the stdlib included
-lapila fmt   [--check] <file-or-dir>...      Format .li files in place
+lapila check [<target>] [<file.lpa>...]       Type-check every non-generic routine, the stdlib included
+lapila fmt   [--check] <file-or-dir>...      Format .lpa files in place
 lapila lint  <file-or-dir>...                Print the style warnings
 lapila docs  <source-dir> <output-dir>       Write the API reference pages of a library
 lapila lsp                                   Run the language server (for an editor)
@@ -221,17 +221,17 @@ The documentation lives at [lapila.lumi-dev.xyz](https://lapila.lumi-dev.xyz/):
 ```
 Lapila/
 ├── src/                 # The builder, in C#: emits LLVM IR text and links through clang
-├── Standard/            # The standard library (.li), the source of truth for the current design
+├── Standard/            # The standard library (.lpa), the source of truth for the current design
 ├── tests/               # Golden tests, including Dijkstra, a lazy segment tree, SHA-256, and a calculator
 │   └── Lapila.Tests.csproj  # runs each golden test and example as its own xUnit case
 ├── examples/            # Introductory programs, one idea each, in reading order
-├── playground/          # Gitignored: your own programs (the Rider configuration *Playground* runs main.li)
+├── playground/          # Gitignored: your own programs (the Rider configuration *Playground* runs main.lpa)
 ├── Lapila.tmbundle/    # TextMate grammar
 ├── Lapila.csproj       # Builder project
 └── LAPILA-FOR-AI.md    # Reference for AI assistants
 ```
 
-Each golden test is `<name>.li`, or a directory `<name>/` whose files are built together (several modules, or a
+Each golden test is `<name>.lpa`, or a directory `<name>/` whose files are built together (several modules, or a
 `config.toml` to build from), with one of:
 
 - `<name>.expected`: the program's stdout

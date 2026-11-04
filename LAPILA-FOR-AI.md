@@ -8,26 +8,26 @@ answer.
 ## Toolchain
 
 ```sh
-dotnet run -- run   file.li        # build and run (the whole stdlib is always available)
-dotnet run -- build file.li        # build it: a config.toml in the file's folder gives the settings, else host + debug
-dotnet run -- check file.li        # type-check only
+dotnet run -- run   file.lpa        # build and run (the whole stdlib is always available)
+dotnet run -- build file.lpa        # build it: a config.toml in the file's folder gives the settings, else host + debug
+dotnet run -- check file.lpa        # type-check only
 dotnet run -- test tests examples             # golden tests (test takes --mode, --target, --trace / --no-trace)
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
-dotnet run -- build                      # build config.toml's entry (executable = "main.li") and its imports into build/
+dotnet run -- build                      # build config.toml's entry (executable = "main.lpa") and its imports into build/
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
 `build` and `run` take files and nothing else: every setting is in config.toml (`[target] mode = "release"`,
 `triple`, `board`, `cpu`, `features`, `[debug] trace = false`, `race-check`, `heap-check`, `emit-llvm`). A flag
 config.toml can say is an error that names the key ("`--mode` isn't an option: write `mode = \"release\"` under
-[target] in config.toml"). The output is named after the entry file (`build/main` for `executable = "main.li"`). A
+[target] in config.toml"). The output is named after the entry file (`build/main` for `executable = "main.lpa"`). A
 config.toml with no `executable` builds a library linked into another program: its `sources` files as LLVM IR,
 `build/<package name>.ll`, every routine keeping a frame record (Ingrid's runtime is built this way). `check` and
 `test` keep `--target`, `--cpu`, `--feature`, `--board` and `--trace` / `--no-trace` (`test` also `--mode`), since
 they check one tree for many targets.
 
-Sources end in `.li`. A `.te` file given to the builder (or named by `executable`) is a build error that says to
-rename it to `.li`, and `[package] tessera-version` is a build error that names `lapila-version`: Lapila has no
+Sources end in `.lpa`. A `.te` file given to the builder (or named by `executable`) is a build error that says to
+rename it to `.lpa`, and `[package] tessera-version` is a build error that names `lapila-version`: Lapila has no
 `migrate` command. A build error is printed as `error[LI-S007]: file:line:col: message`, a warning as `warning[LI-W305]: file:line:col: message` (see Diagnostics).
 
 A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Hosted)
@@ -42,7 +42,7 @@ it imports, so a `List` needs `import Collections`, and `Console` / `ProcessMana
 `Hosted` on a target with an operating system, `Unhosted` on one whose OS is `none` (the startup
 steps, the interrupt controller, the timer, the serial port, the round robin threads). The other side's declarations
 drop out of the build. A module that does the same job on both sides has the same file name and the same names on
-each (`Thread.li`, `Wait.li` and `CpuEvents.li` are on both now: `wait_on`, `wake_one`, `wake_all`, `CpuEventManager`).
+each (`Thread.lpa`, `Wait.lpa` and `CpuEvents.lpa` are on both now: `wait_on`, `wake_one`, `wake_all`, `CpuEventManager`).
 A file for one kind of target imports its side, and importing only the other one is a build error that names the
 side for the target ("Hosted needs an operating system, and target ... has none; its names for this target
 are in Unhosted"). A file for both kinds imports both sides (`import Hosted` and `import
@@ -153,7 +153,7 @@ routine start() -> None
   `me.count.poke(me.count.peek().add(1))`. The load needn't come first: `x.sub(p.peek()).poke_into(p)`
   (for a commutative op, put the load first: `p.peek().add(x).poke_into(p)`). A literal receiver takes its type from the pointer
   (`0.poke_into(count)`). A `&T` box has the same twin of `store`: `v.store_into(x)` is `x.store(v)`
-  (`routine T.store_into(dest: @&T)`, next to `load` / `store` in `BorrowedSlice.li`), so
+  (`routine T.store_into(dest: @&T)`, next to `load` / `store` in `BorrowedSlice.lpa`), so
   `(x.load() + y).store_into(x)` is one chain, on a STACK place (where it is the slot's `poke_into`) or a box from a
   manager. The builder follows it like `poke_into`: a store into `dest` for the escape, access, and read-only checks.
 - Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to[U8](p.stride(i))` is an
@@ -230,14 +230,14 @@ routine start() -> None
   `preset SORTED: Items[S64, 3] = [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line. A receiver gives it no type: `[1, 2].eq(...)` is an error.
 - **Where values are: four types.** `@T` (a `PointedCell`) is the address of one value (a place's value, a field, an element,
-  memory from C). `@[T]` (Core, `Types/PointedSlice.li`) is `{data, count}`, a run of values it views. Both only VIEW
+  memory from C). `@[T]` (Core, `Types/PointedSlice.lpa`) is `{data, count}`, a run of values it views. Both only VIEW
   memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
   `peek_volatile`, `fetch_add_unbroken`, ...), and only a `BorrowedCell[T]` reads and writes its own (`load` / `store`). A span
   turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
   `@T`), `try view.getitem(i)` an `Optional`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
   address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
   is a build error, write `xs.getslot(i).poke(v)`. `BorrowedCell[T]` (`&T`, `{at, manager}`) and `BorrowedSlice[T]` (`&[T]`, `{data, count,
-  manager}`, `BorrowedSlice.li`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
+  manager}`, `BorrowedSlice.lpa`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
   copied, bound with `<-` (`m: &[Byte] <- BorrowedSlice[Byte].construct(count: 4, manager: manager)`), every
   routine takes `me` by its address (`routine @BorrowedSlice[T].getslot(...)`). The block holds the values and nothing else,
   plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
@@ -381,7 +381,7 @@ routine start() -> None
     into a global or an existing entity's field is the error above. A BorrowedCell's and a BorrowedSlice's own address and manager
     fields, a `@MemoryManager` (the link to where memory goes back, which the manager check below follows), and a
     `SourceLocation` (the builder's read-only text) don't count as views here.
-  - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.li`). `x.stamp()` on an entity
+  - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.lpa`). `x.stamp()` on an entity
     (a `&E` place or an `@E` view: a stamp takes the place of a stored view) gives a `Stamped[E]`, 8 bytes (a slot of
     the program's stamp table, the `PoolManager`, and the slot's generation), a record copied for free that goes
     anywhere: a field (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E`
@@ -411,7 +411,7 @@ routine start() -> None
     `count` entities in a row. A slot whose generation reaches `U32.MAX` is retired. The table is 64 KiB chunks of
     4,096 entries that never move and a directory of their addresses that doubles (the old one kept to the end).
     `fetch()` reads the entry once with no lock. Threads come later: between `fetch()` on one thread and the entity's
-    end on another, the program orders the two itself. `PoolManager.take` / `end` / `lookup` / `generation` / `is_set_up` are for a language runtime that keeps the slot itself (Revare's runtime, `Ingrid/runtime-lapila/stamps.li`, shares the table). A byte copy inside `danger` the program writes itself carries
+    end on another, the program orders the two itself. `PoolManager.take` / `end` / `lookup` / `generation` / `is_set_up` are for a language runtime that keeps the slot itself (Revare's runtime, `Ingrid/runtime-lapila/stamps.lpa`, shares the table). A byte copy inside `danger` the program writes itself carries
     the slot along: the code that does it answers for it.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
@@ -640,7 +640,7 @@ routine start() -> None
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
   `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `System/Memory`, which also
-  writes out the hosted tables (`DefaultMemory.li`) for its hosted managers (`Heap.li`, `Pages.li`). Raw `allocate[T]` asks for
+  writes out the hosted tables (`DefaultMemory.lpa`) for its hosted managers (`Heap.lpa`, `Pages.lpa`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** Using a table after its manager's place
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
@@ -686,7 +686,7 @@ routine start() -> None
   first. `drop G` and `steal x as old` leave the slot hollow, and `steal G as old inject new` hands the old value to
   `old`, so nothing is ended twice. The program's end doesn't run a global entity's `destruct`.
 - One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
-  differ are a build error ("'abs' is declared at f.li:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
+  differ are a build error ("'abs' is declared at f.lpa:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
   routine has one signature"). Declare it once, with the types its C declaration has.
 - An `@export` name a C library the build links already defines is a build error (`@export("abs")`: "names 'abs',
   which libc.so.6, a C library the build links, already defines"). The builder reads the libraries from clang's link
@@ -901,7 +901,7 @@ routine start() -> None
   `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
   .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr`, spans and `Stamped` declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
-  obeying its protocol** (Standard/System/Operators.li, the names Revare uses): `Addable` `+`, `Subtractable`
+  obeying its protocol** (Standard/System/Operators.lpa, the names Revare uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
   `Bitwiseable` `& | ^`, `Invertible` `~`, `Shiftable` `<< >>`, `WrappingAddable` .. (`WrappingArithmetic` groups
   them), `ClampingAddable` .. (`ClampingArithmetic`), `UncheckedAddable` .. (`UncheckedArithmetic`: `+! -! *! /!`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
@@ -1220,7 +1220,7 @@ routine start() -> None
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`borrow(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
-  U+FFFD), and text in memory from a manager is a `BorrowedSlice[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.li`:
+  U+FFFD), and text in memory from a manager is a `BorrowedSlice[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.lpa`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
   `split(separator:, manager:)` and `words(manager:)` (a `BorrowedSlice[@[Byte]]` of views into the text, Revare's and
   Mielia's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
@@ -1282,7 +1282,7 @@ routine start() -> None
   `NumericOverflowError`, `NumericDomainError` (`ilog2(0)`, `isqrt` of a negative, a NaN result), `UnacceptedValueError`
   (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
   channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
-  (Standard/System/Crashables.li), plus
+  (Standard/System/Crashables.lpa), plus
   `OutOfMemoryError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
   `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
   their routines.
@@ -1324,7 +1324,7 @@ routine start() -> None
   requirement is).
 - **A failure waits in its flow's mold.** The `Crash` service holds one mold per flow: one per thread (one for the
   program without an operating system) and one per fiber, reserved in the frame of the fiber's first routine when it
-  first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.li). A program that switches
+  first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.lpa). A program that switches
   fibers by hand (a board's own loop, without CoroutineManager) switches with `switch_fiber(from, to)`
   (Fiber), which puts each side's mold back when it resumes, and the fiber's first routine reserves its own
   first: `RUNNING_MOLD.poke(reserve_failure_mold())`. A mold has room for the
@@ -1364,7 +1364,7 @@ routine start() -> None
 - **C never sees a failure.** An `@export` or `@external("c")` routine is a wall, `addr()` of a routine that throws or
   of a Callable that may fail is a build error, and such a Callable can't be handed to a C routine. A Lapila routine C calls
   receives its failures inside (`check`, `try`), or a bare call stops the whole program there (it never returns to
-  C). An `@export` routine returns a `T` or a `Result[T, TErrorCode]` (Standard/System/Result.li), never a variant (a
+  C). An `@export` routine returns a `T` or a `Result[T, TErrorCode]` (Standard/System/Result.lpa), never a variant (a
   build error): a C record of `value` then `code`, both always there (`struct { int64_t value; int32_t code; }` for a
   `Result[S64, RatioError]` over a choice without a written type). `TErrorCode` is a choice (a build error otherwise),
   so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` an all-zero value,
@@ -1390,14 +1390,14 @@ routine start() -> None
   `Crash.stop()`: with an OS exit status 82, without one on Cortex-M a breakpoint when a debugger is attached
   (DHCSR's C_DEBUGEN), then a system reset (AIRCR), then waiting for interrupts, and elsewhere waiting.
 - The crash trace: the program's routines a crash is in (not the stdlib's, not `@inline` or `@untraced` ones), which
-  the default report prints after the place, innermost first: `Stack trace:` then `  0: at fill (grid.li:12:9)`, and
+  the default report prints after the place, innermost first: `Stack trace:` then `  0: at fill (grid.lpa:12:9)`, and
   `  ... (40 frames total)` past the 32 it shows. A routine LLVM inlined is a frame of its own all the same. A reporting
   routine of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
   `TraceFrame`: `name` / `file` as `CStrView`, `line` / `column`, 0 is the innermost). It's on in debug and release,
   off in release-time and release-space, and `[debug] trace = false|true` in config.toml (`--no-trace` / `--trace` on
   `test` and `check`) override that. On Linux x86-64 an executable reads it from the stack when it's asked for: every routine keeps a frame
   record, and the builder writes a table of the return address of each call a traced routine makes (TraceTable.cs,
-  Trace.li), so while the program runs it only keeps the frame records. Elsewhere (other
+  Trace.lpa), so while the program runs it only keeps the frame records. Elsewhere (other
   targets, without an OS, a library build's IR) the program keeps a shadow stack of frames as it runs, thread-local
   with an OS and a plain global without.
 - `[debug] trace-frames = N` (a power of two, 1 to 4096, default 32) sets the frames the crash trace and each
@@ -1407,7 +1407,7 @@ routine start() -> None
   the crash trace at that moment into a per-thread ring of recent failures (no heap) under a number (never 0, unique across
   threads) and stores the number in the high 32 bits of the carrier's tag. A failure thrown in a `when` arm that
   observed one records that one as the failure it wraps. `write_failure_trace(seq: n, out: w)` writes `The failure was
-  made at:` and the frames (`  0: at load (f.li:44:34)`, innermost first), then `It wraps the failure made at:` and its
+  made at:` and the frames (`  0: at load (f.lpa:44:34)`, innermost first), then `It wraps the failure made at:` and its
   frames for each wrapped failure. A failure made on another thread, or pushed out of the ring, prints `  (not
   remembered here: made on another thread, or later failures took its place)`. Untraced builds note nothing (number
   0). `failure_trace(seq)` gives the `@FailureTrace?` (None when not remembered), and
@@ -1415,7 +1415,7 @@ routine start() -> None
 - **Standard library guideline:** a crashable holds a few values only (a code, a count, a view of text the caller
   keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
-- **Events: `CpuEventManager`** (`CpuEvents.li` of Hosted with an OS, of Unhosted without one) holds
+- **Events: `CpuEventManager`** (`CpuEvents.lpa` of Hosted with an OS, of Unhosted without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]?` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`None()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
@@ -1439,7 +1439,7 @@ routine start() -> None
   signal stack every thread gets (so a stack overflow is reported too). Windows: the unhandled-exception filter
   (AccessViolation, StackOverflow, IllegalInstruction, IntegerDivideByZero, IntegerOverflow). The report on stderr:
   `lapila: SegmentationFault (SIGSEGV): <meaning>`, the crash trace (a frame that made no call yet shows only its
-  file: `  0: at read (f.li)`), then `Platform stack:` (`backtrace_symbols_fd` on Linux/macOS, raw `0x...`
+  file: `  0: at read (f.lpa)`), then `Platform stack:` (`backtrace_symbols_fd` on Linux/macOS, raw `0x...`
   addresses on Windows). Then the fault ends the program as it would have (handler is one-shot, the signal is raised
   again): exit status 139 for SIGSEGV on Linux, not 82.
 
@@ -1693,7 +1693,7 @@ routine start() -> None
   whole value past 8). Without `else`, observe every branch. An `else` when every branch is already observed is an
   error. There's no field access on a variant.
 - Inline variants: `A | B | C` is a type, a variant with no declaration (the stdlib's `@union` variants
-  `Union2`..`Union8` in `Standard/System/Union.li`, so at most 8 branches, more is a build error that says to declare a
+  `Union2`..`Union8` in `Standard/System/Union.lpa`, so at most 8 branches, more is a build error that says to declare a
   variant). Its branches are the types each once, ordered by their full names, so `A | B` and `B | A` are one type
   (messages write `A | B`). `A | A` is just `A`, and an inline branch gives its branches (flattened). `|` binds
   loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
@@ -1793,12 +1793,12 @@ the builder gives it back at the end of the body (from STACK). Lapila presets fo
 - `TextPattern.from_regex(text, manager)` is failable: it throws `PatternSyntaxError`, which `check` receives
   (`write_regex_error(error, out)` writes the message with the position). A bare call stops on a bad expression.
   Backreferences, lookaround and `*?` are refused.
-- The engine (`Engine.li`): a Thompson simulation finds the leftmost start, then a memoized walk (each instruction
+- The engine (`Engine.lpa`): a Thompson simulation finds the leftmost start, then a memoized walk (each instruction
   and position tried once) picks the preferred match, so a search is linear in the text times the pattern size.
 
 ## Output
 
-Format through `System/Text` (`Format.li`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
+Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
 - The console is `Console` (`Hosted`): `Console.show("x = {x}")` writes one line to standard output,
@@ -1830,7 +1830,7 @@ Format through `System/Text` (`Format.li`), not printf. printf is for C interop 
   `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
   `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
-  (`Standard/System/Text/MemoryCell.li`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
+  (`Standard/System/Text/MemoryCell.lpa`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
   3)`, `&S64(at: 0x55d0c1a2b3c0, manager: HEAP)`, `&[S64](data: 0x55d0c1a2b3c0, count: 3, manager: HEAP)`. The manager
   is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
   global has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
@@ -1948,7 +1948,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   error.
 - Every routine with a body is its statements, top to bottom. A routine without a body must be `@external`.
 
-**Pieces of work: `Work[T]`** (`Standard/Hosted/Work.li`). A piece of work is a routine and its arguments, made with
+**Pieces of work: `Work[T]`** (`Standard/Hosted/Work.lpa`). A piece of work is a routine and its arguments, made with
 `f.to[Work](param: value, ...)` (`x.f.to[Work](...)` for a member routine): the arguments are named by the routine's
 parameters, every parameter once, at most four (build errors: "to[Work] takes the arguments by the names of the
 parameters of 'f': f.to[Work](n: ...)", "'f' has no parameter named 'm': its parameters are n", "to[Work] gives every
@@ -2054,7 +2054,7 @@ several tickets at once.
   in the tickets until `give_back_all()` or `drop` ends them, the same for a `List[Thread[None]]`), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
-- **Threads** (`Standard/Hosted/Thread.li`, what both tickets share in `Work.li`, who waits in `Waiter.li`):
+- **Threads** (`Standard/Hosted/Thread.lpa`, what both tickets share in `Work.lpa`, who waits in `Waiter.lpa`):
   `get_thread[T]()` borrows one from `DEFAULT_THREADS` (the hosted manager, OS threads,
   blocks from `HEAP`, stacks the OS's), and `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
   its state, the idle threads, and a memory manager: `ThreadManager.construct(manager)` is OS threads with another memory manager,
@@ -2063,7 +2063,7 @@ several tickets at once.
   that starts no thread crashes `get_thread` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
-- **Fibers** (`Standard/Fiber/CoroutineManager.li`): `FIBERS.get_fiber[T]()` (any `CoroutineManager`'s `get_fiber`),
+- **Fibers** (`Standard/Fiber/CoroutineManager.lpa`): `FIBERS.get_fiber[T]()` (any `CoroutineManager`'s `get_fiber`),
   the same flow and crashes. `FIBERS` is each thread's own
   `CoroutineManager`, made on first use (`64kib` stacks on pages from `PAGES`), and on a thread ticket it goes when the
   work is over. `CoroutineManager.construct(stack_size, stack_manager, manager)` (`stack_size` a `ByteSize`, `stack_manager` a
@@ -2076,28 +2076,28 @@ several tickets at once.
   Inside a fiber, waiting parks only that fiber: `retrieve()` of a fiber or THREAD ticket, `park()` (until
   `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
   `park_until(deadline)`, `waitfor(duration)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
-  `read` / `write` (`Standard/Fiber/Io.li`) use. A blocking call made directly stops every fiber of its thread.
+  `read` / `write` (`Standard/Fiber/Io.lpa`) use. A blocking call made directly stops every fiber of its thread.
   `yield()` lets the other ready fibers go first. Outside a fiber `waitfor` waits the thread, `park` returns,
-  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.li`),
+  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.lpa`),
   or a ThreadPoolManager. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
   `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
-- **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.li`, M:N): `pool: &ThreadPoolManager <- .construct(threads: 0)` (0 = one
+- **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.lpa`, M:N): `pool: &ThreadPoolManager <- .construct(threads: 0)` (0 = one
   thread per processor), `j: PassableFiber[T] <- pool.get_passable_fiber[T]()` (a fiber the pool's threads hand between
   them), then the ticket flow (`put_work`, `check_finished`, `waitfor`, `retrieve`, `cancel`, `drop j`). Work waits in
   the pool's queue until a
   pool thread is free, then runs as a fiber the POOL keeps (not a thread's `FIBERS`). It runs until it waits, like any
   fiber. A wake of a waiting passable fiber puts it in the pool's queue of woken fibers, and whichever pool thread is free first
   goes on with it, so a passable fiber may wake on another thread than the one it waited on (work stealing at wait points only,
-  `tests/thread_pool_manager_moves.li`): don't rely on a `@threadlocal` global across a wait in a passable fiber. Fibers a passable fiber
+  `tests/thread_pool_manager_moves.lpa`): don't rely on a `@threadlocal` global across a wait in a passable fiber. Fibers a passable fiber
   makes with `FIBERS` stay on their thread. A passable fiber may start more work on the pool (another passable fiber ticket) and wait: the waiting passable fiber parks, its
-  thread runs other passable fibers (recursive splitting: `tests/thread_pool_manager.li`). Passable fibers don't choose their thread, so they
+  thread runs other passable fibers (recursive splitting: `tests/thread_pool_manager.lpa`). Passable fibers don't choose their thread, so they
   share values like threads do (unbroken values, exclusive accesses, channels). Threads start with the first passable fiber and end at
   `drop pool`: give every passable fiber ticket back and retrieve every piece of work first. In a program that runs pool passable fibers and keeps the crash trace as a
   shadow stack, the builder calls its `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of
   the thread it runs on (a trace read from the stack is each fiber's own).
 
-**Unbroken values.** `Unbroken[T]` (Core, `Unbroken.li`) is a record aligned to T's size whose every access is unbroken: the
+**Unbroken values.** `Unbroken[T]` (Core, `Unbroken.lpa`) is a record aligned to T's size whose every access is unbroken: the
 form for state a program shares between threads (thread work changes shared memory only through an exclusive access
 or an Unbroken, above) (`hits: Unbroken[U64]` in a shared record, `Unbroken[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Unbroken[T]`, never copies. Routines: `peek` / `poke`,
@@ -2124,7 +2124,7 @@ form. What T allows depends on the target (capability protocols, a wider access 
 use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
-stdlib wait does what fits the code running it. The `AccessManager` (Standard/Hosted/AccessManager.li) hands out access to
+stdlib wait does what fits the code running it. The `AccessManager` (Standard/Hosted/AccessManager.lpa) hands out access to
 memory: `held: Authorized[T] <- p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
 ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `BorrowedCell[T]`
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
@@ -2179,7 +2179,7 @@ Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. 
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Hosted.
 
-**Channels** (Standard/Hosted/Channel.li): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
+**Channels** (Standard/Hosted/Channel.lpa): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `ch: &Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
 the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> T?` (never waits: None when the value
 went in, the value itself when the room is full or every receiver has closed), the failable `receive() -> T` (waits
@@ -2209,7 +2209,7 @@ routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops
 touching the same memory, one writing, neither an unbroken access nor an exclusive access between them) with exit status 82 and a
 report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
 allocation the check's runtime can't make returns null, so the program's own `OutOfMemoryError` reports it. Fibers tell the check which stack runs
-(`Standard/Hosted/RaceCheck.li`). `lapila check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
+(`Standard/Hosted/RaceCheck.lpa`). `lapila check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
 too. `lapila test` builds every test without a config.toml with the check on those targets. A golden test of a race
 (`tests/race_check/` with `race_check.exit` holding `82`, and `[debug] race-check = true`) expects the stop, and passes
 on a target without the check. A test that can't run under the check turns it off in its config.toml
@@ -2392,14 +2392,14 @@ routine in the slot is a build error that names both choices: a reporting routin
 error, and so is a `when_power_on` that never calls one of them. Work that touches no global (a watchdog) may come
 first. Then `start()` runs, then a loop that halts (`hlt` / `wfi`). On RISC-V the link script defines no
 `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M reset vector, so the board
-names a Cortex-M CPU. The steps are `Standard/Unhosted/Boot.li`, the link script `src/Board.cs`. A program without
+names a Cortex-M CPU. The steps are `Standard/Unhosted/Boot.lpa`, the link script `src/Board.cs`. A program without
 `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `@export("lapila_hash_key")` above `routine
 board_key(key: @SipKey) -> None` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
 counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
 AArch64, `zkr` on RISC-V), from which the stdlib exports it. Without either the link fails on `lapila_hash_key`. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
-`Standard/System/CSubSystem/Freestanding.li`, and the whole compiler runtime from `Standard/System/Numerics/SoftFloat/`, so nothing needs compiler-rt
+`Standard/System/CSubSystem/Freestanding.lpa`, and the whole compiler runtime from `Standard/System/Numerics/SoftFloat/`, so nothing needs compiler-rt
 or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `@no_builtins`. Each export wraps an ordinary routine
@@ -2442,19 +2442,19 @@ routine start() -> None
   masked and never nest: a level line still raised after its handler comes again. An interrupt on a line nobody holds
   crashes with `HardwareFault`. `mask_interrupts()` (gives the DAIF before), `restore_interrupts(was)`,
   `unmask_interrupts()`, `wait_for_next_interrupt()` (`wfi`).
-- The virtual timer (`Standard/Unhosted/CpuTimer.li`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
+- The virtual timer (`Standard/Unhosted/CpuTimer.lpa`): `cpu_timer_rate()` (CNTFRQ_EL0), `cpu_timer_count()` (CNTVCT_EL0),
   `cpu_timer_raise_at(count)`, `cpu_timer_stop()`, `cpu_timer_ticks(span)`, and its line `CPU_TIMER_LINE` (27).
-- The clocks (`Standard/Unhosted/Time.li`, the names and types of Hosted's `Clock`): `Clock.monotonic()` is
+- The clocks (`Standard/Unhosted/Time.lpa`, the names and types of Hosted's `Clock`): `Clock.monotonic()` is
   the core's counter at its rate (CNTVCT_EL0 / CNTFRQ_EL0), the time since power on, on AArch64 (a build error on the
   other targets without an OS). `Clock.now()` reads the board's real-time clock, which the board file names
   (`[devices] rtc`, its registers at `__rtc_base` in the link script), through `RtcManagerByPl031`
-  (`Standard/Unhosted/Rtc.li`: `.construct(base)`, `now()` to the second, `set(to: moment)`). On a board that names
+  (`Standard/Unhosted/Rtc.lpa`: `.construct(base)`, `now()` to the second, `set(to: moment)`). On a board that names
   none, calling `Clock.now()` is a build error that says to add the clock to the board file: it never gives 0 or the
   time since power on. `waitfor(duration)` sleeps the running round robin thread, and outside `run` waits on
   `Clock.monotonic()`. Such a build error comes from `@unavailable("why")` on a standard library routine kept for
   that target: a call of it is the build error, with the reason (tests/clock_now_no_rtc, tests/rr_clock_monotonic,
   tests/rr_clock_now). `@refused("why")` does the same on every target: `PointedCell[T].is_hollow()` carries it.
-- `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.li`): preemptive threads on one core. The region is cut into slots of
+- `ThreadManagerByRoundRobin` (`Standard/Unhosted/Thread.lpa`): preemptive threads on one core. The region is cut into slots of
   `stack_size` bytes, the first the idle thread's, each a thread's record, a check word, and a stack (a
   `StackManager`). `launch(entry: Callable[(@T,), None], arg: @T)` (`arg` outlives the thread: a global or a preset) or
   `launch(entry: Callable[(), None])` takes a free slot (the slot comes back when `entry` returns), and
@@ -2470,12 +2470,12 @@ routine start() -> None
   another thread is ready, else for the first sleeper's time, else off. With nothing ready the idle thread waits with
   `wfi`. The switch (`switch_fiber`) runs with interrupts masked, on the stopping thread's stack (inside the IRQ handler
   for a preemption, which saved the caller-saved and FP registers and ELR / SPSR there), and carries the failure mold
-  and the crash trace depth. While a thread runs, `RUNNING_STACK` (StackManager_freestanding.li) is its stack, so the
+  and the crash trace depth. While a thread runs, `RUNNING_STACK` (StackManager_freestanding.lpa) is its stack, so the
   frame check at the start of each routine measures from the thread's own stack bottom: a stack that runs out, however
   deep and with frames of any size, stops the program with `StackOverflowError` before it leaves its slot
   (tests/rr_stack_overflow, tests/rr_stack_overflow_large_frame). One core, one running manager (`run`), no priorities.
   The word wait has the names of Hosted's: the free routines `wait_on(at, expected)`, `wake_one(at)`,
-  `wake_all(at)` (`Standard/Unhosted/Wait.li`) go to the running manager, and outside `run` `wait_on` returns at once
+  `wake_all(at)` (`Standard/Unhosted/Wait.lpa`) go to the running manager, and outside `run` `wait_on` returns at once
   (tests/rr_wait_same_names imports both sides and builds its mailbox on them). There is no `wait_on_for` yet, and
   `Thread`, `Work`, `Channel`, `Waiter` and the `AccessManager` are Hosted's only: a program builds its waits on
   the word wait (tests/rr_wait_wake: a mailbox of one value). Each thread has its own `@threadlocal` globals: its slot
@@ -2657,8 +2657,8 @@ syntax sugar to shorten code; readability comes from decomposition and naming.
 Every build error and warning has a code. The builder prints it in front of the place and the message:
 
 ```
-error[LI-S007]: main.li:2:14: unknown name 'y'
-warning[LI-W305]: main.li:1:1: routine 'start' has no doc comment: write ### lines above it ...
+error[LI-S007]: main.lpa:2:14: unknown name 'y'
+warning[LI-W305]: main.lpa:1:1: routine 'start' has no doc comment: write ### lines above it ...
 ```
 
 A code is `LI-`, a family letter and a number. `G` is a source that does not read (lexer and parser), `S` is a source
@@ -2916,7 +2916,7 @@ S1100 memory and access, S1120 work, S1130 failures, S1150 control flow, S1180 e
 
 ## Tests
 
-`tests/<name>.li` with `<name>.expected` (stdout), `<name>.exit` (exit code), or `<name>.error` (expected
+`tests/<name>.lpa` with `<name>.expected` (stdout), `<name>.exit` (exit code), or `<name>.error` (expected
 compile-error text). A test whose config.toml names a `board` runs in the emulator its `<name>.qemu` file names
 (one line, the emulator and its arguments, the program's path added last), its serial port's text compared with
 `<name>.expected`. Where the emulator isn't installed the test is skipped with a note (tests/rr_*: the

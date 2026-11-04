@@ -1,0 +1,539 @@
+# The pieces a pattern is written with. A piece holds its part of the piece tree (Codes.lpa) in memory from a manager:
+# the pieces that start a tree (`digit(manager)`, `text("-", manager)`) take the manager, and the ones built from other
+# pieces (`p.repeat(4)`, `capture("year", p)`, `either_longer([a, b])`) take theirs from the first piece. A piece
+# handed to a routine that builds from it is taken over (given back there), and a list of pieces is a span literal
+# written in place: `either_longer([text("cat", HEAP), text("category", HEAP)])`.
+#
+# A TextPiece matches code points of text, a BytesPiece bytes. The two never mix: each routine takes one kind.
+
+module Text/Patterns
+
+import Collections
+
+### A piece of a text pattern: what it matches, as a piece tree.
+entity TextPiece
+    ### The piece tree.
+    code: BorrowedSlice[U32]
+
+### A piece of a bytes pattern: what it matches, as a piece tree.
+entity BytesPiece
+    ### The piece tree.
+    code: BorrowedSlice[U32]
+
+### Makes a text piece of a piece tree.
+### :param code: The tree, taken over.
+### :returns: The piece.
+common routine TextPiece.construct(code: BorrowedSlice[U32]) -> Me
+    return Me(code: steal code)
+
+### Makes a bytes piece of a piece tree.
+### :param code: The tree, taken over.
+### :returns: The piece.
+common routine BytesPiece.construct(code: BorrowedSlice[U32]) -> Me
+    return Me(code: steal code)
+
+### A tree of the given words.
+### :param words: The words.
+### :param manager: Where it takes memory.
+### :returns: The tree.
+secret routine tree_of(words: @[U32], manager: @MemoryManager) -> BorrowedSlice[U32]
+    return BorrowedSlice[U32].construct(values: words, times: 1, manager: manager)
+
+### A tree that starts with `head` and then holds `child` (a node with one child).
+### :param head: The words before the child.
+### :param child: The child's tree.
+### :returns: The tree, from the child's manager.
+secret routine wrap(head: @[U32], child: @BorrowedSlice[U32]) -> BorrowedSlice[U32]
+    count: U64 = head.count()
+    total: U64 = count + child.count()
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: total, manager: child.manager.peek())
+
+    for i: U64 in 0 til count
+        tree.getslot(i).poke(head.getitem(i))
+    for j: U64 in 0 til child.count()
+        tree.getslot(count + j).poke(child[j])
+    then
+        return tree
+
+### The code points of UTF-8 text, as words.
+### :param text: The text.
+### :param manager: Where the words take memory.
+### :returns: The code points.
+secret routine code_points(text: @[Byte], manager: @MemoryManager) -> List[U32]
+    input: PatternInput = PatternInput.of_utf8(text)
+    points: &List[U32] <- .construct(manager)
+
+    until pos >= input.count() with pos: U64 = 0
+        unit: InputUnit = input.unit_at(pos)
+        points.add_last(unit.value)
+        continue with pos: pos + unit.size
+    then
+        return points
+
+### A literal node of some units.
+### :param units: The units.
+### :param manager: Where it takes memory.
+### :returns: The tree.
+secret routine literal_tree(units: @[U32], manager: @MemoryManager) -> BorrowedSlice[U32]
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: units.count() + 2, manager: manager)
+
+    tree.getslot(0).poke(NODE_LITERAL)
+    tree.getslot(1).poke(units.count().to[U32]())
+    for i: U64 in 0 til units.count()
+        tree.getslot(i + 2).poke(units.getitem(i))
+    then
+        return tree
+
+# -- text pieces that start a tree ---------------------------------------------------------------------------------
+
+### One ASCII digit, 0 to 9.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine digit(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_DIGIT, 0], manager))
+
+### One ASCII letter, a to z or A to Z.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine letter(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_LETTER, 0], manager))
+
+### One ASCII whitespace character: space, tab, line feed, vertical tab, form feed or carriage return.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine space(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_SPACE, 0], manager))
+
+### One ASCII word character: a letter, a digit or `_`.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine word_char(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_WORD_CHAR, 0], manager))
+
+### Any one character, a line feed included.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine any_char(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_ANY, 0], manager))
+
+### One Unicode decimal digit (category Nd): `7`, `٧`, `७`.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine unicode_digit(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_UNICODE_DIGIT, 0], manager))
+
+### One Unicode letter (category L): `a`, `é`, `한`.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine unicode_letter(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_UNICODE_LETTER, 0], manager))
+
+### One Unicode whitespace character (White_Space): the ASCII ones, no-break spaces, the line and paragraph
+### separators.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine unicode_space(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_UNICODE_SPACE, 0], manager))
+
+### One Unicode word character: a letter, a mark, a decimal digit or connector punctuation.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine unicode_word_char(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_CLASS, CLASS_UNICODE_WORD_CHAR, 0], manager))
+
+### The beginning of the text: matches no characters.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine start_of_text(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_START_OF_TEXT], manager))
+
+### The end of the text: matches no characters.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine end_of_text(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_END_OF_TEXT], manager))
+
+### The beginning of a line: the beginning of the text or the place after a line feed.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine start_of_line(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_START_OF_LINE], manager))
+
+### The end of a line: the end of the text or the place before a line feed.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine end_of_line(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_END_OF_LINE], manager))
+
+### A place between a word character and a character that isn't one (or the start or end of the text): matches no
+### characters.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine word_boundary(manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_WORD_BOUNDARY], manager))
+
+### The characters of `value`, in a row.
+### :param value: The text.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine text(value: @[Byte], manager: @MemoryManager) -> TextPiece
+    points: &List[U32] <- code_points(text: value, manager)
+    tree: &[U32] <- literal_tree(units: points.getview(), manager)
+
+    drop points
+    return TextPiece.construct(code: steal tree)
+
+### One character that is one of the characters of `chars`.
+### :param chars: The characters.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine one_of(chars: @[Byte], manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: set_tree(chars, negated: false, manager))
+
+### One character that is none of the characters of `chars`.
+### :param chars: The characters.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine none_of(chars: @[Byte], manager: @MemoryManager) -> TextPiece
+    return TextPiece.construct(code: set_tree(chars, negated: true, manager))
+
+### A ranges node with one range per character of `chars`.
+### :param chars: The characters.
+### :param negated: Whether the characters outside them are meant.
+### :param manager: Where the tree takes memory.
+### :returns: The tree.
+secret routine set_tree(chars: @[Byte], negated: Bool,
+    manager: @MemoryManager) -> BorrowedSlice[U32]
+    points: &List[U32] <- code_points(text: chars, manager)
+    count: U64 = points.count()
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: count * 2 + 3, manager: manager)
+
+    tree.getslot(0).poke(NODE_RANGES)
+    tree.getslot(1).poke(negated.to[U32]())
+    tree.getslot(2).poke(count.to[U32]())
+    for i: U64 in 0 til count
+        tree.getslot(3 + i * 2).poke(points.getitem(i))
+        tree.getslot(4 + i * 2).poke(points.getitem(i))
+    then
+        drop points
+        return tree
+
+### One character from `from` to `to`, both included.
+### :param from: The first character.
+### :param to: The last character.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+### :throws: Throws `InvalidPatternError` when `from` comes after `to`.
+@track_caller
+routine char_range(from: Char, to: Char, manager: @MemoryManager) -> TextPiece
+    if from.to[U32]() > to.to[U32]()
+        throw InvalidPatternError(kind: PatternErrorKind.BACKWARD_RANGE, at: 0)
+    return TextPiece.construct(code: tree_of([NODE_RANGES, 0, 1, from.to[U32](), to.to[U32]()],
+        manager))
+
+# -- bytes pieces that start a tree --------------------------------------------------------------------------------
+
+### One byte equal to `value`.
+### :param value: The byte.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine byte(value: U8, manager: @MemoryManager) -> BytesPiece
+    return BytesPiece.construct(code: tree_of([NODE_LITERAL, 1, value.to[U32]()], manager))
+
+### Any one byte.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine any_byte(manager: @MemoryManager) -> BytesPiece
+    return BytesPiece.construct(code: tree_of([NODE_CLASS, CLASS_ANY, 0], manager))
+
+### One byte from `from` to `to`, both included.
+### :param from: The first byte.
+### :param to: The last byte.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+### :throws: Throws `InvalidPatternError` when `from` is above `to`.
+@track_caller
+routine byte_range(from: U8, to: U8, manager: @MemoryManager) -> BytesPiece
+    if from > to
+        throw InvalidPatternError(kind: PatternErrorKind.BACKWARD_BYTE_RANGE, at: 0)
+    return BytesPiece.construct(code: tree_of([NODE_RANGES, 0, 1, from.to[U32](), to.to[U32]()],
+        manager))
+
+### The bytes of `value`, in a row.
+### :param value: The bytes.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine bytes(value: @[Byte], manager: @MemoryManager) -> BytesPiece
+    units: &List[U32] <- .construct(manager)
+
+    for i: U64 in 0 til value.count()
+        units.add_last(value.getitem(i).to[U8]().to[U32]())
+    tree: &[U32] <- literal_tree(units: units.getview(), manager)
+
+    drop units
+    return BytesPiece.construct(code: steal tree)
+
+### The beginning of the bytes: matches none.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine start_of_bytes(manager: @MemoryManager) -> BytesPiece
+    return BytesPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_START_OF_TEXT], manager))
+
+### The end of the bytes: matches none.
+### :param manager: Where the piece takes memory.
+### :returns: The piece.
+routine end_of_bytes(manager: @MemoryManager) -> BytesPiece
+    return BytesPiece.construct(code: tree_of([NODE_ANCHOR, ANCHOR_END_OF_TEXT], manager))
+
+# -- repetitions -------------------------------------------------------------------------------------------------
+
+### A repeat node over a tree.
+### :param code: The child's tree.
+### :param min: The fewest rounds.
+### :param max: The most rounds, REPEAT_UNBOUNDED for no limit.
+### :returns: The tree, from the child's manager.
+@track_caller
+secret routine repeat_tree(code: @BorrowedSlice[U32], min: U64, max: U64) -> BorrowedSlice[U32]
+    if min > max
+        throw InvalidPatternError(kind: PatternErrorKind.BAD_REPEAT, at: 0)
+    if max != REPEAT_UNBOUNDED.to[U64]() and max >= REPEAT_UNBOUNDED.to[U64]()
+        throw InvalidPatternError(kind: PatternErrorKind.REPEAT_TOO_MANY, at: 0)
+    return wrap(head: [NODE_REPEAT, min.to[U32](), max.to[U32]()], child: code)
+
+### The piece exactly `count` times in a row. Like every repetition, it takes as many rounds as it can.
+### :param count: How many times.
+### :returns: The new piece, from this piece's manager (this piece stays as it is).
+@track_caller
+routine @TextPiece.repeat(count: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min: count, max: count))
+
+### The piece from `min` to `max` times in a row, as many as it can.
+### :param min: The fewest times.
+### :param max: The most times.
+### :returns: The new piece, from this piece's manager.
+### :throws: Crashes with `InvalidPatternError` when `min` is above `max`.
+@track_caller
+routine @TextPiece.repeat(min: U64, max: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min, max))
+
+### The piece `count` times in a row or more, as many as it can.
+### :param count: The fewest times.
+### :returns: The new piece, from this piece's manager.
+@track_caller
+routine @TextPiece.repeat_at_least(count: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min: count,
+        max: REPEAT_UNBOUNDED.to[U64]()))
+
+### The piece exactly `count` times in a row.
+### :param count: How many times.
+### :returns: The new piece, from this piece's manager.
+@track_caller
+routine @BytesPiece.repeat(count: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min: count, max: count))
+
+### The piece from `min` to `max` times in a row, as many as it can.
+### :param min: The fewest times.
+### :param max: The most times.
+### :returns: The new piece, from this piece's manager.
+### :throws: Crashes with `InvalidPatternError` when `min` is above `max`.
+@track_caller
+routine @BytesPiece.repeat(min: U64, max: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min, max))
+
+### The piece `count` times in a row or more, as many as it can.
+### :param count: The fewest times.
+### :returns: The new piece, from this piece's manager.
+@track_caller
+routine @BytesPiece.repeat_at_least(count: U64) -> Me
+    return Me.construct(code: repeat_tree(code: me.code, min: count,
+        max: REPEAT_UNBOUNDED.to[U64]()))
+
+### The piece once or not at all, once when it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine optional(piece: TextPiece) -> TextPiece
+    result: &TextPiece <- piece.repeat(min: 0, max: 1)
+
+    drop piece
+    return result
+
+### The piece any number of times in a row, none included, as many as it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine any_number_of(piece: TextPiece) -> TextPiece
+    result: &TextPiece <- piece.repeat_at_least(0)
+
+    drop piece
+    return result
+
+### The piece once or more in a row, as many as it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine one_or_more(piece: TextPiece) -> TextPiece
+    result: &TextPiece <- piece.repeat_at_least(1)
+
+    drop piece
+    return result
+
+### The piece once or not at all, once when it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine optional(piece: BytesPiece) -> BytesPiece
+    result: &BytesPiece <- piece.repeat(min: 0, max: 1)
+
+    drop piece
+    return result
+
+### The piece any number of times in a row, none included, as many as it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine any_number_of(piece: BytesPiece) -> BytesPiece
+    result: &BytesPiece <- piece.repeat_at_least(0)
+
+    drop piece
+    return result
+
+### The piece once or more in a row, as many as it can.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine one_or_more(piece: BytesPiece) -> BytesPiece
+    result: &BytesPiece <- piece.repeat_at_least(1)
+
+    drop piece
+    return result
+
+# -- captures, case, alternatives ------------------------------------------------------------------------------------
+
+### A capture node over a tree: the name's code points, then the child.
+### :param name: The name.
+### :param code: The child's tree.
+### :returns: The tree, from the child's manager.
+secret routine capture_tree(name: @[Byte], code: @BorrowedSlice[U32]) -> BorrowedSlice[U32]
+    points: &List[U32] <- code_points(text: name, manager: code.manager.peek())
+    head: &List[U32] <- .construct(code.manager.peek())
+
+    head.add_last(NODE_CAPTURE)
+    head.add_last(points.count().to[U32]())
+    for i: U64 in 0 til points.count()
+        head.add_last(points.getitem(i))
+    tree: &[U32] <- wrap(head: head.getview(), child: code)
+
+    drop points
+    drop head
+    return tree
+
+### The piece, with the text it matches kept under `name`: `m.group(name)` gives it.
+### :param name: The capture's name.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine capture(name: @[Byte], piece: TextPiece) -> TextPiece
+    tree: &[U32] <- capture_tree(name, code: piece.code)
+
+    drop piece
+    return TextPiece.construct(code: steal tree)
+
+### The piece, with the bytes it matches kept under `name`: `m.group(name)` gives them.
+### :param name: The capture's name.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine capture(name: @[Byte], piece: BytesPiece) -> BytesPiece
+    tree: &[U32] <- capture_tree(name, code: piece.code)
+
+    drop piece
+    return BytesPiece.construct(code: steal tree)
+
+### The piece, with each letter matching in either case (`ignoring_case(text("hello", HEAP))` matches `HeLLo`).
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine ignoring_case(piece: TextPiece) -> TextPiece
+    tree: &[U32] <- wrap(head: [NODE_IGNORE_CASE], child: piece.code)
+
+    drop piece
+    return TextPiece.construct(code: steal tree)
+
+### The piece, with each ASCII letter byte matching in either case.
+### :param piece: The piece, taken over.
+### :returns: The new piece, from its manager.
+routine ignoring_case(piece: BytesPiece) -> BytesPiece
+    tree: &[U32] <- wrap(head: [NODE_IGNORE_CASE], child: piece.code)
+
+    drop piece
+    return BytesPiece.construct(code: steal tree)
+
+### A node of several pieces' trees, the pieces given back.
+### :param kind: The node's kind.
+### :param pieces: The pieces, taken over.
+### :returns: The tree, from the first piece's manager.
+### :throws: Throws `InvalidPatternError` when there are no pieces.
+@track_caller
+secret routine text_branches(kind: U32, pieces: @[TextPiece]) -> BorrowedSlice[U32]
+    if pieces.count() == 0
+        throw InvalidPatternError(kind: PatternErrorKind.EMPTY_EITHER, at: 0)
+    manager: @MemoryManager = pieces.getslot(0).code.manager.peek()
+    words: &List[U32] <- .construct(manager)
+
+    words.add_last(kind)
+    words.add_last(pieces.count().to[U32]())
+    for i: U64 in 0 til pieces.count()
+        piece: @TextPiece = pieces.getslot(i)
+        append_words(tree: words, from: piece.code.getslice())
+        drop pieces.getslot(i)
+    tree: &[U32] <- BorrowedSlice[U32].construct(values: words.getview(), times: 1,
+        manager: manager)
+
+    drop words
+    return tree
+
+### A node of several pieces' trees, the pieces given back.
+### :param kind: The node's kind.
+### :param pieces: The pieces, taken over.
+### :returns: The tree, from the first piece's manager.
+### :throws: Throws `InvalidPatternError` when there are no pieces.
+@track_caller
+secret routine bytes_branches(kind: U32, pieces: @[BytesPiece]) -> BorrowedSlice[U32]
+    if pieces.count() == 0
+        throw InvalidPatternError(kind: PatternErrorKind.EMPTY_EITHER, at: 0)
+    manager: @MemoryManager = pieces.getslot(0).code.manager.peek()
+    words: &List[U32] <- .construct(manager)
+
+    words.add_last(kind)
+    words.add_last(pieces.count().to[U32]())
+    for i: U64 in 0 til pieces.count()
+        piece: @BytesPiece = pieces.getslot(i)
+        append_words(tree: words, from: piece.code.getslice())
+        drop pieces.getslot(i)
+    tree: &[U32] <- BorrowedSlice[U32].construct(values: words.getview(), times: 1,
+        manager: manager)
+
+    drop words
+    return tree
+
+### One of the pieces: the one that matches the longest text at that place (the first one written, of those as
+### long). The pieces are taken over.
+### :param pieces: The alternatives, a span literal: `either_longer([text("cat", HEAP), text("category", HEAP)])`.
+### :returns: The new piece, from the first piece's manager.
+@track_caller
+routine either_longer(pieces: @[TextPiece]) -> TextPiece
+    return TextPiece.construct(code: text_branches(kind: NODE_EITHER_LONGER, pieces))
+
+### One of the pieces: the one that matches the shortest text at that place (the first one written, of those as
+### short). The pieces are taken over.
+### :param pieces: The alternatives, a span literal.
+### :returns: The new piece, from the first piece's manager.
+@track_caller
+routine either_shorter(pieces: @[TextPiece]) -> TextPiece
+    return TextPiece.construct(code: text_branches(kind: NODE_EITHER_SHORTER, pieces))
+
+### One of the pieces: the one that matches the most bytes at that place. The pieces are taken over.
+### :param pieces: The alternatives, a span literal.
+### :returns: The new piece, from the first piece's manager.
+@track_caller
+routine either_longer(pieces: @[BytesPiece]) -> BytesPiece
+    return BytesPiece.construct(code: bytes_branches(kind: NODE_EITHER_LONGER, pieces))
+
+### One of the pieces: the one that matches the fewest bytes at that place. The pieces are taken over.
+### :param pieces: The alternatives, a span literal.
+### :returns: The new piece, from the first piece's manager.
+@track_caller
+routine either_shorter(pieces: @[BytesPiece]) -> BytesPiece
+    return BytesPiece.construct(code: bytes_branches(kind: NODE_EITHER_SHORTER, pieces))

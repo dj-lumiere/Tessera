@@ -26,7 +26,7 @@ object LapilaLanguage : Language("lapila") {
 /** Highlights Lapila code outside a file (a hover's code block) with the same TextMate grammar the editor uses. */
 class LapilaSyntaxHighlighterFactory : SyntaxHighlighterFactory() {
     override fun getSyntaxHighlighter(project: Project?, virtualFile: VirtualFile?): SyntaxHighlighter =
-        TextMateService.getInstance().getLanguageDescriptorByExtension("li")
+        TextMateService.getInstance().getLanguageDescriptorByExtension("lpa")
             ?.let { TextMateHighlighter(TextMateHighlightingLexer(it, LINE_LIMIT)) }
             ?: PlainSyntaxHighlighter()
 

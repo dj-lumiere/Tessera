@@ -65,7 +65,7 @@ public class SemanticTokenTests
     {
         string dir = Path.Combine(Path.GetTempPath(), "lapila-semantic-tokens-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
-        string file = Path.Combine(dir, "ledger.li");
+        string file = Path.Combine(dir, "ledger.lpa");
         File.WriteAllText(file, Source);
         try
         {
@@ -80,7 +80,7 @@ public class SemanticTokenTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li")))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa")))
                 return dir.FullName;
         throw new InvalidOperationException("no Standard/ above the test assembly");
     }

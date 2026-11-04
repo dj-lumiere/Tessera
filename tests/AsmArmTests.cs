@@ -239,7 +239,7 @@ public class AsmArmTests
     /// per line. With assemble, clang also assembles the IR for the target, which fails on any line it doesn't take.
     private static string Build(string source, BuildTarget target, bool assemble = true)
     {
-        var decls = new Parser(new Lexer("arm.li", source).Lex(), "arm.li").ParseModule().Decls;
+        var decls = new Parser(new Lexer("arm.lpa", source).Lex(), "arm.lpa").ParseModule().Decls;
         decls.AddRange(StandardLibrary.Load(Path.Combine(FindRoot(), "Standard")));
         string ir = new Compiler(target, decls).Generate();
         if (assemble) Assemble(ir, target);
@@ -278,7 +278,7 @@ public class AsmArmTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.li"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.lpa"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Lapila repository above the test assembly");
