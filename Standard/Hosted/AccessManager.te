@@ -42,10 +42,11 @@ global RUNNING_FLOW: &Addr
 lateinit global THREAD_FLOW: &AccessFlow
 ### The number the next flow takes.
 global NEXT_FLOW: &U64 <- 1
-### Whether the deadlock check is on: DEADLOCK_CHECK, or what AccessManager.configure set.
-global DEADLOCK_ON: &Bool <- DEADLOCK_CHECK
-### Whether the access-order check is on: ACCESS_ORDER, or what AccessManager.configure set.
-global ORDER_ON: &Bool <- ACCESS_ORDER
+### Whether the deadlock check is on (1, else 0): on until AccessManager.configure sets it. A byte, since flows on other
+### threads read it while the program's start sets it.
+global DEADLOCK_ON: &U8 <- 1
+### Whether the access-order check is on (1, else 0): off until AccessManager.configure sets it.
+global ORDER_ON: &U8 <- 0
 ### How the crash reports name the flows: WORDS_TESSERA, WORDS_RAZORFORGE, or WORDS_SUFLAE.
 global WORDS: &U8
 ### The flow the reports call `start()` in RazorForge's and Suflae's words, hollow in Tessera's.
@@ -76,14 +77,6 @@ global TABLE_WORD: &U32
 global FREE_NODES: &(@AccessNode?)
 ### How many accesses the table holds: memory given back while it is 0 isn't looked at.
 global HELD_TOTAL: &U64
-
-### Whether a flow about to wait follows the chain of holders and stops the program on a deadlock. The builder sets it
-### from `[debug] deadlock-check`: on in a debug build, off in the release modes.
-preset DEADLOCK_CHECK: Bool = true
-
-### Whether every access taken while the flow holds others records the order of the two, and stops the program on two
-### accesses taken in opposite orders. The builder sets it from `[debug] access-order`, off unless turned on.
-preset ACCESS_ORDER: Bool = false
 
 ### How many accesses one flow's list keeps. A flow may hold more: those past the list aren't known to the
 ### access-order check and to `held()`.
@@ -640,6 +633,14 @@ common routine AccessManager.flow_id() -> U64
 common routine AccessManager.holds(access: Addr) -> Bool
     return held_mode(current_flow(), access) != 0
 
+### The byte that keeps a flag the flows read while another thread may set it (an atomic cannot hold a Bool).
+### :param on: The flag.
+### :returns: 1 when on, else 0.
+routine flag_byte(on: Bool) -> U8
+    if on
+        return 1
+    return 0
+
 ### Sets the checks for a program whose runtime was built once for every program (another language's): the deadlock
 ### check, the access-order check, how the crash reports name the flows, and where the code taking an access is. The
 ### flow calling it is the one the reports call `start()`.
@@ -649,9 +650,9 @@ common routine AccessManager.holds(access: Addr) -> Bool
 ### :param place: A routine that writes the place of the code taking an access, or None.
 common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool, words: U8,
     place: Callable[(@SourceLocation,), None]?) -> None
-    DEADLOCK_ON.store(deadlock_check)
-    ORDER_ON.store(access_order)
-    WORDS.store(words)
+    DEADLOCK_ON.poke_unbroken(flag_byte(deadlock_check))
+    ORDER_ON.poke_unbroken(flag_byte(access_order))
+    WORDS.poke_unbroken(words)
     place_at: Addr = when place
         is Callable[(@SourceLocation,), None] as writer => writer.addr()
         is None => Addr.zero()
@@ -678,7 +679,7 @@ common routine AccessManager.place_here() -> SourceLocation
     hook: Addr = PLACE.peek_unbroken()
     if hook.is_hollow()
         return unknown
-    if not (DEADLOCK_ON.load() or ORDER_ON.load())
+    if DEADLOCK_ON.peek_unbroken() == 0 and ORDER_ON.peek_unbroken() == 0
         return unknown
     writer: Callable[(@SourceLocation,), None] = bitcast(hook)
     writer.call(place)
@@ -1027,7 +1028,7 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, ask: Acces
     flow.waiting_holder.poke(Addr.zero())
     flow.waiting_for.poke_unbroken(ask.request.at)
     unlock_table()
-    if DEADLOCK_ON.load()
+    if DEADLOCK_ON.peek_unbroken() != 0
         check_deadlock(flow, wait)
     park(wait, deadline: ask.deadline)
     end_wait(flow)
@@ -1331,7 +1332,7 @@ secret routine held_mode(flow: @AccessFlow, access: Addr) -> U8
 secret routine note_taken(flow: @AccessFlow, taken: HeldAccess) -> None
     count: U64 = flow.count.peek()
 
-    if ORDER_ON.load()
+    if ORDER_ON.peek_unbroken() != 0
         check_order(flow, taken)
     if count < HELD_SLOTS
         flow.held.getslot(count).poke(taken)
@@ -1422,14 +1423,14 @@ needs E obeys Crashable
 @noreturn
 common routine AccessManager.stop_deadlock(error: DeadlockError, place: @SourceLocation) -> None
     shown: @SourceLocation = when
-        WORDS.load() == WORDS_SUFLAE => NO_PLACE
+        WORDS.peek_unbroken() == WORDS_SUFLAE => NO_PLACE
         else => known_place(place)
     crash_at(error, place: shown)
 
 ### The failure for a flow taking an access it already holds.
 ### :returns: The failure.
 secret routine reenter_error() -> ReenterDuringAccessError
-    words: U8 = WORDS.load()
+    words: U8 = WORDS.peek_unbroken()
     message: @[Byte] = when
         words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
         else => "This work opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
@@ -1488,7 +1489,7 @@ common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @Sour
     flow.waiting_holder.poke_unbroken(holder)
     flow.waiting_for.poke_unbroken(access)
     unlock_table()
-    if DEADLOCK_ON.load()
+    if DEADLOCK_ON.peek_unbroken() != 0
         check_deadlock(flow,
             wait: AccessWait(access, holder, word: None(), expected: 0, hooked: true))
     return
@@ -1611,7 +1612,7 @@ secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
 ### :param out: Where to write.
 ### :param flow: The flow.
 secret routine write_flow(out: @SliceWriter, flow: @AccessFlow) -> None
-    words: U8 = WORDS.load()
+    words: U8 = WORDS.peek_unbroken()
     number: U64 = flow.number.peek()
     if words != WORDS_TESSERA and is_flow(a: MAIN_FLOW.load(), b: flow)
         out.write("start()")
@@ -1644,7 +1645,7 @@ secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
 secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
     out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](),
         capacity: REPORT_BYTES)
-    words: U8 = WORDS.load()
+    words: U8 = WORDS.peek_unbroken()
     length: U64 = path.count.peek()
 
     when
@@ -1743,7 +1744,7 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
 secret routine report_order(flow: @AccessFlow, before: SourceLocation) -> None
     out: &SliceWriter <- SliceWriter.construct(data: flow.report.getview().to[@Byte](),
         capacity: REPORT_BYTES)
-    words: U8 = WORDS.load()
+    words: U8 = WORDS.peek_unbroken()
 
     when
         words == WORDS_TESSERA => out.write("This takes an access while holding another, and the two were taken in the opposite order before")
