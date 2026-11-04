@@ -80,8 +80,8 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             @generated
-            routine sign(n: S64) -> S64
-                buf: &[Byte] <- .hollow()
+            routine sign(n: S64, alloc: @MemoryManager) -> S64
+                buf: &List[Byte] <- .construct(alloc)
 
                 if n < 0
                     return -1

@@ -294,12 +294,13 @@ public sealed partial class Compiler
 
         if (sig.IsExternalC || (ProvidedSymbols.Contains(sig.Symbol) && !sig.IsTemplate && (!sig.IsAsm || sig.IsNaked)))
         {
-            // A failable routine the base defines is built here too, only to learn what it throws: its callers need
-            // the list, and the base built the same lines.
-            if (!sig.IsExternalC && sig.IsFailable && sig.Decl.Blocks is not null)
+            // The base defines this routine, so a build of it here only tells its callers something (what it throws,
+            // what it moves) and never goes into the delta. A failable one is built for its list: its callers need the
+            // list, and the base built the same lines.
+            if (!sig.IsExternalC)
             {
-                _throwsOnly.Add(sig.Symbol);
-                _pending.Enqueue(sig);
+                _definedByBase.Add(sig.Symbol);
+                if (sig.IsFailable && sig.Decl.Blocks is not null) _pending.Enqueue(sig);
             }
             // A routine the base of a split program defines (ProvidedSymbols) is declared like a C routine: every
             // routine has the same lowered signature at its definition and its calls.

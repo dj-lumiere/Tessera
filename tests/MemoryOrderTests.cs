@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// and no test of the order. The golden test memory_order locks what the instances give, and this one the instruction
 /// each writes: the default orders, the failure order that comes from the success order, and no branch on the order.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class MemoryOrderTests
 {
     private static readonly Lazy<string> Ir = new(() => Compile("memory_order.li"));

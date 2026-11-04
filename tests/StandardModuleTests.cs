@@ -54,11 +54,13 @@ public class StandardModuleTests
         Assert.Contains("this file is in the folder of module System/Text", e.Message);
     }
 
+    /// The roots are the folders under Standard/ and Ingrid's library, whose files live in Ingrid's repository.
     [Fact]
     public void Every_folder_under_Standard_is_a_module_root_the_parser_knows()
     {
         string stdlib = StdlibDir();
-        var folders = Directory.GetDirectories(stdlib).Select(Path.GetFileName).Order(StringComparer.Ordinal);
+        var folders = Directory.GetDirectories(stdlib).Select(Path.GetFileName).Append(StandardLibrary.IngridRoot)
+            .Order(StringComparer.Ordinal);
         Assert.Equal(Compiler.StandardModuleRoots.Order(StringComparer.Ordinal), folders);
     }
 }

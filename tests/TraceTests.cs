@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// places, so an untraced program is what it was before the trace existed. The golden tests (trace_*) lock what a
 /// traced build reports.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class TraceTests
 {
     /// The symbols a traced build has and an untraced one must not: the storage and the three routines the builder

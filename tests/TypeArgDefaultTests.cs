@@ -6,6 +6,7 @@ namespace Lapila.Tests;
 /// A type argument left out for its default and the same argument written out are one instance: `add(1)` and
 /// `add[SEQ_CST](1)` in tests/type_arg_default.li call one routine, defined once. The golden test locks the values.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class TypeArgDefaultTests
 {
     [Fact]

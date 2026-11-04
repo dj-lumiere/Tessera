@@ -39,8 +39,9 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _functionTexts = [];
     private readonly List<string> _functionOrder = [];
 
-    /// Instances built only to learn their list of crashables: a split program's base defines them.
-    private readonly HashSet<string> _throwsOnly = [];
+    /// The instances a split program's base defines: a build of one here only learns what it throws or moves, and its
+    /// text is left out.
+    private readonly HashSet<string> _definedByBase = [];
 
     /// The named LLVM type a failable instance returns.
     public static string CarrierName(Instance inst) => "%" + Quote($"carrier.{inst.Symbol}");
@@ -344,7 +345,7 @@ public sealed partial class Compiler
     {
         var o = new StringBuilder();
         foreach (var symbol in _functionOrder)
-            if (!_throwsOnly.Contains(symbol))
+            if (!_definedByBase.Contains(symbol))
                 o.Append(_functionTexts[symbol]);
         return o.ToString();
     }

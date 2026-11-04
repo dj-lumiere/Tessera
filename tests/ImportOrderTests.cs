@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// with the same import lines in different orders (as written, reversed, rotated, shuffled) and requires the same
 /// result: the same IR, or the same build error text.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class ImportOrderTests
 {
     private static readonly Dictionary<string, string> Modules = new()

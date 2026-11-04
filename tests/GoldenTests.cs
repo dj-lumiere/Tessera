@@ -8,6 +8,7 @@ namespace Lapila.Tests;
 /// fail with. A test whose .arch leaves out the host's architecture is not a case here, so nothing passes without
 /// running.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class GoldenTests
 {
     private static readonly string Root = FindRoot();

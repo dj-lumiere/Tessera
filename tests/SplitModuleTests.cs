@@ -14,8 +14,7 @@ public class SplitModuleTests
         global COUNTER: &S64
 
         routine bump(by: S64) -> None
-            next: S64 = COUNTER.peek() + by
-            next.poke_into(COUNTER)
+            COUNTER.store(COUNTER.load() + by)
             return
 
         @inline
@@ -24,7 +23,7 @@ public class SplitModuleTests
 
         routine start() -> None
             bump(twice(2))
-            total: S64 = COUNTER.peek()
+            total: S64 = COUNTER.load()
             return
 
         """;

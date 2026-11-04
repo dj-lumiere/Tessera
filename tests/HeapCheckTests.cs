@@ -9,6 +9,7 @@ namespace Lapila.Tests;
 /// and free. The golden tests double_free (debug) and double_free_release (release) lock what a build with the check
 /// on reports.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class HeapCheckTests
 {
     /// Names only the checked heap has: its callbacks and its quarantine, mangled into the symbols.

@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// the instance goes straight to the side its member takes. The golden test choice_type_arg locks what the instances
 /// give, and this one that their code tests nothing.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class ChoiceTypeArgTests
 {
     /// The routines of tests/choice_type_arg.li that branch on their order, by the start of their symbols, and how many

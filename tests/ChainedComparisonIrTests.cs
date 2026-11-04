@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// A chained comparison evaluates each operand once: the IR of `1 &lt; f() &lt; 3` (tests/chained_middle_call.li) calls
 /// f once, both comparisons read that one result, and the second comparison runs only when the first holds.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class ChainedComparisonIrTests
 {
     private static readonly Lazy<string> Start = new(() => Body(Compile("chained_middle_call.li"), "@_Z5startv("));

@@ -7,6 +7,7 @@ namespace Lapila.Tests;
 /// build when the library has no such preset or declares it with another type, naming the key and the preset. Left
 /// out, a key changes nothing, and so does a preset the program doesn't link.
 /// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
 public class ManifestPresetTests
 {
     [Fact]
