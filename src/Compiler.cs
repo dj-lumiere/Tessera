@@ -1417,7 +1417,7 @@ public sealed partial class Compiler
         {
             if (!_presets.TryGetValue(("", name), out var list)) return;
             for (int i = 0; i < list.Count; i++)
-                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new BoolLit(value, old.Pos) };
+                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(value ? 1 : 0, old.Pos) };
         }
         Set("DEADLOCK_CHECK", deadlockCheck);
         Set("ACCESS_ORDER", accessOrder);
