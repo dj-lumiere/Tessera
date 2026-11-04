@@ -75,14 +75,11 @@ public static partial class LanguageServer
 
         string path = FullPathOf(analysis, target.Pos.File);
         string targetUri = SameFile(target.Pos.File, analysis.Shown) ? uri : new Uri(path).AbsoluteUri;
-        return
-        [
-            new JsonObject
-            {
-                ["uri"] = targetUri,
-                ["range"] = NameRange(LinesOf(analysis, target.Pos.File), target.Pos, target.Name),
-            },
-        ];
+        return new JsonArray(new JsonObject
+        {
+            ["uri"] = targetUri,
+            ["range"] = NameRange(LinesOf(analysis, target.Pos.File), target.Pos, target.Name),
+        });
     }
 
     /// The document's declarations as an outline: routines with their blocks, records with their fields, variants and
@@ -120,7 +117,7 @@ public static partial class LanguageServer
         {
             var d = top[i];
             int end = EndBefore(lines, i + 1 < top.Count ? top[i + 1].Pos.Line : lines.Length + 1);
-            if (Symbol(lines, d, end) is { } symbol) symbols.Add(symbol);
+            if (Symbol(lines, d, end) is { } symbol) symbols.Append(symbol);
         }
         return symbols;
     }
@@ -151,36 +148,36 @@ public static partial class LanguageServer
                 detail = $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
                 // LSP symbol kind 13: Variable.
                 foreach (var shared in r.Shared)
-                    children.Add(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"{shared.Type}"));
+                    children.Append(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"{shared.Type}"));
                 var blocks = r.Blocks ?? [];
                 for (int i = 0; i < blocks.Count; i++)
                 {
                     var b = blocks[i];
                     int blockEnd = EndBefore(lines, i + 1 < blocks.Count ? blocks[i + 1].Pos.Line : end + 1);
-                    children.Add(Node(lines, b.Name, 20, b.Pos, b.Name, blockEnd,
+                    children.Append(Node(lines, b.Name, 20, b.Pos, b.Name, blockEnd,
                         b.Params.Count == 0 ? null : $"({string.Join(", ", b.Params.Select(p => $"{p.Name}: {p.Type}"))})"));
                 }
                 break;
             case RecordDecl rec:
                 kind = 23;
-                foreach (var f in rec.Fields) children.Add(Node(lines, f.Name, 8, f.Pos, f.Name, f.Pos.Line, f.Type.ToString()));
+                foreach (var f in rec.Fields) children.Append(Node(lines, f.Name, 8, f.Pos, f.Name, f.Pos.Line, f.Type.ToString()));
                 break;
             case VariantDecl v:
                 kind = 10;
                 foreach (var c in v.Branches)
-                    children.Add(Node(lines, c.Name, 22, c.Pos, c.Name, c.Pos.Line, null));
+                    children.Append(Node(lines, c.Name, 22, c.Pos, c.Name, c.Pos.Line, null));
                 break;
             case ChoiceDecl ch:
                 kind = 10;
                 detail = ch.Underlying.ToString();
                 foreach (var (member, value) in ch.Members.Where(m => m.Value.Pos.Line > 0))
-                    children.Add(Node(lines, member, 22, value.Pos with { Col = 1 }, member, value.Pos.Line,
+                    children.Append(Node(lines, member, 22, value.Pos with { Col = 1 }, member, value.Pos.Line,
                         value is IntLit i ? i.Value.ToString() : null));
                 break;
             case ConceptDecl concept:
                 kind = 11;
                 foreach (var r in concept.Routines)
-                    children.Add(Node(lines, r.Name, 6, r.Pos, r.Name, r.Pos.Line,
+                    children.Append(Node(lines, r.Name, 6, r.Pos, r.Name, r.Pos.Line,
                         $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}"));
                 break;
             case PresetDecl p:

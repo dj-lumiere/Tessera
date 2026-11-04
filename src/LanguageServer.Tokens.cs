@@ -96,11 +96,11 @@ public static partial class LanguageServer
         foreach (var (spanLine, spanCol, length, kind) in spans.OrderBy(x => x.Line).ThenBy(x => x.Col))
         {
             int line = spanLine - 1, ch = spanCol - 1;
-            data.Add(line - prevLine);
-            data.Add(line == prevLine ? ch - prevChar : ch);
-            data.Add(length);
-            data.Add(Array.IndexOf(TokenTypes, kind));
-            data.Add(0);
+            data.Append(line - prevLine);
+            data.Append(line == prevLine ? ch - prevChar : ch);
+            data.Append(length);
+            data.Append(Array.IndexOf(TokenTypes, kind));
+            data.Append(0);
             prevLine = line;
             prevChar = ch;
         }

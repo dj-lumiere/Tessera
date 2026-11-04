@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace Tessera;
@@ -646,6 +647,7 @@ internal static class ExprTree
         }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2070", Justification = "Expr keeps the public properties of every expression record.")]
     private static IEnumerable<Expr> Children(Expr e)
     {
         // A `when` written as a value holds its subject and its arms' lines.

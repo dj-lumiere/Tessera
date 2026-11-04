@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -236,6 +237,7 @@ public sealed class LateinitFlow
         }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "node is a Stmt or an Expr, and both base records keep their public properties.")]
     private static IEnumerable<object> Children(object node)
     {
         foreach (var p in node.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))

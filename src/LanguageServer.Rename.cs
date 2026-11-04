@@ -69,7 +69,7 @@ public static partial class LanguageServer
             return null;
         var edits = new JsonArray();
         foreach (var (spanLine, start, end) in found.Spans)
-            edits.Add(new JsonObject { ["range"] = Range(spanLine - 1, start, spanLine - 1, end), ["newText"] = newName });
+            edits.Append(new JsonObject { ["range"] = Range(spanLine - 1, start, spanLine - 1, end), ["newText"] = newName });
         return new JsonObject { ["changes"] = new JsonObject { [uri] = edits } };
     }
 }

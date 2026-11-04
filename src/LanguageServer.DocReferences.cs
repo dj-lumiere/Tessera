@@ -93,11 +93,9 @@ public static partial class LanguageServer
     };
 
     private static JsonArray DocReferenceDefinition(Analysis analysis, string uri, DocTarget target) =>
-    [
-        new JsonObject
+        new(new JsonObject
         {
             ["uri"] = SameFile(target.Pos.File, analysis.Shown) ? uri : new Uri(FullPathOf(analysis, target.Pos.File)).AbsoluteUri,
             ["range"] = NameRange(LinesOf(analysis, target.Pos.File), target.Pos, target.Name),
-        },
-    ];
+        });
 }

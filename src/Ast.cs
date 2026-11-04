@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 
 namespace Tessera;
@@ -282,6 +283,8 @@ public sealed record AliasDecl(string File, List<Annotation> Annotations, TypeRe
 
 // ── Statements ──────────────────────────────────────────────────────────────
 
+/// The statements and expressions are walked by their properties in LateinitFlow and Failures, so a trimmed build keeps them.
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public abstract record Stmt(Pos Pos)
 {
     /// `@source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
@@ -446,6 +449,7 @@ public sealed record NothingStmt(Pos Pos) : Stmt(Pos);
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public abstract record Expr(Pos Pos);
 
 /// An integer literal. HexDigits counts the digits of a `0x` literal (0 for other bases), since a Byte literal

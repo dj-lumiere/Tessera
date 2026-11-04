@@ -60,7 +60,7 @@ public static partial class LanguageServer
             if (detail is not null) item["detail"] = detail;
             if ((docAt ?? doc?.Pos) is { } at)
                 item["data"] = new JsonObject { ["uri"] = uri, ["file"] = at.File, ["line"] = at.Line };
-            items.Add(item);
+            items.Append(item);
         }
 
         if (analysis is null)

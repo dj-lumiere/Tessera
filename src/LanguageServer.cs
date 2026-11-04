@@ -177,16 +177,16 @@ public static partial class LanguageServer
             if (UntilFalse.Match(l) is { Success: true } m)
             {
                 int start = m.Groups["indent"].Length;
-                actions.Add(QuickFix(uri, "Write 'loop'", line, start, line, m.Length, "loop"));
+                actions.Append(QuickFix(uri, "Write 'loop'", line, start, line, m.Length, "loop"));
             }
             else if (PassLine.Match(l) is { Success: true } p)
             {
                 int start = p.Groups["before"].Length;
-                actions.Add(QuickFix(uri, "Write 'nothing'", line, start, line, start + "pass".Length, "nothing"));
+                actions.Append(QuickFix(uri, "Write 'nothing'", line, start, line, start + "pass".Length, "nothing"));
             }
             else if (TypeHeader.IsMatch(l) && EmptyTypeBodyLine(lines, line) is { } at)
             {
-                actions.Add(QuickFix(uri, "Write 'nothing'", at, 0, at, 0, "    nothing\n"));
+                actions.Append(QuickFix(uri, "Write 'nothing'", at, 0, at, 0, "    nothing\n"));
             }
         }
         return actions;
@@ -285,7 +285,7 @@ public static partial class LanguageServer
         }
         catch (Exception e)
         {
-            diagnostics.Add(Diagnostic(text, 1, 1, 1, e.Message));
+            diagnostics.Append(Diagnostic(text, 1, 1, 1, e.Message));
             return (diagnostics, null);
         }
 
@@ -297,7 +297,7 @@ public static partial class LanguageServer
         try
         {
             var (target, sources, manifestProblem) = Solution(file);
-            if (manifestProblem is not null) diagnostics.Add(Diagnostic(text, 3, 1, 1, manifestProblem));
+            if (manifestProblem is not null) diagnostics.Append(Diagnostic(text, 3, 1, 1, manifestProblem));
             var own = sources.Select(Shown).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var decls = new List<Decl>();
             var parseErrors = new List<CompileError>();
@@ -321,35 +321,35 @@ public static partial class LanguageServer
             {
                 // While a declaration doesn't parse, the errors to fix are the parse errors: what the rest says about
                 // the missing declaration would only be noise. The check still runs, for what hover and colors use.
-                foreach (var e in shownParseErrors) diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
-                if (shownParseErrors.Count == 0) diagnostics.Add(Diagnostic(text, 1, 1, 1, parseErrors[0].Message));
+                foreach (var e in shownParseErrors) diagnostics.Append(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
+                if (shownParseErrors.Count == 0) diagnostics.Append(Diagnostic(text, 1, 1, 1, parseErrors[0].Message));
                 compiler.CheckAll(scope: own.Contains);
             }
             else
             {
                 foreach (var e in compiler.CheckAll(scope: own.Contains).Where(e => SameFile(e.Pos.File, shown)))
-                    diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
+                    diagnostics.Append(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
                 foreach (string w in StyleLint.Check(decls.Where(d => SameFile(d.File, shown)), built: [compiler]))
                     if (Warning.Match(w) is { Success: true } m)
-                        diagnostics.Add(Diagnostic(text, 2, int.Parse(m.Groups["line"].Value), int.Parse(m.Groups["col"].Value),
+                        diagnostics.Append(Diagnostic(text, 2, int.Parse(m.Groups["line"].Value), int.Parse(m.Groups["col"].Value),
                             m.Groups["text"].Value));
             }
         }
         catch (CompileError e)
         {
             // A parse error stops the check: it is the one to fix, wherever it is.
-            diagnostics.Add(SameFile(e.Pos.File, shown)
+            diagnostics.Append(SameFile(e.Pos.File, shown)
                 ? Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text)
                 : Diagnostic(text, 1, 1, 1, e.Message));
         }
         catch (Exception e) when (e is ManifestError or IOException)
         {
-            diagnostics.Add(Diagnostic(text, 1, 1, 1, e.Message));
+            diagnostics.Append(Diagnostic(text, 1, 1, 1, e.Message));
         }
         catch (Exception e)
         {
             // A builder bug must not take the server down: it shows at the top of the file.
-            diagnostics.Add(Diagnostic(text, 1, 1, 1, $"internal builder error: {e.Message}"));
+            diagnostics.Append(Diagnostic(text, 1, 1, 1, $"internal builder error: {e.Message}"));
         }
         return (diagnostics, analysis);
     }
@@ -444,15 +444,13 @@ public static partial class LanguageServer
         string formatted = Formatter.Format(text);
         if (formatted == text.Replace("\r\n", "\n")) return [];
         int lines = text.Count(c => c == '\n') + 1;
-        return
-        [
+        return new JsonArray(
             new JsonObject
             {
                 // An end past the last line clamps to the document's end, so the edit covers all of it.
                 ["range"] = Range(0, 0, lines, 0),
                 ["newText"] = formatted,
-            },
-        ];
+            });
     }
 
     /// A diagnostic at a 1-based line and column, underlining the word there (one character when there is none).
@@ -577,4 +575,12 @@ public static partial class LanguageServer
     private static bool IsUnder(string path, string dir) =>
         Path.GetFullPath(path).StartsWith(Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
+}
+
+/// JsonArray.Add is generic and its generic form serializes by reflection, which a NativeAOT build cannot do. These two
+/// take a node or an int and call the overloads that add them as they are.
+internal static class JsonArrayAppend
+{
+    internal static void Append(this JsonArray array, JsonNode? node) => array.Add(node);
+    internal static void Append(this JsonArray array, int value) => array.Add((JsonNode?)JsonValue.Create(value));
 }
