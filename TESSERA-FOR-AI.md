@@ -1413,8 +1413,8 @@ routine start() -> None
   Write the message from those values when it is asked for (`message_into`), never ahead of time.
 - **Events: `CpuEventManager`** (`CpuEvents.te` of Hosted with an OS, of Unhosted without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]?` (`CpuEvent` has `kind`, `code`, `place`, `address`),
-  and `CpuEventManager.holder(kind)` gives the one before so it can be put back (`try CpuEventManager.holder(kind)` is
-  `None` for none, the system's action): `CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
+  and hands back the one before so it can be put back (`None()` is the system's action):
+  `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
   decides, it calls `ProcessManager.exit_process` to end, and when it returns the program goes on, except that
   Windows ends the process itself after a closed console window, a logoff or a shutdown),
   `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
@@ -1540,7 +1540,7 @@ routine start() -> None
   `HeapManagerByC`, `HeapManagerByCAligned`, `HeapManagerByCheckedHeap`, `PageManagerByOs` (the old `CHeapManager`,
   `AlignedHeapManager`, `CheckedHeapManager`, `OsPageManager` are build errors naming the new name). A manager with no
   memory to give throws `OutOfMemoryError`, and a memory manager callback that crashes reports the line it was called
-  from with `memory_manager_call_place()` (a `@SourceLocation`, an `AbsentValueError` outside such a call: `try` it) (the old `MemoryAllocationError` and `allocator_call_place` are build errors
+  from with `memory_manager_call_place()` (a `@SourceLocation?`, None outside such a call) (the old `MemoryAllocationError` and `allocator_call_place` are build errors
   naming the new name).
 - Every manager is an `entity` (`MemoryManager`, `StackManager`, `HeapManagerByC`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
@@ -2299,7 +2299,7 @@ there yet.
 **The environment.** `OsEnvironment` (Hosted) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
-`BorrowedSlice[Byte]` asked of the OS, an `AbsentValueError` when it isn't set, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
+`Optional[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
 a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(manager)`,
 `temp_directory(manager)`, `home_directory(manager)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
@@ -2315,7 +2315,7 @@ one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`,
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`BorrowedSlice[Byte]`). A `ProcessOutput` is an entity:
 `out: &ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`OsEnvironment.variable(name, manager)` reads a variable (`try` it: `None` when it isn't set), `ProcessManager.exit_process(status)`
+`OsEnvironment.variable(name, manager)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
 ends this process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
@@ -2433,7 +2433,7 @@ routine start() -> None
   transmit queue and sets nothing up.
 - `InterruptManagerByGic` (GICv2): `start()` turns the controller on and takes the CpuEventManager's interrupt slot
   (`stop()` puts the one before back), `when_line_raised(line, holder)` holds a `Callable[(U32,), None]?` per line
-  (below `GIC_LINES`, 128), `line_holder(line)` gives the one before (an `AbsentValueError` for none, `try` it), `turn_on(line)` / `turn_off(line)`. It acknowledges the line
+  (below `GIC_LINES`, 128) and hands back the one before (None for none), `turn_on(line)` / `turn_off(line)`. It acknowledges the line
   (GICC_IAR, GICC_EOIR) before calling its handler, so a handler may switch threads. Handlers run with interrupts
   masked and never nest: a level line still raised after its handler comes again. An interrupt on a line nobody holds
   crashes with `HardwareFault`. `mask_interrupts()` (gives the DAIF before), `restore_interrupts(was)`,
@@ -2516,12 +2516,10 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   `to[T]`, `Console.ask[T]`, `BorrowedSlice[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
   no `_result` names and no `_checked` twins (no `to_checked[T]` either): `try` in front of a
   failable call gives the `Optional`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
-  `Optional` just to say it failed, and **a routine never returns `T?` or `Check[T]`** (a build error, like RF-S806): only
-  `try` and `check` make them at a call. A routine with nothing to give returns the `T` and says `throw AbsentValueError()`
-  (`@[Byte].find`, `OsEnvironment.variable`, `Bits.first_true`, `TextPattern.find`), and its caller writes `try`. Not held
-  to it: `external` and `@export` routines, `infallible` ones, routines the builder derives, `secret` library routines,
-  Ingrid's own sources, and the conversions `to[...]`. Two library shapes keep an `Optional` for now because their `None`
-  carries a value a throw can't: `transmit_if_room` (the refused value) and `compare_exchange` (the value found). An emitter's `emit` is failable and throws `AbsentValueError` past the end.
+  `Optional` just to say it failed. A routine may return `T?`, and it should only when having nothing is a normal result
+  (`@[Byte].find` not found, `OsEnvironment.variable` not set, `transmit_if_room` with no room, `compare_exchange` giving
+  the value found): the caller takes it apart with `when`. Something gone wrong is a `throw`. Returning `Check[T]` is a
+  build error: only `check` makes one at a call. An emitter's `emit` is failable and throws `AbsentValueError` past the end.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
   `CStrView.from_ptr(p)`). A conversion that can fail is a failable `to[T]()`.

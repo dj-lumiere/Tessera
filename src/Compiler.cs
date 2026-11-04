@@ -1706,33 +1706,20 @@ public sealed partial class Compiler
         $"{where} can't hold {optional.Name}: an Optional is the address of a {optional.Leaves[0].Name} in the frame of the "
         + "routine whose call made it, so it stays in that routine (a STACK place, a parameter, or what it returns)";
 
-    /// A routine doesn't return `T?` or `Check[T]`: only `try` and `check` make them at a call. A routine with nothing to give
-    /// returns the `T` and says `throw AbsentValueError()`, and its caller writes `try f(...)`. Not held to it: an external
-    /// routine (it declares what C or LLVM gives), an `@export` one (C reads a nullable address), an `infallible` one (it can't
-    /// throw), a routine the builder derives, a library routine marked `secret`, and the code of Ingrid's runtime, which is the
-    /// boundary the exported routines and the scheduler stand on.
+    /// A routine doesn't return `Check[T]`: only `check` makes one at a call. A routine may return `T?`, which is for a result
+    /// that is normally absent, while something gone wrong is a `throw`. Not held to it: an external routine (it declares
+    /// what C or LLVM gives), an `@export` one, an `infallible` one (it can't throw), and a routine the builder derives.
     private static void CheckNoOptionalReturn(RoutineDecl r)
     {
-        // The library routines whose None carries something: a refused transmit hands the value back, and an exchange that
-        // didn't write hands the value it found. A throw can't carry either, so they wait for a decision on their shape.
-        if (r.IsLibrary && r.Name is "transmit_if_room" or "compare_exchange" or "compare_exchange_weak"
-            or "compare_exchange_unbroken" or "compare_exchange_weak_unbroken") return;
         var ret = r.ReturnType;
-        bool optional = ret.Question || ret is { Name: "Optional" } && ret.Path is null or SystemModule;
         bool check = ret is { Name: "Check" } && ret.Path is null or SystemModule;
-        if (!optional && !check) return;
-        // A conversion returns the type it is named for (`to[@T?]`), so that type is not a result it chose to wrap.
+        if (!check) return;
+        // A conversion returns the type it is named for, so that type is not a result it chose to wrap.
         if (r.Name == "to") return;
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null || r.IsInfallible
             || r.AnnotationNamed("template") is not null || Derive.IsImplicit(r)) return;
-        // Ingrid's own sources, its runtime and its tests, are not library files to the builder when checked by themselves.
-        if (System.IO.Path.GetFullPath(r.File).Replace('\\', '/').Split('/').Contains(StandardLibrary.IngridRoot)) return;
-        if (r.IsLibrary && (r.IsPrivate || r.Module == StandardLibrary.IngridRoot || IsUnder(r.Module, StandardLibrary.IngridRoot))) return;
-        string shown = optional ? (ret.Question && ret.Args is [TypeArgType held] ? $"{held}?" : ret.ToString()) : ret.ToString();
-        string keyword = check ? "check" : "try";
-        throw new CompileError(ret.Pos, $"'{r.DisplayName}' returns {shown}, which only 'try' and 'check' make at a call. Return the "
-            + $"value itself and 'throw AbsentValueError()' where there is none: a caller then writes '{keyword} {r.Name}(...)' "
-            + $"to get the {shown}");
+        throw new CompileError(ret.Pos, $"'{r.DisplayName}' returns {ret}, which only 'check' makes at a call. Return the value "
+            + $"itself and 'throw' where it fails: a caller then writes 'check {r.Name}(...)' to get the {ret}");
     }
 
     /// Why a Callable can't return the Optional `optional`.
