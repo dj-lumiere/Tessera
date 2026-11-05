@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Lapila;
@@ -136,18 +137,29 @@ public static class Derive
     /// Parses generated source in the type's file. Each routine is marked `@derived` (`@derived(implicit)` when the
     /// type didn't ask), which lets it find methods in any module and, when implicit, keeps it from being checked
     /// until something uses it.
-    private static IEnumerable<Decl> Parse(Decl type, string source, bool implicitly)
+    /// The routines derived for each type declaration, by their source: a declaration read once (a standard library
+    /// file a build daemon keeps) gets the same routines in every build, so they are parsed once. They go when the
+    /// declaration does.
+    private static readonly ConditionalWeakTable<Decl, Dictionary<(string Source, bool Implicitly), List<Decl>>> ParsedFor = new();
+
+    private static List<Decl> Parse(Decl type, string source, bool implicitly)
     {
+        var known = ParsedFor.GetOrCreateValue(type);
+        lock (known)
+            if (known.TryGetValue((source, implicitly), out var parsed)) return parsed;
         var tokens = new Lexer(type.File, source, type.Pos.Line, type.Pos.Col).Lex();
         // The type's @target / @feature carry over, so the derived code exists exactly where the type does.
         var selection = type.Annotations.Where(a => a.Name is "target" or "feature").ToList();
         var mark = new Annotation("derived", implicitly ? [new AnnotationArg(null, "implicit", false)] : [], type.Pos);
-        foreach (var g in new Parser(tokens, type.File, type.IsLibrary, acceptLegacy: true).ParseModule().Decls)
-            yield return g with
+        var derived = new Parser(tokens, type.File, type.IsLibrary, acceptLegacy: true).ParseModule().Decls
+            .Select(g => (Decl)(g with
             {
                 Annotations = [.. g.Annotations, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
                 Module = type.Module, IsLibrary = type.IsLibrary, IsPrivate = type.IsPrivate,
-            };
+            }))
+            .ToList();
+        lock (known) known[(source, implicitly)] = derived;
+        return derived;
     }
 
     /// A crashable's conformance to Crashable and its `name`, when it doesn't declare them.

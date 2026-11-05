@@ -18,16 +18,33 @@ public sealed partial class Compiler
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (string file in decls.Select(d => d.File).Distinct())
-        {
-            string text;
-            try { text = File.ReadAllText(file); }
-            catch (IOException) { continue; }
-            catch (UnauthorizedAccessException) { continue; }
-            if (!text.Contains("Stamped[", StringComparison.Ordinal)) continue;
-            foreach (Match m in StampedArgument.Matches(text)) names.Add(m.Groups[1].Value);
-        }
+            names.UnionWith(StampedNamesIn(file));
         _stampedNames = names;
     }
+
+    /// The names a file writes as `Stamped[...]`'s first argument, read again only when the file changes: a build daemon
+    /// builds with the same standard library files again and again.
+    private static IReadOnlyCollection<string> StampedNamesIn(string file)
+    {
+        FileInfo info;
+        try { info = new FileInfo(file); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return []; }
+        if (!info.Exists) return [];
+        var stamp = (info.Length, info.LastWriteTimeUtc.Ticks);
+        lock (StampedNamesByFile)
+            if (StampedNamesByFile.TryGetValue(file, out var known) && known.Stamp == stamp) return known.Names;
+        string text;
+        try { text = File.ReadAllText(file); }
+        catch (IOException) { return []; }
+        catch (UnauthorizedAccessException) { return []; }
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        if (text.Contains("Stamped[", StringComparison.Ordinal))
+            foreach (Match m in StampedArgument.Matches(text)) names.Add(m.Groups[1].Value);
+        lock (StampedNamesByFile) StampedNamesByFile[file] = (stamp, names);
+        return names;
+    }
+
+    private static readonly Dictionary<string, ((long, long) Stamp, HashSet<string> Names)> StampedNamesByFile = [];
 
     /// Whether the entity's layout has the hidden slot.
     public bool KeepsStamp(DType t) =>

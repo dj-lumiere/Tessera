@@ -20,6 +20,15 @@ public sealed partial class Compiler
     private sealed record Conformance(TypeRef Concept, List<string> TypeParams, List<TypeRef> When, Decl Source);
 
     private readonly List<Conformance> _conformances = [];
+
+    /// The conformances by their concept's name, made on first use: every declaration is registered by then.
+    private Dictionary<string, List<Conformance>>? _conformancesByConcept;
+
+    private List<Conformance> ConformancesTo(string concept)
+    {
+        _conformancesByConcept ??= _conformances.GroupBy(c => c.Concept.Name).ToDictionary(g => g.Key, g => g.ToList());
+        return _conformancesByConcept.GetValueOrDefault(concept) ?? [];
+    }
     private readonly Dictionary<string, string?> _conformsCache = [];     // key → null (holds) or the reason it doesn't
     private readonly HashSet<string> _verified = [];
     private readonly HashSet<string> _checkedRequirements = [];
@@ -232,7 +241,7 @@ public sealed partial class Compiler
         // A concept that only groups others needs no declaration of its own.
         if (concept.Routines.Count == 0 && supers.Count > 0) return null;
 
-        foreach (var conf in _conformances.Where(c => c.Concept.Name == concept.Name))
+        foreach (var conf in ConformancesTo(concept.Name))
         {
             if (!Selected(conf.Source)) continue;
             var binding = new TypeEnv(conf.Source.File);
@@ -265,10 +274,10 @@ public sealed partial class Compiler
         foreach (var refining in _conceptDecls.Values.SelectMany(d => d))
         {
             if (refining == concept || RefinedArgs(refining, concept, args) is not { } refiningArgs) continue;
-            if (!_conformances.Any(c => c.Concept.Name == refining.Name)) continue;
+            if (ConformancesTo(refining.Name).Count == 0) continue;
             if (refining.Routines.Count == 0 && !DeclaresDirectly(refining, refiningArgs)) continue;
             if (Conforms(refining, refiningArgs, file, at) is not null) continue;
-            var through = _conformances.First(c => c.Concept.Name == refining.Name);
+            var through = ConformancesTo(refining.Name)[0];
             VerifyConformance(concept, args, through);
             return null;
         }
@@ -279,8 +288,7 @@ public sealed partial class Compiler
             return $"no constraint in force says {Show(concept.Name, args)}";
         }
         // A marker states a capability its conformances grant per target (the unbroken values), so say which target.
-        bool targetBound = _conformances.Any(c => c.Concept.Name == concept.Name
-                                                  && c.Source.Annotations.Any(a => a.Name is "target" or "feature"));
+        bool targetBound = ConformancesTo(concept.Name).Any(c => c.Source.Annotations.Any(a => a.Name is "target" or "feature"));
         string where = targetBound
             ? $" for {Target.LlvmTriple} (CPU {CpuModel.For(Target, at).Cpu}{(Target.Features.Count > 0 ? $", {string.Join(",", Target.Features)}" : "")})"
             : "";
@@ -290,7 +298,7 @@ public sealed partial class Compiler
     /// Whether a conformance to `concept` is declared whose pattern matches `args` exactly.
     private bool DeclaresDirectly(ConceptDecl concept, List<DType> args)
     {
-        foreach (var conf in _conformances.Where(c => c.Concept.Name == concept.Name && Selected(c.Source)))
+        foreach (var conf in ConformancesTo(concept.Name).Where(c => Selected(c.Source)))
         {
             if (conf.Concept.Args.Count != args.Count) continue;
             var binding = new TypeEnv(conf.Source.File);
@@ -432,15 +440,39 @@ public sealed partial class Compiler
     /// protocol that refines `target`), or null when none does.
     private List<DType>? DeclaredFor(ConceptDecl target, DType type)
     {
+        string key = $"{target.Name}@{target.File}:{type.Key}";
+        if (_declaredFor.TryGetValue(key, out var known)) return known;
+        return _declaredFor[key] = DeclaredForUncached(target, type);
+    }
+
+    private readonly Dictionary<string, List<DType>?> _declaredFor = [];
+
+    /// The conformances to `target` or to a concept that refines it, each with its concept: the ones DeclaredFor
+    /// tries.
+    private readonly Dictionary<ConceptDecl, List<(Conformance Conf, ConceptDecl Decl, TypeRef First)>> _conformancesUnder =
+        new(ReferenceEqualityComparer.Instance);
+
+    private List<(Conformance Conf, ConceptDecl Decl, TypeRef First)> ConformancesUnder(ConceptDecl target)
+    {
+        if (_conformancesUnder.TryGetValue(target, out var found)) return found;
+        var list = new List<(Conformance, ConceptDecl, TypeRef)>();
         foreach (var conf in _conformances)
         {
             if (!Selected(conf.Source) || conf.Concept.Args.Count == 0 || conf.Concept.Args[0] is not TypeArgType first) continue;
             ConceptDecl decl;
             try { decl = FindConcept(conf.Concept, conf.Source.File); }
             catch (CompileError) { continue; }
-            if (decl != target && !Refines(decl, target, 0)) continue;
+            if (decl == target || Refines(decl, target, 0)) list.Add((conf, decl, first.Type));
+        }
+        return _conformancesUnder[target] = list;
+    }
+
+    private List<DType>? DeclaredForUncached(ConceptDecl target, DType type)
+    {
+        foreach (var (conf, decl, first) in ConformancesUnder(target))
+        {
             var binding = new TypeEnv(conf.Source.File);
-            if (!Match(first.Type, type, conf.TypeParams.ToHashSet(), binding)) continue;
+            if (!Match(first, type, conf.TypeParams.ToHashSet(), binding)) continue;
             List<DType> args;
             try { args = ConceptArgs(conf.Concept, binding); }
             catch (CompileError) { continue; }
@@ -516,7 +548,7 @@ public sealed partial class Compiler
             binding.Bind(pattern.Name, actual);
             return true;
         }
-        if (!Mentions(pattern, vars)) return ResolveTypeQuiet(pattern, binding) is { } t && t.Equals(actual);
+        if (!Mentions(pattern, vars)) return ResolvedPattern(pattern, binding) is { } t && t.Equals(actual);
 
         List<DType> actualArgs;
         switch (actual)
@@ -541,6 +573,17 @@ public sealed partial class Compiler
         }
         return true;
     }
+
+    /// A pattern that names no type variable is one type: resolved once, from the file of the declaration it is in.
+    private DType? ResolvedPattern(TypeRef pattern, TypeEnv binding)
+    {
+        if (_resolvedPatterns.TryGetValue(pattern, out var known) && known.File == binding.File) return known.Type;
+        var t = ResolveTypeQuiet(pattern, new TypeEnv(binding.File));
+        _resolvedPatterns[pattern] = (binding.File, t);
+        return t;
+    }
+
+    private readonly Dictionary<TypeRef, (string File, DType? Type)> _resolvedPatterns = new(ReferenceEqualityComparer.Instance);
 
     private static bool Mentions(TypeRef t, HashSet<string> vars) =>
         vars.Contains(t.Name) || t.Args.Any(a => a is TypeArgType ta && Mentions(ta.Type, vars));
