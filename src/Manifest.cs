@@ -26,6 +26,8 @@ namespace Lapila;
 /// board = "raspi4b"                   # a target without an operating system: the board it runs on, which gives
 ///                                     # the triple and the memory map the builder writes the link script from
 ///                                     # (Board.cs): a board of Lapila's by name, or "boards/my-board.toml"
+/// use-daemon = true                   # build through the build daemon, which keeps the standard library read
+///                                     # between builds (BuildDaemon.cs): the first build starts it
 ///
 /// [debug]
 /// emit-llvm = true                    # keep the IR next to the output (a library build writes only the IR)
@@ -121,6 +123,10 @@ public sealed record Manifest(
     /// files as LLVM IR. Its routines keep a frame record, so a crash trace read from the stack walks through them.
     public bool IsLibrary { get; init; }
 
+    /// `[target] use-daemon`: build through the build daemon (BuildDaemon), which keeps the standard library read
+    /// between builds. Off unless the manifest turns it on.
+    public bool UseDaemon { get; init; }
+
     /// Where a library build writes its IR: `build/<package name>.ll`.
     public string LibraryPath => System.IO.Path.Combine(OutputDirectory, Executable + ".ll");
 
@@ -144,7 +150,8 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "lapila-version"],
-        ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "board"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "board",
+            "use-daemon"],
         ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "trace-frames", "failure-traces",
             "deadlock-check", "access-order"],
         ["crash"] = ["message-size"],
@@ -263,6 +270,7 @@ public sealed record Manifest(
             Roots = roots,
             RootFiles = rootFiles,
             IsLibrary = entry is null,
+            UseDaemon = Bool(target, "use-daemon", path) ?? false,
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheckSetting = Bool(debug, "race-check", path),

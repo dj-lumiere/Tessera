@@ -231,7 +231,61 @@ public sealed partial class Compiler
         functions = Bf16Blocks.Rewrite(functions);
         o.Append(MovesWaitingFibers ? TraceOutOfLine(functions) : functions);
         o.Append(tail);
-        o.Append(trailer);
+        o.Append(MetadataFor(o.ToString(), trailer));
+        return o.ToString();
+    }
+
+    private static readonly Regex MetaRef = new(@"!(\d+)", RegexOptions.Compiled);
+    private static readonly Regex NumberedMeta = new(@"^!(\d+) = ", RegexOptions.Compiled);
+
+    /// The part of the whole build's metadata one module uses: the nodes its text reaches, and of the traced routines
+    /// (`!lapila.trace`) the ones it defines. The rest describes the other module's routines.
+    private static string MetadataFor(string body, string trailer)
+    {
+        var nodes = new Dictionary<int, string>();
+        var named = new List<string>();
+        foreach (var line in trailer.Split('\n'))
+        {
+            if (NumberedMeta.Match(line) is { Success: true } m) nodes[int.Parse(m.Groups[1].Value)] = line;
+            else if (line.StartsWith('!')) named.Add(line);
+        }
+        var reached = new HashSet<int>();
+        var next = new Stack<int>();
+        void Reach(string text)
+        {
+            foreach (Match r in MetaRef.Matches(text))
+                if (int.TryParse(r.Groups[1].Value, out int id) && nodes.ContainsKey(id) && reached.Add(id)) next.Push(id);
+        }
+        void Walk()
+        {
+            while (next.TryPop(out int id)) Reach(nodes[id][(nodes[id].IndexOf('=') + 1)..]);
+        }
+        Reach(body);
+        Walk();
+        var o = new StringBuilder();
+        foreach (var line in named)
+        {
+            if (line.StartsWith(TraceTable.NamedMetadata + " = ", StringComparison.Ordinal))
+            {
+                // An entry is `!{!subprogram, ...}`: kept when the module defines that routine.
+                var kept = MetaRef.Matches(line).Select(r => int.Parse(r.Groups[1].Value))
+                    .Where(e => nodes.TryGetValue(e, out var entry) && MetaRef.Match(entry[(entry.IndexOf('=') + 1)..]) is { Success: true } sp
+                                && reached.Contains(int.Parse(sp.Groups[1].Value)))
+                    .ToList();
+                o.AppendLine($"{TraceTable.NamedMetadata} = !{{{string.Join(", ", kept.Select(e => "!" + e))}}}");
+                foreach (int e in kept)
+                    if (reached.Add(e)) next.Push(e);
+            }
+            else
+            {
+                o.AppendLine(line);
+                Reach(line);
+            }
+        }
+        Walk();
+        o.AppendLine();
+        foreach (var (id, line) in nodes.OrderBy(kv => kv.Key))
+            if (reached.Contains(id)) o.AppendLine(line);
         return o.ToString();
     }
 

@@ -18,7 +18,7 @@ dotnet run -- version                    # the builder's version; help prints ev
 ```
 
 `build` and `run` take files and nothing else: every setting is in config.toml (`[target] mode = "release"`,
-`triple`, `board`, `cpu`, `features`, `[debug] trace = false`, `race-check`, `heap-check`, `emit-llvm`). A flag
+`triple`, `board`, `cpu`, `features`, `use-daemon`, `[debug] trace = false`, `race-check`, `heap-check`, `emit-llvm`). A flag
 config.toml can say is an error that names the key ("`--mode` isn't an option: write `mode = \"release\"` under
 [target] in config.toml"). The output is named after the entry file (`build/main` for `executable = "main.lpa"`). A
 config.toml with no `executable` builds a library linked into another program: its `sources` files as LLVM IR,

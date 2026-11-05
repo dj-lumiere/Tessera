@@ -5,7 +5,7 @@ using Lapila;
 
 return Cli.Execute(args);
 
-static class Cli
+static partial class Cli
 {
     private const string Usage = """
         usage:
@@ -105,6 +105,7 @@ static class Cli
                 "run" => Run(args[1..]),
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
+                "daemon" => BuildDaemon.Serve(),
                 "lsp" => LanguageServer.Run(StdlibDir),
                 "fmt" => Fmt(args[1..]),
                 "lint" => LintFiles(args[1..]),
@@ -842,12 +843,39 @@ static class Cli
         return m.ExecutablePath;
     }
 
+    /// Builds a manifest's program, through the build daemon when `[target] use-daemon` asks for it and one is running
+    /// (BuildDaemon), else here. Gives the executable, or null with the exit status of a build that failed in the
+    /// daemon, whose messages are printed. A build that fails here throws, as any build does.
+    private static (string? Exe, int Code) BuildThroughDaemon(Manifest manifest, List<string> files)
+    {
+        if (manifest.UseDaemon && !manifest.IsLibrary && BuildDaemon.Build(files) is { } reply)
+        {
+            Console.Out.Write(reply.Stdout);
+            Console.Error.Write(reply.Stderr);
+            return (reply.Exe, reply.Code);
+        }
+        return (BuildManifest(manifest), 0);
+    }
+
+    /// What the daemon builds for a request: the manifest the files name (or the solution's), as `lapila build` reads it.
+    internal static string BuildForDaemon(List<string> files)
+    {
+        var manifest = (files.Count == 0 ? SolutionManifest() : ManifestBeside(files))
+            ?? throw new ToolError(Li.ManifestMissing, "no config.toml for the build daemon to build");
+        return BuildManifest(manifest);
+    }
+
+    /// The standard library parsed ahead of the first build, for the daemon.
+    internal static void ParseStandardLibrary() => LoadDecls([], BuildTarget.Host());
+
     private static int Build(string[] args)
     {
         var files = FilesOnly(args);
         if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } manifest)
         {
-            Console.WriteLine(ShownPath(BuildManifest(manifest)));
+            var (built, code) = BuildThroughDaemon(manifest, files);
+            if (built is null) return code;
+            Console.WriteLine(ShownPath(built));
             return 0;
         }
         // Files with no config.toml beside them: this machine, debug, the settings' defaults.
@@ -874,7 +902,9 @@ static class Cli
                 throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use lapila build");
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
                 throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use lapila build");
-            return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
+            var (built, code) = BuildThroughDaemon(manifest, files);
+            if (built is null) return code;
+            return Exec(built, captureOutput: false, programArgs: programArgs).Code;
         }
         var target = BuildTarget.Host();
         var mode = BuildMode.Debug;
@@ -954,6 +984,8 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
+            // On Linux too when it is installed: it links a debug build's objects several times faster than GNU ld.
+            if (target.Os == "linux" && Toolchain.HasLld) psi.ArgumentList.Add("-fuse-ld=lld");
             // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.lpa) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for

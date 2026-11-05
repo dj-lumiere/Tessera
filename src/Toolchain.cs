@@ -11,6 +11,11 @@ internal static class Toolchain
 
     private static readonly Lazy<string> _clang = new(() => Find("clang", "LAPILA_CLANG"));
 
+    /// Whether LLVM's linker (ld.lld) is installed: a Linux program links with it, faster than the system's ld.
+    public static bool HasLld => _lld.Value;
+
+    private static readonly Lazy<bool> _lld = new(() => Find("ld.lld", "LAPILA_LLD") != "ld.lld");
+
     private static string Find(string tool, string variable)
     {
         if (Environment.GetEnvironmentVariable(variable) is { Length: > 0 } given) return given;
