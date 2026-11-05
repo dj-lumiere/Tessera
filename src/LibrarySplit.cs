@@ -51,7 +51,12 @@ public sealed partial class Compiler
 
     /// The two modules of a split build: the program's, and the base's when this build makes one (with its facts).
     /// `Chosen` is the candidate the program links against, -1 when it links against the new base.
-    public sealed record SplitModules(string Program, string? Base, LibraryBaseFacts? NewBase, int Chosen);
+    public sealed record SplitModules(string Program, string? Base, LibraryBaseFacts? NewBase, int Chosen)
+    {
+        /// The build replayed summaries of a base other than the one it links against (candidate 0, InstanceSummaries.cs):
+        /// it is to be built again without them.
+        public bool ReplayedAnotherBase { get; init; }
+    }
 
     /// Whether every type an instance is built for is the standard library's: a library routine bound to library
     /// types only builds the same lines for every program.
@@ -91,8 +96,11 @@ public sealed partial class Compiler
         // The mold and the carriers count with the named types: the base's code reserves and copies molds of the size
         // its own module gives them, so a base fits only a program whose mold is the same.
         var typeDefs = TypeDefBodies(_typeDefs.ToString() + programFailureTypes);
+        // Whether the trace's calls went out of line (TraceOutOfLine) changes the base's code after its text is hashed.
+        typeDefs[MovesWaitingFibersFact] = MovesWaitingFibers ? "true" : "false";
         int chosen = -1, fewest = int.MaxValue;
-        for (int c = 0; c < BaseCandidates.Count; c++)
+        // A build that replayed summaries links against the base they came from, candidate 0, when it fits.
+        for (int c = 0; c < (ReplayedAny ? Math.Min(1, BaseCandidates.Count) : BaseCandidates.Count); c++)
             if (Added(BaseCandidates[c], library, typeDefs) is var added and >= 0 && added < fewest
                 && added <= MostAddedToBase(BaseCandidates[c].Symbols.Count))
                 (chosen, fewest) = (c, added);
@@ -143,6 +151,9 @@ public sealed partial class Compiler
                 + $"@{Quote(symbol)}({string.Join(", ", AbiParams(inst, withAttrs: true))}){inst.FnAttrs}");
         }
 
+        // A replayed instance's code is the base's: the program's module declares it.
+        foreach (var line in ReplayedDeclarations()) programDeclares.AppendLine(line);
+        if (ReplayedAny && chosen != 0) return new SplitModules("", null, null, chosen) { ReplayedAnotherBase = true };
         string trailer = DebugTrailer();
         string program = Module(programFailureTypes, programGlobals, programDeclares, programFunctions.ToString(),
             ResetThreadLocals() + RaceCheckOptions() + _entry, trailer);
@@ -297,21 +308,34 @@ public sealed partial class Compiler
     /// instance or global both have differs, or a named type does.
     private int Added(LibraryBaseFacts given, HashSet<string> library, Dictionary<string, string> typeDefs)
     {
-        if (!given.TypeDefs.TryGetValue(MoldLlvm, out var mold) || !MoldHolds(mold, typeDefs[MoldLlvm])) return -1;
+        if (!given.TypeDefs.TryGetValue(MoldLlvm, out var mold) || !MoldHolds(mold, typeDefs[MoldLlvm]))
+            return Unfit($"mold {mold} for {typeDefs[MoldLlvm]}");
+        if (!given.TypeDefs.TryGetValue(MovesWaitingFibersFact, out var moves) || moves != typeDefs[MovesWaitingFibersFact])
+            return Unfit("trace calls out of line");
         foreach (var (name, body) in typeDefs)
             if (name != MoldLlvm && given.TypeDefs.TryGetValue(name, out var known) && known != body)
-                return -1;
+                return Unfit($"type {name}");
         foreach (var g in _globalDefs.Where(g => g.IsLibrary))
             if (given.Hashes.TryGetValue(g.Symbol, out var hash) && hash != TextHash(g.Definition()))
-                return -1;
+                return Unfit($"global {g.Symbol}");
         int added = 0;
         foreach (var symbol in library)
         {
             if (!_functionTexts.TryGetValue(symbol, out var text)) continue;
             if (!given.Hashes.TryGetValue(symbol, out var hash)) added++;
-            else if (hash != TextHash(text)) return -1;
+            else if (hash != TextHash(text)) return Unfit($"text {symbol}");
         }
+        if (added > MostAddedToBase(given.Symbols.Count)) WhyUnfit = $"{added} instances added";
         return added;
+    }
+
+    /// Why the last base this build looked at doesn't fit it, for the check of LAPILA_SUMMARY_CHECK.
+    public string? WhyUnfit { get; private set; }
+
+    private int Unfit(string why)
+    {
+        WhyUnfit = why;
+        return -1;
     }
 
     /// Whether a base's mold has room for the program's: the same tag, alignment and storage words, and as many words
@@ -323,6 +347,9 @@ public sealed partial class Compiler
         return b.Groups[1].Value == p.Groups[1].Value && b.Groups[2].Value == p.Groups[2].Value
             && b.Groups[4].Value == p.Groups[4].Value && long.Parse(b.Groups[3].Value) >= long.Parse(p.Groups[3].Value);
     }
+
+    /// The entry of a base's facts that says whether its trace calls went out of line.
+    private const string MovesWaitingFibersFact = "!moves-waiting-fibers";
 
     private static readonly Regex TypeDefLine = new(@"^(%\S+) = type (.*)$", RegexOptions.Multiline);
 

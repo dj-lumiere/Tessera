@@ -275,6 +275,7 @@ public sealed partial class Compiler
         var sig = Signature(r, env);
         // A generic body being checked calls routines without making instances of them: each is checked on its own.
         if (Prechecking) return sig;
+        RecordRequired(r, env);
         // An @external declaration and an @export definition of one C name are one routine; the definition is the
         // instance, whichever was reached first, and the declaration is never emitted (see _exported).
         if (_instances.TryGetValue(sig.Symbol, out var declared) && declared.IsExternalC && r.AnnotationNamed("export") is not null)

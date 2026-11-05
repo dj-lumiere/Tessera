@@ -188,23 +188,40 @@ public sealed partial class Compiler
     /// Builds one instance's lines into its own text (replacing the text of an earlier build of it).
     private void BuildInstance(Instance inst)
     {
+        // An instance with a summary is replayed the first time (InstanceSummaries.cs). Built again later (FinishThrows),
+        // it is built for real.
+        if (Summaries.TryGetValue(inst.Symbol, out var summary) && !_replayed.Contains(inst.Symbol))
+        {
+            _emittingSymbols.Add(inst.Symbol);
+            try { Replay(inst, summary); }
+            finally { _emittingSymbols.Remove(inst.Symbol); }
+            _emittedSymbols.Add(inst.Symbol);
+            if (inst.IsFailable) _failableInstances[inst.Symbol] = inst;
+            return;
+        }
         _emittingSymbols.Add(inst.Symbol);
         _observedThrows.Remove(inst.Symbol);
         _observedReshapes.Remove(inst.Symbol);
         _frameTypes.Remove(inst.Symbol);
         var text = new StringBuilder();
+        int lambdasBefore = _lambdas.Count;
+        BeginRecording(inst);
+        bool built = false;
         try
         {
             new FunctionGen(this, inst, text).Emit();
+            built = true;
         }
         finally
         {
             _emittingSymbols.Remove(inst.Symbol);
+            if (!built) _recordings.Pop();
         }
         _emittedSymbols.Add(inst.Symbol);
         if (inst.IsFailable) _failableInstances[inst.Symbol] = inst;
         if (!_functionTexts.ContainsKey(inst.Symbol)) _functionOrder.Add(inst.Symbol);
         _functionTexts[inst.Symbol] = text.ToString();
+        EndRecording(inst, lambdasBefore);
     }
 
     /// Records a named type the lines of `owner` use for a `check`'s failure, with its body.
@@ -364,6 +381,7 @@ public sealed partial class Compiler
     {
         string name = "%" + Quote($"carrier.of.{check.Key}");
         _callableCarriers.TryAdd(name, check);
+        RecordCarrier(name, check);
         return name;
     }
 
@@ -400,7 +418,9 @@ public sealed partial class Compiler
 
     public void NoteReportingRoutine(Instance inst, Pos at)
     {
-        if (!Prechecking) _reportingRoutines.TryAdd(inst.Symbol, at);
+        if (Prechecking) return;
+        _reportingRoutines.TryAdd(inst.Symbol, at);
+        RecordReporting(inst.Symbol, at);
     }
 
     /// A reporting routine and a crashable's message routine run while the program crashes, possibly because memory ran
@@ -511,6 +531,7 @@ public sealed partial class Compiler
                 : p).ToList(),
         };
         _recovering[r] = made;
+        _recoveringOf[made] = r;
         if (_requirementOf.TryGetValue(r, out var requirement)) _requirementOf[made] = requirement;
         return made;
     }

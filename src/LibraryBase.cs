@@ -25,6 +25,9 @@ public static class LibraryBase
         public Entry? InUse { get; set; }
         public string? NewBaseIr { get; set; }
         public LibraryBaseFacts? NewFacts { get; set; }
+
+        /// The summaries the build recorded, kept with the new base once it is made (InstanceSummaries).
+        internal Dictionary<string, InstanceSummary>? NewSummaries { get; set; }
     }
 
     private static string Root => Path.Combine(Path.GetTempPath(), "lapila-base");

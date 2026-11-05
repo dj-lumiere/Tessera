@@ -145,6 +145,7 @@ internal static class BuildDaemon
         listener.Listen(8);
         try
         {
+            InstanceSummaries.Enabled = true;
             try { Cli.ParseStandardLibrary(); }
             catch (Exception e) when (e is CompileError or Cli.ToolError or IOException) { }
             while (true)

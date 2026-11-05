@@ -96,6 +96,8 @@ static partial class Cli
             return 2;
         }
 
+        // The golden tests' check of the build daemon's summaries runs them in one process.
+        if (Environment.GetEnvironmentVariable("LAPILA_SUMMARIES") == "1") InstanceSummaries.Enabled = true;
         try
         {
             return args[0] switch
@@ -549,33 +551,66 @@ static partial class Cli
             split!.Key = LibraryBase.KeyOf(settings, StdlibDir(), IngridDir());
             split.Candidates = LibraryBase.Load(split.Key);
         }
-        var compiler = new Compiler(target, decls, traced, heapCheck, raceCheck, fromStack)
+        // A build daemon replays the summaries of the instances in the base it used last (InstanceSummaries), unless
+        // the program may change how they are built.
+        // `onlyLast`: the build may link only against the base used last (the check of LAPILA_SUMMARY_CHECK).
+        Compiler Make(bool replay, bool onlyLast = false)
         {
-            SplitsLibrary = splits,
-            BaseCandidates = splits ? split!.Candidates.Select(c => c.Facts).ToList() : [],
-            FileTagPaths = FileTagPaths(inputs, roots),
-            DebugInfo = true,
-            Optimized = mode.IsOptimized(),
-            StdlibParent = Path.GetDirectoryName(StdlibDir()),
-            IngridDir = IngridDir(),
-            LinkArguments = linkArguments ?? [],
-            FramePointers = framePointers,
-            KeepCallablesPlain = !executable,
-        };
-        compiler.SetTraceSizes(traceFrames, failureTraces);
-        compiler.SetCrashMessageSize(crashMessageSize);
-        compiler.SetAccessChecks(deadlockCheck, mode.DeadlockCheckedByDefault(), accessOrder);
-        compiler.Build();
+            var made = new Compiler(target, decls, traced, heapCheck, raceCheck, fromStack)
+            {
+                SplitsLibrary = splits,
+                BaseCandidates = splits ? split!.Candidates.Take(onlyLast ? 1 : int.MaxValue).Select(c => c.Facts).ToList() : [],
+                FileTagPaths = FileTagPaths(inputs, roots),
+                DebugInfo = true,
+                Optimized = mode.IsOptimized(),
+                StdlibParent = Path.GetDirectoryName(StdlibDir()),
+                IngridDir = IngridDir(),
+                LinkArguments = linkArguments ?? [],
+                FramePointers = framePointers,
+                KeepCallablesPlain = !executable,
+            };
+            made.SetTraceSizes(traceFrames, failureTraces);
+            made.SetCrashMessageSize(crashMessageSize);
+            made.SetAccessChecks(deadlockCheck, mode.DeadlockCheckedByDefault(), accessOrder);
+            if (splits && InstanceSummaries.Enabled)
+            {
+                made.RecordsSummaries = true;
+                if (replay && split!.Candidates is [var last, ..] && !made.ProgramChangesLibrary())
+                    made.Summaries = InstanceSummaries.For(last.Object, last.Facts);
+            }
+            return made;
+        }
+
+        var compiler = Make(replay: true);
+        Compiler.SplitModules? modules = null;
+        if (Environment.GetEnvironmentVariable("LAPILA_SUMMARY_CHECK") == "1" && splits)
+            (compiler, modules) = BuildCheckingSummaries(compiler, () => Make(replay: false, onlyLast: true));
+        else
+        {
+            compiler.Build();
+            if (splits) modules = compiler.SplitOutput();
+        }
+        // The summaries were of another base than the one this build links against: build it again without them.
+        if (modules is { ReplayedAnotherBase: true })
+        {
+            compiler = Make(replay: false);
+            compiler.Build();
+            modules = compiler.SplitOutput();
+        }
         string ir;
-        if (splits)
+        if (modules is not null)
         {
-            var modules = compiler.SplitOutput();
             ir = modules.Program;
             split!.Active = true;
             split.InUse = modules.Chosen >= 0 ? split.Candidates[modules.Chosen] : null;
             if (split.InUse is { } used) LibraryBase.Touch(used);
             split.NewBaseIr = modules.Base;
             split.NewFacts = modules.NewBase;
+            if (InstanceSummaries.Enabled)
+            {
+                if (split.InUse is { } kept) InstanceSummaries.Keep(kept.Object, kept.Facts, compiler.Recorded);
+                else split.NewSummaries = compiler.Recorded;
+            }
         }
         else ir = compiler.Output();
         destructs?.Write(compiler.ShownDestructs());
@@ -589,6 +624,82 @@ static partial class Cli
                     "no entry point: an executable needs 'routine start() -> None' (use 'lapila check' to type-check a file without one)");
         return ir;
     }
+
+    /// `LAPILA_SUMMARY_CHECK=1`: a build that replays summaries is built a second time without them, and the two must
+    /// give the same program module (numbered names aside) or the same error. A difference is a fact a summary misses.
+    private static (Compiler, Compiler.SplitModules?) BuildCheckingSummaries(Compiler replaying, Func<Compiler> whole)
+    {
+        (string? Ir, string? Error, Compiler.SplitModules? Modules) Run(Compiler c)
+        {
+            try
+            {
+                c.Build();
+                var m = c.SplitOutput();
+                return (m.Program, null, m);
+            }
+            catch (CompileError e) { return (null, e.Message, null); }
+        }
+        var first = Run(replaying);
+        if (!replaying.ReplayedAny)
+        {
+            if (first.Error is not null) throw new CompileError(Li.FailureSettle, default, first.Error);
+            return (replaying, first.Modules);
+        }
+        var plain = whole();
+        var second = Run(plain);
+        // The function definitions, each one's lines numbered names aside, in one order. What else the module holds (the
+        // types and constants the library's builds left, the declarations) clang checks.
+        string Normal(string? ir)
+        {
+            if (ir is null) return "";
+            var functions = new List<string>();
+            var current = new System.Text.StringBuilder();
+            bool inside = false;
+            foreach (var line in ir.Split('\n'))
+            {
+                if (line.StartsWith("define ", StringComparison.Ordinal)) inside = true;
+                if (inside) current.Append(SummaryCheckNumbered.Replace(line, "#")).Append('\n');
+                if (inside && line.StartsWith('}'))
+                {
+                    functions.Add(current.ToString());
+                    current.Clear();
+                    inside = false;
+                }
+            }
+            return string.Join("", functions.Order(StringComparer.Ordinal));
+        }
+        // A build whose summaries are of another base than the one it would link against is built again without them,
+        // as the caller does: nothing to compare.
+        if (first.Modules is { ReplayedAnotherBase: true })
+        {
+            Interlocked.Increment(ref SummaryChecks.Rebuilt);
+            return (replaying, first.Modules);
+        }
+        Interlocked.Increment(ref SummaryChecks.Compared);
+        bool same = first.Error == second.Error
+            && first.Modules?.Chosen == second.Modules?.Chosen
+            && (first.Modules is null || Normal(first.Ir) == Normal(second.Ir));
+        if (!same)
+        {
+            string at = Path.Combine(Path.GetTempPath(), $"lapila-summary-check-{Guid.NewGuid():N}");
+            File.WriteAllText(at + ".replayed.ll", first.Ir ?? first.Error ?? "");
+            File.WriteAllText(at + ".whole.ll", second.Ir ?? second.Error ?? "");
+            throw new CompileError(Li.FailureSettle, default, $"builder bug: a build that replays instance summaries differs "
+                + $"from one that builds every instance (chosen base {first.Modules?.Chosen} and {second.Modules?.Chosen}, "
+                + $"{plain.WhyUnfit ?? "fits"}): {at}.*.ll");
+        }
+        if (first.Error is not null) throw new CompileError(Li.FailureSettle, default, first.Error);
+        return (replaying, first.Modules);
+    }
+
+    /// What the check of LAPILA_SUMMARY_CHECK did, for `lapila test` to say.
+    private static class SummaryChecks
+    {
+        public static int Compared, Rebuilt;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SummaryCheckNumbered =
+        new(@"!\d+|@\.[A-Za-z_]+\.\d+|%[a-z]+\d+", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// Prints the style warnings (StyleLint) for the program's own files, the inputs, with the expensive-call warnings of
     /// the builds that checked them. The standard library's are its own business.
@@ -952,7 +1063,7 @@ static partial class Cli
         var made = new List<string>();
         Task<LibraryBase.Entry>? making = null;
         if (split is { Active: true, NewBaseIr: { } baseIr, NewFacts: { } facts })
-            making = Task.Run(() => MakeBase(baseIr, facts, split.Key, target, mode, sanitize));
+            making = Task.Run(() => MakeBase(baseIr, facts, split.Key, target, mode, sanitize, split.NewSummaries));
         try
         {
             LibraryBase.Entry? Base() => making?.Result ?? (split is { Active: true } ? split.InUse : null);
@@ -1053,7 +1164,7 @@ static partial class Cli
 
     /// Compiles a library base's module to its object and keeps it (LibraryBase).
     private static LibraryBase.Entry MakeBase(string ir, LibraryBaseFacts facts, string key, BuildTarget target, BuildMode mode,
-        List<string> sanitize)
+        List<string> sanitize, Dictionary<string, InstanceSummary>? summaries)
     {
         string folder = LibraryBase.NewFolder(key);
         string ll = Path.Combine(folder, "base.ll"), obj = Path.Combine(folder, "base.o");
@@ -1071,6 +1182,7 @@ static partial class Cli
             // Without the table the IR goes to clang as it is, instrumented there for the race check.
             else RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-c", "-g", .. sanitize, ll, "-o", obj]);
             LibraryBase.Publish(key, folder, facts, rows);
+            if (summaries is not null) InstanceSummaries.Keep(obj, facts, summaries);
             return new LibraryBase.Entry(obj, facts, rows);
         }
         finally
@@ -1282,6 +1394,8 @@ static partial class Cli
 
         string skips = skipped > 0 ? $", {skipped} skipped" : "";
         Console.WriteLine($"\n{passed} passed, {failures.Count} failed{skips} ({target.LlvmTriple})");
+        if (Environment.GetEnvironmentVariable("LAPILA_SUMMARY_CHECK") == "1")
+            Console.WriteLine($"summary check: {SummaryChecks.Compared} builds compared, {SummaryChecks.Rebuilt} built again for another base");
         return failures.Count == 0 ? 0 : 1;
     }
 

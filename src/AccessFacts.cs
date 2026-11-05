@@ -16,6 +16,27 @@ public sealed class AccessFacts
 
     private readonly Dictionary<string, Facts> _facts = [];
 
+    /// One routine's facts, as a summary keeps them (InstanceSummaries.cs).
+    public sealed record Snapshot(bool Returns, string[] ReturnsFrom, int[] GivesBack, (int Param, string Callee, int Index)[] Passes);
+
+    public Snapshot? SnapshotOf(string routine)
+    {
+        lock (_facts)
+            return _facts.TryGetValue(routine, out var f) ? new Snapshot(f.Returns, [.. f.ReturnsFrom], [.. f.GivesBack], [.. f.Passes]) : null;
+    }
+
+    public void Restore(string routine, Snapshot kept)
+    {
+        lock (_facts)
+        {
+            var f = Of(routine);
+            f.Returns |= kept.Returns;
+            f.ReturnsFrom.UnionWith(kept.ReturnsFrom);
+            f.GivesBack.UnionWith(kept.GivesBack);
+            f.Passes.UnionWith(kept.Passes);
+        }
+    }
+
     private Facts Of(string routine)
     {
         if (!_facts.TryGetValue(routine, out var f)) _facts[routine] = f = new Facts();

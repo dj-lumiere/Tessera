@@ -535,6 +535,11 @@ public sealed partial class Compiler
         var replaced = new Dictionary<RoutineDecl, RoutineDecl>(ReferenceEqualityComparer.Instance);
         foreach (var r in _allRoutines)
             if (WithImplicitOwnerParams(r) is var w && !ReferenceEquals(w, r)) replaced[r] = w;
+        foreach (var (parsed, copy) in replaced)
+        {
+            _ownerParamsCopyOf[parsed] = copy;
+            _ownerParamsParsedOf[copy] = parsed;
+        }
         if (replaced.Count == 0) return;
         RoutineDecl Swap(RoutineDecl r) => replaced.GetValueOrDefault(r, r);
         void SwapAll(List<RoutineDecl> list)
@@ -1091,9 +1096,11 @@ public sealed partial class Compiler
         // A program split around a library base defines it for the base's ThreadLocalManager.reset() to call.
         string linkage = SplitsLibrary ? "hidden" : "internal";
         f.AppendLine($"define {linkage} void @{ResetThreadLocalsSymbol}() nounwind{UnwindTable} {{");
-        for (int i = 0; i < _threadLocals.Count; i++)
+        // By name: the order the globals were first used in changes with the order the routines are built in.
+        var threadLocals = _threadLocals.OrderBy(t => t.Name, StringComparer.Ordinal).ToList();
+        for (int i = 0; i < threadLocals.Count; i++)
         {
-            var (name, llvm, init) = _threadLocals[i];
+            var (name, llvm, init) = threadLocals[i];
             f.AppendLine($"  %a{i} = call ptr @llvm.threadlocal.address.p0(ptr {name})");
             f.AppendLine($"  store {llvm} {init}, ptr %a{i}");
         }
@@ -2502,6 +2509,7 @@ public sealed partial class Compiler
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
         if (Prechecking) return "@precheck";
+        RecordGlobal(c, t, env);
         var external = c.AnnotationNamed("external");
         string? exported = external is null ? c.AnnotationNamed("export")?.First : null;
         string symbol = external is not null ? ExternalSymbol(c) : exported ?? MangleVariable(c, null);

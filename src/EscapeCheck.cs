@@ -174,6 +174,24 @@ public sealed class EscapeCheck
         _effects?.GetValueOrDefault(callee) is { } e
         && e.StoresInto.Keys.Any(k => k.From == from && k.FromLevel <= 0 && k.Into == into);
 
+    /// The facts recorded for an instance, or null: what a summary keeps (InstanceSummaries.cs). They don't change once
+    /// its build is done (a build again starts new ones).
+    public RoutineFacts? FactsOf(string symbol)
+    {
+        lock (_facts) return _facts.GetValueOrDefault(symbol);
+    }
+
+    /// Puts back the facts a summary kept, for the instance of this build.
+    public void Restore(Instance inst, RoutineFacts kept)
+    {
+        var facts = new RoutineFacts(inst, kept.Reports) { LeftChanged = [.. kept.LeftChanged] };
+        facts.Calls.AddRange(kept.Calls);
+        facts.Stores.AddRange(kept.Stores);
+        facts.Returns.AddRange(kept.Returns);
+        facts.Reshapes.UnionWith(kept.Reshapes);
+        lock (_facts) _facts[inst.Symbol] = facts;
+    }
+
     /// Starts the facts of an instance anew: a routine built again (to learn what it throws) records them again.
     public RoutineFacts Begin(Instance inst, bool reports)
     {
