@@ -725,6 +725,8 @@ public sealed partial class FunctionGen
             v = Eval(returned, _inst.Ret);
             if (_cur.Terminated) return;
             EndStatementTemps(v.Type, r.Pos);
+            // An entity going to the caller's place leaves this one's address until it lands there.
+            if (!ReferenceEquals(returned, r.Value)) StampsLeave(v, r.Pos);
             if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
             if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
             RecordReturn(returned, r.Pos);

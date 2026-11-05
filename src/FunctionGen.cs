@@ -3732,6 +3732,8 @@ public sealed partial class FunctionGen
             if (vt.LeafIndex(value.Type) != 0) return new Val("null", vt);
             string place = NewSlot(value.Type);
             Line($"store {value.Type.Llvm} {value.Op}, ptr {place}");
+            // The entities the value holds land in this place and give their stamps its address.
+            StampWalk("move_stamp", value.Type, new Val(place, new PtrType(value.Type)), made ?? default);
             return new Val(place, vt);
         }
         // `@T?` and `Callable?` are the address itself: None is null.
@@ -4384,6 +4386,9 @@ public sealed partial class FunctionGen
             // An Optional's value is the address of the E's place already.
             string place = EmitTmp(vt.IsAddressed ? $"load ptr, ptr {slot}" : $"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
             Define(binding.Name, new Val(place, new PtrType(branch)), binding.Pos);
+            // The value was copied into the when's own slot, so the entities in it give their stamps this address. An
+            // Optional's E is where the call put it already, and that place gave them theirs.
+            if (!vt.IsAddressed) StampWalk("move_stamp", branch, new Val(place, new PtrType(branch)), binding.Pos);
             if (MemOn)
             {
                 _memTracked.Add(binding.Name);
