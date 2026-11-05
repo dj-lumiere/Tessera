@@ -135,7 +135,7 @@ lapila run                                   Build it and run it
 lapila build <file.lpa>...                    Build an executable from these files
 lapila run   <file.lpa>... [-- <argument>...]  Build and run these files
 lapila test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
-lapila check [<target>] [<file.lpa>...]       Type-check every non-generic routine, the stdlib included
+lapila check [<target>] [<file.lpa>...]       Type-check the files and all they reach, or with no file the whole stdlib
 lapila fmt   [--check] <file-or-dir>...      Format .lpa files in place
 lapila lint  <file-or-dir>...                Print the style warnings
 lapila docs  <source-dir> <output-dir>       Write the API reference pages of a library

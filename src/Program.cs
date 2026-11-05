@@ -10,7 +10,7 @@ static class Cli
     private const string Usage = """
         usage:
           lapila new   [<folder>]      start a solution: config.toml, main.lpa, .gitignore, VS Code files
-          lapila check [<target>] [<trace>] [<file.lpa>...]   type-check every non-generic routine, the stdlib included
+          lapila check [<target>] [<trace>] [<file.lpa>...]   type-check the files' routines and all they reach, or with no file every non-generic routine of the stdlib
           lapila build                 build the solution its config.toml describes (here or above)
           lapila build <file.lpa>...    build the files: one file with a config.toml in its own folder takes that
                                         config.toml's settings, others build for this machine in debug
@@ -453,6 +453,10 @@ static class Cli
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
+        // With files, the check covers their presets and routines and every instance those reach. The standard library's
+        // own routines are the same for every program, so only `lapila check` without a file checks all of them.
+        var own = files.Select(f => ShownPath(Path.GetFullPath(f))).ToHashSet();
+        Func<string, bool>? scope = files.Count == 0 ? null : own.Contains;
         // Both sides of the heap-check selection: the @heap_check("on") declarations and the @heap_check("off") ones.
         // An error both sides share is reported once.
         var errors = new List<CompileError>();
@@ -466,7 +470,7 @@ static class Cli
             ownDecls ??= decls;
             // The race check's declarations go with the heap check off, so each side of both is checked once.
             var compiler = new Compiler(target, decls, trace ?? true, heapCheck, raceCheck: !heapCheck && RaceCheckable(target));
-            foreach (var e in compiler.CheckAll())
+            foreach (var e in compiler.CheckAll(scope))
                 if (reported.Add(e.Message)) errors.Add(e);
             instances += compiler.InstanceCount;
             checkedSides.Add((heapCheck ? "heap check on" : "heap check off", compiler));
