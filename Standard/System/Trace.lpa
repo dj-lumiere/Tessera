@@ -535,48 +535,59 @@ secret infallible routine table_target(at: U64) -> U64
         word >= 0x80000000 => at +% word -% 0x100000000
         else => at +% word
 
+### The table after `table`: a program built with a library base has one table for each module, and its own names the
+### base's in its second word.
+### :param table: A table's address.
+### :returns: The next table's address, or 0 when there is none.
+secret infallible routine next_table(table: U64) -> U64
+    return when
+        word_at(table + 4) == 0 => 0
+        else => table_target(table + 4)
+
 ### The frame of the traced routine whose code holds `pc`, for a fault's innermost frame.
 ### :param pc: The address.
 ### :returns: Its frame's index in TRACE_FRAMES, -1 for a routine of the program that isn't traced, and -2 for an
 ###     address outside the program's code.
 infallible routine trace_routine_at(pc: U64) -> S64
-    table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
-    groups: U64 = word_at(table).to[U64]()
-
-    for g in 0 til groups
-        group: U64 = table + 8 + g * 16
-        count: U64 = word_at(group).to[U64]()
-        routines: U64 = table_target(group + 8)
-        # the last routine that starts at or before pc
-        found: U64 = last_at_or_below(base: routines, count: count, stride: 16, value: pc)
-        if found < count
-            entry: U64 = routines + found * 16
-            if pc <= table_target(entry + 4)
-                frame: U32 = inttoptr[U64, Addr](entry + 8).to[@U32]().peek()
-                return when
-                    frame == 0xFFFFFFFF => -1
-                    else => frame.to[S64]()
-    then
-        return -2
+    loop with table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
+        if table == 0
+            break
+        groups: U64 = word_at(table).to[U64]()
+        for g in 0 til groups
+            group: U64 = table + 8 + g * 16
+            count: U64 = word_at(group).to[U64]()
+            routines: U64 = table_target(group + 8)
+            # the last routine that starts at or before pc
+            found: U64 = last_at_or_below(base: routines, count: count, stride: 16, value: pc)
+            if found < count
+                entry: U64 = routines + found * 16
+                if pc <= table_target(entry + 4)
+                    frame: U32 = inttoptr[U64, Addr](entry + 8).to[@U32]().peek()
+                    return when
+                        frame == 0xFFFFFFFF => -1
+                        else => frame.to[S64]()
+        continue with table: next_table(table)
+    return -2
 
 ### The chain of the call whose return address is `ra`.
 ### :param ra: The return address.
 ### :returns: The chain's index in TRACE_CHAINS, or -1 when no traced routine makes that call.
 infallible routine trace_site_at(ra: U64) -> S64
-    table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
-    groups: U64 = word_at(table).to[U64]()
-
-    for g in 0 til groups
-        group: U64 = table + 8 + g * 16
-        count: U64 = word_at(group + 4).to[U64]()
-        sites: U64 = table_target(group + 12)
-        found: U64 = last_at_or_below(base: sites, count: count, stride: 8, value: ra)
-        if found < count
-            entry: U64 = sites + found * 8
-            if table_target(entry) == ra
-                return word_at(entry + 4).to[S64]()
-    then
-        return -1
+    loop with table: U64 = ptrtoint[Addr, U64](TRACE_TABLE.to[Addr]())
+        if table == 0
+            break
+        groups: U64 = word_at(table).to[U64]()
+        for g in 0 til groups
+            group: U64 = table + 8 + g * 16
+            count: U64 = word_at(group + 4).to[U64]()
+            sites: U64 = table_target(group + 12)
+            found: U64 = last_at_or_below(base: sites, count: count, stride: 8, value: ra)
+            if found < count
+                entry: U64 = sites + found * 8
+                if table_target(entry) == ra
+                    return word_at(entry + 4).to[S64]()
+        continue with table: next_table(table)
+    return -1
 
 ### Of `count` entries `stride` bytes apart from `base`, sorted by the address their first word names, the last whose
 ### address is at most `value`.

@@ -301,7 +301,9 @@ public sealed partial class Compiler
             {
                 size = s;
                 align = a;
-                alignType = aligner.Llvm;
+                // A program split around a library base compares its mold with the base's (LibrarySplit.cs): an
+                // integer of the alignment lays it out the same whatever crashable gives that alignment.
+                alignType = SplitsLibrary && align <= 8 ? $"i{align * 8}" : aligner.Llvm;
             }
         }
         bool split = ExposeDefinitions || ProvidedSymbols.Count > 0;
@@ -309,12 +311,16 @@ public sealed partial class Compiler
             throw new CompileError(Li.FailureSize, default, $"a crashable of this program takes {size} bytes, and a split program's mold holds {SplitMoldBytes}: "
                 + "keep a crashable to a few values");
         if (split) size = SplitMoldBytes;
+        if (SplitsLibrary) size = Math.Max(size, LibraryMoldBytes);
         long words = (size + align - 1) / align;
         var o = new StringBuilder();
-        o.AppendLine($"{MoldLlvm} = type {{ {VariantType.Tag.Llvm}, [0 x {alignType}], [{words} x i{align * 8}] }}");
+        string body = _moldBody ?? $"{{ {VariantType.Tag.Llvm}, [0 x {alignType}], [{words} x i{align * 8}] }}";
+        o.AppendLine($"{MoldLlvm} = type {body}");
         string threadLocal = Target.Os == "none" ? "" : "thread_local ";
-        if (ProvidedSymbols.Contains(ThreadMoldSymbol))
+        if (ProvidedSymbols.Contains(ThreadMoldSymbol) || _writingLibraryBase)
             o.AppendLine($"@{ThreadMoldSymbol} = external {threadLocal}global {MoldLlvm}");
+        else if (SplitsLibrary)
+            o.AppendLine($"@{ThreadMoldSymbol} = hidden {threadLocal}global {MoldLlvm} zeroinitializer, align 16");
         else
         {
             if (ExposeDefinitions) NoteExposed(ThreadMoldSymbol);

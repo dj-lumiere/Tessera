@@ -672,6 +672,14 @@ public sealed partial class Compiler
 
     public string Generate()
     {
+        Build();
+        return Output();
+    }
+
+    /// Builds and checks every instance the program reaches, without writing the module: a split build writes its
+    /// modules itself (SplitOutput).
+    public void Build()
+    {
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
         foreach (var d in GenericDecls(d => !d.IsLibrary)) CheckTypeParams(d);
         if (TypesContainingThemselves(null) is [var cycle, ..]) throw cycle;
@@ -697,7 +705,6 @@ public sealed partial class Compiler
         if (VerifyCrashPathsTakeNoMemory() is [var allocating, ..]) throw allocating;
         if (Escapes.Verify() is [var escape, ..]) throw escape;
         if (CheckKeptViews() is [var kept, ..]) throw kept;
-        return Output();
     }
 
     /// The records and variants of the program that hold themselves by value, so they can't be laid out, whether or not
@@ -1025,7 +1032,9 @@ public sealed partial class Compiler
             if (!_exported.Contains(symbol)) declares.AppendLine(line);
         // The carriers' bodies come first: defining them may define the types of the crashables they hold.
         var failureTypes = new StringBuilder(FailureTypeDefs());
-        foreach (var sb in new[] { _typeDefs, failureTypes, _globals, declares })
+        var globals = new StringBuilder().Append(_globals);
+        foreach (var g in _globalDefs) globals.AppendLine(g.Definition());
+        foreach (var sb in new[] { _typeDefs, failureTypes, globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         // A bfloat crosses between blocks as its bits (Bf16Blocks): -O0 would quiet a signaling NaN on the way.
         string functions = Bf16Blocks.Rewrite(FunctionTexts());
@@ -1079,7 +1088,9 @@ public sealed partial class Compiler
     {
         var f = new StringBuilder();
         // Nothing unwinds through it: without nounwind a 32-bit ARM object would ask for an unwinding personality.
-        f.AppendLine($"define internal void @lapila.reset_thread_locals() nounwind{UnwindTable} {{");
+        // A program split around a library base defines it for the base's ThreadLocalManager.reset() to call.
+        string linkage = SplitsLibrary ? "hidden" : "internal";
+        f.AppendLine($"define {linkage} void @{ResetThreadLocalsSymbol}() nounwind{UnwindTable} {{");
         for (int i = 0; i < _threadLocals.Count; i++)
         {
             var (name, llvm, init) = _threadLocals[i];
@@ -2526,7 +2537,7 @@ public sealed partial class Compiler
         if (ExposeDefinitions) NoteExposed(symbol);
         if (exported is not null) name = "@" + Quote(symbol);
         _globalVars[symbol] = name;
-        _globals.AppendLine($"{name} = {linkage}{threadLocal}global {t.Llvm} {init}");
+        _globalDefs.Add(new GlobalDef(symbol, name, linkage, threadLocal, t.Llvm, init, c.IsLibrary));
         if (threadLocal != "") _threadLocals.Add((name, t.Llvm, init));
         return name;
     }

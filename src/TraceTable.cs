@@ -38,6 +38,9 @@ public static class TraceTable
     public const string NamedMetadata = "!lapila.trace";
 
     public const string TableSymbol = "lapila_trace_table";
+
+    /// A library base's table (LibraryBase), which the program's table names as its next.
+    public const string BaseTableSymbol = "lapila_trace_table_base";
     public const string ChainsSymbol = "lapila_trace_chains";
     public const string FramesSymbol = "lapila_trace_frames";
 
@@ -68,12 +71,29 @@ public static class TraceTable
 
     /// What step 1 gives step 2: the chains it made, and the frame of each traced routine by its symbol (for a fault,
     /// whose innermost frame is the routine the faulting instruction is in).
-    public sealed record Annotation(string Ir, int Chains, IReadOnlyDictionary<string, int> RoutineFrames);
+    public sealed record Annotation(string Ir, int Chains, IReadOnlyDictionary<string, int> RoutineFrames)
+    {
+        /// The rows of the chains and frames constants: what a module that links with this one starts its own from.
+        public TraceRows Rows { get; init; } = new([], []);
+    }
+
+    /// One frame use of the frames constant: a routine's name and file, and the line and column of the call (0 for a
+    /// routine's own frame).
+    public sealed record FrameUse(string Name, string File, int Line, int Column);
+
+    /// The chains (first frame use, count) and the frame uses of a module's table.
+    public sealed record TraceRows(IReadOnlyList<(int First, int Count)> Chains, IReadOnlyList<FrameUse> Uses);
 
     /// Step 1: the optimized IR with each traced call's chain in its discriminator, the frame records kept, and the
     /// chains and frames as constants.
-    public static Annotation Annotate(string ir)
+    /// <param name="prior">The rows of a module this one links with (a library base, LibraryBase): this module's
+    /// chains and frames come after them, and the constants hold both, so one chain number is one chain in either
+    /// module's table.</param>
+    /// <param name="defineConstants">False for a module whose constants another module defines: the base's are the
+    /// program's.</param>
+    public static Annotation Annotate(string ir, TraceRows? prior = null, bool defineConstants = true)
     {
+        int chainBase = prior?.Chains.Count ?? 0;
         var lines = ir.Split('\n');
         var nodes = new Dictionary<int, Node>();
         int maxId = -1;
@@ -169,7 +189,7 @@ public static class TraceTable
             string key = string.Join(";", frames.Select(f => $"{f.Frame},{f.Line},{f.Col}"));
             if (chainIds.TryGetValue(key, out int id)) return id;
             chains.Add(frames);
-            return chainIds[key] = chains.Count - 1;
+            return chainIds[key] = chainBase + chains.Count - 1;
         }
 
         int Relocate(int loc, int chain)
@@ -226,7 +246,8 @@ public static class TraceTable
                 }
             }
             // The table's symbols, declared by the code that reads them, are defined below and in the assembly.
-            if (l.StartsWith($"@{ChainsSymbol} = ", StringComparison.Ordinal) || l.StartsWith($"@{FramesSymbol} = ", StringComparison.Ordinal))
+            if (defineConstants
+                && (l.StartsWith($"@{ChainsSymbol} = ", StringComparison.Ordinal) || l.StartsWith($"@{FramesSymbol} = ", StringComparison.Ordinal)))
                 continue;
             output.Append(l).Append('\n');
         }
@@ -266,42 +287,43 @@ public static class TraceTable
         if (usedExtra) sb.Append($"\nattributes #{extraGroup} = {{ \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }}\n");
 
         // The constants: each frame's name and file, the frames, and the chains as (first frame, count) into a list of
-        // frame uses.
-        var strings = new Dictionary<string, string>(StringComparer.Ordinal);
-        string Str(string s)
-        {
-            if (strings.TryGetValue(s, out var name)) return name;
-            name = $"@lapila_trace_s.{strings.Count}";
-            byte[] bytes = Encoding.UTF8.GetBytes(s);
-            sb.Append(CultureInfo.InvariantCulture, $"{name} = private unnamed_addr constant [{bytes.Length + 1} x i8] c\"{IrBytes(bytes)}\\00\"\n");
-            return strings[s] = name;
-        }
-        sb.Append('\n');
-        var uses = new List<string>();
-        var chainRows = new List<string>();
+        // frame uses. A prior module's rows come first.
+        var useRows = new List<FrameUse>(prior?.Uses ?? []);
+        var chainRows = new List<(int First, int Count)>(prior?.Chains ?? []);
         foreach (var chain in chains)
         {
-            chainRows.Add($"{{ i32, i32 }} {{ i32 {uses.Count}, i32 {chain.Count} }}");
+            chainRows.Add((useRows.Count, chain.Count));
             foreach (var (frame, line, col) in chain)
-            {
-                var info = frameList[frame];
-                uses.Add($"{{ ptr, ptr, i32, i32 }} {{ ptr {Str(info.Name)}, ptr {Str(info.File)}, i32 {line}, i32 {col} }}");
-            }
+                useRows.Add(new FrameUse(frameList[frame].Name, frameList[frame].File, line, col));
         }
         // The routine frames for a fault come after the chains' uses: name and file, line 0.
         var routineUse = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var (symbol, frame) in routineFrames)
         {
-            var info = frameList[frame];
-            routineUse[symbol] = uses.Count;
-            uses.Add($"{{ ptr, ptr, i32, i32 }} {{ ptr {Str(info.Name)}, ptr {Str(info.File)}, i32 0, i32 0 }}");
+            routineUse[symbol] = useRows.Count;
+            useRows.Add(new FrameUse(frameList[frame].Name, frameList[frame].File, 0, 0));
         }
-        sb.Append(CultureInfo.InvariantCulture,
-            $"@{ChainsSymbol} = hidden constant [{chainRows.Count} x {{ i32, i32 }}] {(chainRows.Count == 0 ? "zeroinitializer" : "[" + string.Join(", ", chainRows) + "]")}\n");
-        sb.Append(CultureInfo.InvariantCulture,
-            $"@{FramesSymbol} = hidden constant [{uses.Count} x {{ ptr, ptr, i32, i32 }}] {(uses.Count == 0 ? "zeroinitializer" : "[" + string.Join(", ", uses) + "]")}\n");
+        sb.Append('\n');
+        if (defineConstants)
+        {
+            var strings = new Dictionary<string, string>(StringComparer.Ordinal);
+            string Str(string s)
+            {
+                if (strings.TryGetValue(s, out var name)) return name;
+                name = $"@lapila_trace_s.{strings.Count}";
+                byte[] bytes = Encoding.UTF8.GetBytes(s);
+                sb.Append(CultureInfo.InvariantCulture, $"{name} = private unnamed_addr constant [{bytes.Length + 1} x i8] c\"{IrBytes(bytes)}\\00\"\n");
+                return strings[s] = name;
+            }
+            var uses = useRows.Select(u => $"{{ ptr, ptr, i32, i32 }} {{ ptr {Str(u.Name)}, ptr {Str(u.File)}, i32 {u.Line}, i32 {u.Column} }}").ToList();
+            var rows = chainRows.Select(c => $"{{ i32, i32 }} {{ i32 {c.First}, i32 {c.Count} }}").ToList();
+            sb.Append(CultureInfo.InvariantCulture,
+                $"@{ChainsSymbol} = hidden constant [{rows.Count} x {{ i32, i32 }}] {(rows.Count == 0 ? "zeroinitializer" : "[" + string.Join(", ", rows) + "]")}\n");
+            sb.Append(CultureInfo.InvariantCulture,
+                $"@{FramesSymbol} = hidden constant [{uses.Count} x {{ ptr, ptr, i32, i32 }}] {(uses.Count == 0 ? "zeroinitializer" : "[" + string.Join(", ", uses) + "]")}\n");
+        }
         sb.Append(added);
-        return new Annotation(sb.ToString(), chains.Count, routineUse);
+        return new Annotation(sb.ToString(), chainRows.Count, routineUse) { Rows = new TraceRows(chainRows, useRows) };
     }
 
     private static bool IsIntrinsicCall(string line)
@@ -396,7 +418,10 @@ public static class TraceTable
 
     /// Step 2: the assembly with a label after each traced call and the table at its end. `arch` is the target's
     /// (x86_64), the assembly ELF's.
-    public static string Patch(string asm, string arch, Annotation annotation)
+    /// <param name="tableSymbol">The table's symbol: a library base's is BaseTableSymbol.</param>
+    /// <param name="nextTable">The table of a module this one links with, which a walk reads after this one, or null.</param>
+    public static string Patch(string asm, string arch, Annotation annotation, string tableSymbol = TableSymbol,
+        string? nextTable = null)
     {
         var callMnemonics = arch switch
         {
@@ -490,9 +515,10 @@ public static class TraceTable
         var groups = sectionOrder.Where(s => routines[s].Count > 0 || sites[s].Count > 0).ToList();
         output.Append("\t.section\t.rodata.lapila_trace,\"a\",@progbits\n");
         output.Append("\t.p2align\t3\n");
-        output.Append($"\t.globl\t{TableSymbol}\n\t.hidden\t{TableSymbol}\n\t.type\t{TableSymbol},@object\n");
-        output.Append($"{TableSymbol}:\n");
-        output.Append(CultureInfo.InvariantCulture, $"\t.long\t{groups.Count}\n\t.long\t0\n");
+        output.Append($"\t.globl\t{tableSymbol}\n\t.hidden\t{tableSymbol}\n\t.type\t{tableSymbol},@object\n");
+        output.Append($"{tableSymbol}:\n");
+        // The second word names the next table (an offset from itself), or is 0 when there is none.
+        output.Append(CultureInfo.InvariantCulture, $"\t.long\t{groups.Count}\n\t.long\t{(nextTable is null ? "0" : nextTable + "-.")}\n");
         for (int g = 0; g < groups.Count; g++)
         {
             string s = groups[g];
@@ -509,7 +535,7 @@ public static class TraceTable
             foreach (var (label, chain) in sites[s])
                 output.Append(CultureInfo.InvariantCulture, $"\t.long\t{label}-.\n\t.long\t{chain}\n");
         }
-        output.Append($"\t.size\t{TableSymbol}, .-{TableSymbol}\n");
+        output.Append($"\t.size\t{tableSymbol}, .-{tableSymbol}\n");
         return output.ToString();
     }
 }

@@ -526,7 +526,8 @@ static class Cli
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
         bool? deadlockCheck = null, bool? accessOrder = null, int? crashMessageSize = null,
-        TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false)
+        TextWriter? destructs = null, IReadOnlyList<string>? linkArguments = null, bool framePointers = false,
+        LibraryBase.Split? split = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -535,8 +536,22 @@ static class Cli
         // steps): IR handed out on its own keeps the shadow stack, which needs nothing more.
         bool fromStack = executable && TraceTable.Supports(target.Arch, target.Os)
             && Environment.GetEnvironmentVariable("LAPILA_TRACE_SHADOW") != "1";
+        // A debug executable links against a library base kept between builds (LibraryBase): only the program's own
+        // instances, and the library instances the base lacks, go to LLVM.
+        bool splits = split is not null && executable && mode == BuildMode.Debug && target.HasOs
+            && Environment.GetEnvironmentVariable("LAPILA_NO_BASE") != "1";
+        if (splits)
+        {
+            string settings = string.Join("|", target.LlvmTriple, target.Cpu, string.Join(",", target.Features), mode, traced,
+                heapCheck, raceCheck, fromStack, traceFrames, failureTraces, deadlockCheck, accessOrder, crashMessageSize,
+                framePointers);
+            split!.Key = LibraryBase.KeyOf(settings, StdlibDir(), IngridDir());
+            split.Candidates = LibraryBase.Load(split.Key);
+        }
         var compiler = new Compiler(target, decls, traced, heapCheck, raceCheck, fromStack)
         {
+            SplitsLibrary = splits,
+            BaseCandidates = splits ? split!.Candidates.Select(c => c.Facts).ToList() : [],
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
             Optimized = mode.IsOptimized(),
@@ -549,7 +564,19 @@ static class Cli
         compiler.SetTraceSizes(traceFrames, failureTraces);
         compiler.SetCrashMessageSize(crashMessageSize);
         compiler.SetAccessChecks(deadlockCheck, mode.DeadlockCheckedByDefault(), accessOrder);
-        string ir = compiler.Generate();
+        compiler.Build();
+        string ir;
+        if (splits)
+        {
+            var modules = compiler.SplitOutput();
+            ir = modules.Program;
+            split!.Active = true;
+            split.InUse = modules.Chosen >= 0 ? split.Candidates[modules.Chosen] : null;
+            if (split.InUse is { } used) LibraryBase.Touch(used);
+            split.NewBaseIr = modules.Base;
+            split.NewFacts = modules.NewBase;
+        }
+        else ir = compiler.Output();
         destructs?.Write(compiler.ShownDestructs());
         if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
@@ -803,14 +830,15 @@ static class Cli
             File.WriteAllText(m.LibraryPath, library);
             return m.LibraryPath;
         }
+        var split = new LibraryBase.Split();
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
             deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
-            crashMessageSize: m.CrashMessageSize, linkArguments: LibraryArguments(m));
+            crashMessageSize: m.CrashMessageSize, linkArguments: LibraryArguments(m), split: split);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         m.WriteLinkScript();
-        Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
+        Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)), split);
         return m.ExecutablePath;
     }
 
@@ -827,7 +855,8 @@ static class Cli
         var mode = BuildMode.Debug;
         bool race = mode.RaceCheckedByDefault(target);
         string exe = Path.ChangeExtension(files[0], null) + (OperatingSystem.IsWindows() ? ".exe" : "");
-        Link(Compile(files, target, mode: mode, raceCheck: race), exe, target, mode, RaceLink(race));
+        var split = new LibraryBase.Split();
+        Link(Compile(files, target, mode: mode, raceCheck: race, split: split), exe, target, mode, RaceLink(race), split);
         return 0;
     }
 
@@ -853,7 +882,8 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(files, target, mode: mode, raceCheck: race), exe, target, mode, RaceLink(race));
+            var library = new LibraryBase.Split();
+            Link(Compile(files, target, mode: mode, raceCheck: race, split: library), exe, target, mode, RaceLink(race), library);
             var (code, _, _) = Exec(exe, captureOutput: false, programArgs: programArgs);
             return code;
         }
@@ -881,46 +911,41 @@ static class Cli
     /// What clang links the race check's runtime with, or nothing.
     private static string[] RaceLink(bool race) => race ? ["-fsanitize=thread"] : [];
 
-    /// Hands the IR to clang, which runs the LLVM backend and the platform linker.
-    private static void Link(string ir, string exe, BuildTarget target, BuildMode mode, IEnumerable<string>? extra = null)
+    /// Hands the IR to clang, which runs the LLVM backend and the platform linker. A split build (LibraryBase) links the
+    /// base's object too, and makes it first when the build made a new base's module.
+    private static void Link(string ir, string exe, BuildTarget target, BuildMode mode, IEnumerable<string>? extra = null,
+        LibraryBase.Split? split = null)
     {
-        string ll = Path.ChangeExtension(TempExe(), ".ll");
-        string? asm = null;
-        File.WriteAllText(ll, ir);
+        var extras = (extra ?? []).ToList();
+        // The race check instruments the code while it is optimized.
+        var sanitize = extras.Where(a => a.StartsWith("-fsanitize=", StringComparison.Ordinal)).ToList();
+        var made = new List<string>();
+        Task<LibraryBase.Entry>? making = null;
+        if (split is { Active: true, NewBaseIr: { } baseIr, NewFacts: { } facts })
+            making = Task.Run(() => MakeBase(baseIr, facts, split.Key, target, mode, sanitize));
         try
         {
-            // A build that reads its crash trace from the stack: optimize, give each traced call its chain, write the
-            // assembly, mark the calls' return addresses, then assemble and link that (TraceTable).
+            LibraryBase.Entry? Base() => making?.Result ?? (split is { Active: true } ? split.InUse : null);
+            string ll = Path.ChangeExtension(TempExe(), ".ll");
+            made.Add(ll);
+            File.WriteAllText(ll, ir);
+            string input = ll;
             if (TraceTable.Wanted(ir))
-            {
-                string optimized = Path.ChangeExtension(ll, ".opt.ll");
-                try
-                {
-                    // The race check instruments the code while it is optimized.
-                    var sanitize = (extra ?? []).Where(a => a.StartsWith("-fsanitize=", StringComparison.Ordinal));
-                    RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-emit-llvm", .. sanitize, ll, "-o", optimized]);
-                    var annotation = TraceTable.Annotate(File.ReadAllText(optimized));
-                    File.WriteAllText(optimized, annotation.Ir);
-                    asm = Path.ChangeExtension(ll, ".s");
-                    RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-Xclang", "-disable-llvm-passes", "-g", optimized, "-o", asm]);
-                    File.WriteAllText(asm, TraceTable.Patch(File.ReadAllText(asm), target.Arch, annotation));
-                    if (Environment.GetEnvironmentVariable("LAPILA_TRACE_KEEP") is { Length: > 0 } keep)
-                    {
-                        File.Copy(optimized, keep + ".opt.ll", true);
-                        File.Copy(ll, keep + ".ll", true);
-                        File.Copy(asm, keep + ".s", true);
-                    }
-                }
-                finally { TryDelete(optimized); }
-            }
+                (input, _) = WithTraceTable(ll, target, mode, sanitize, made, prior: () => Base()?.Rows, defineConstants: true,
+                    TraceTable.TableSymbol, nextTable: () => Base()?.Rows is null ? null : TraceTable.BaseTableSymbol);
+            var inputs = new List<string> { input };
+            if (Base() is { } linked) inputs.Add(linked.Object);
             var psi = new ProcessStartInfo(Toolchain.Clang)
             {
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, asm ?? ll, "-o", exe })
+            foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple })
                 psi.ArgumentList.Add(a);
+            foreach (var a in inputs) psi.ArgumentList.Add(a);
+            psi.ArgumentList.Add("-o");
+            psi.ArgumentList.Add(exe);
             // The routines carry the CPU and features in their attributes, module-level assembly takes them from here.
             if (target.Cpu is not null || target.Features.Count > 0)
                 foreach (var a in CpuModel.ClangCpuArguments(target, target.Features)) psi.ArgumentList.Add(a);
@@ -938,7 +963,7 @@ static class Cli
             if (target.Os == "linux") psi.ArgumentList.Add("-lm");
             // The linker keeps the debug information (on Windows, lld-link writes it to a .pdb next to the exe).
             psi.ArgumentList.Add("-g");
-            foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
+            foreach (var a in extras) psi.ArgumentList.Add(a);
 
             Process p;
             try { p = Process.Start(psi)!; }
@@ -957,10 +982,68 @@ static class Cli
                       $"operands:\n{err}"
                     : $"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
         }
+        catch (AggregateException e) when (e.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(e.InnerException).Throw();
+            throw;
+        }
         finally
         {
-            TryDelete(ll);
-            if (asm is not null) TryDelete(asm);
+            foreach (var f in made) TryDelete(f);
+        }
+    }
+
+    /// A module of a build that reads its crash trace from the stack: optimize, give each traced call its chain, write
+    /// the assembly, mark the calls' return addresses (TraceTable). Gives the assembly, which the files made lists, and the
+    /// rows of the module's table.
+    /// <param name="prior">The rows of the base the module links with, asked for once the module is optimized.</param>
+    private static (string Asm, TraceTable.TraceRows Rows) WithTraceTable(string ll, BuildTarget target, BuildMode mode, List<string> sanitize, List<string> made,
+        Func<TraceTable.TraceRows?> prior, bool defineConstants, string tableSymbol, Func<string?> nextTable)
+    {
+        string optimized = Path.ChangeExtension(ll, ".opt.ll");
+        string asm = Path.ChangeExtension(ll, ".s");
+        made.Add(optimized);
+        made.Add(asm);
+        RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-emit-llvm", .. sanitize, ll, "-o", optimized]);
+        var annotation = TraceTable.Annotate(File.ReadAllText(optimized), prior(), defineConstants);
+        File.WriteAllText(optimized, annotation.Ir);
+        RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-S", "-Xclang", "-disable-llvm-passes", "-g", optimized, "-o", asm]);
+        File.WriteAllText(asm, TraceTable.Patch(File.ReadAllText(asm), target.Arch, annotation, tableSymbol, nextTable()));
+        if (Environment.GetEnvironmentVariable("LAPILA_TRACE_KEEP") is { Length: > 0 } keep)
+        {
+            string name = defineConstants ? keep : keep + ".base";
+            File.Copy(optimized, name + ".opt.ll", true);
+            File.Copy(ll, name + ".ll", true);
+            File.Copy(asm, name + ".s", true);
+        }
+        return (asm, annotation.Rows);
+    }
+
+    /// Compiles a library base's module to its object and keeps it (LibraryBase).
+    private static LibraryBase.Entry MakeBase(string ir, LibraryBaseFacts facts, string key, BuildTarget target, BuildMode mode,
+        List<string> sanitize)
+    {
+        string folder = LibraryBase.NewFolder(key);
+        string ll = Path.Combine(folder, "base.ll"), obj = Path.Combine(folder, "base.o");
+        var made = new List<string> { ll };
+        try
+        {
+            File.WriteAllText(ll, ir);
+            TraceTable.TraceRows? rows = null;
+            if (TraceTable.Wanted(ir))
+            {
+                (string asm, rows) = WithTraceTable(ll, target, mode, sanitize, made, prior: () => null, defineConstants: false,
+                    TraceTable.BaseTableSymbol, nextTable: () => null);
+                RunClang(target, ["-c", "-g", asm, "-o", obj]);
+            }
+            // Without the table the IR goes to clang as it is, instrumented there for the race check.
+            else RunClang(target, ["-Wno-override-module", mode.OptLevel(), "-c", "-g", .. sanitize, ll, "-o", obj]);
+            LibraryBase.Publish(key, folder, facts, rows);
+            return new LibraryBase.Entry(obj, facts, rows);
+        }
+        finally
+        {
+            foreach (var f in made) TryDelete(f);
         }
     }
 
@@ -1256,6 +1339,7 @@ static class Cli
         Manifest? manifest = null;
         string ir;
         bool race;
+        var library = new LibraryBase.Split();
         // `<name>.destructs`: the destruct routines the builder writes for the test's types, as --show-destructs
         // prints them.
         var destructs = File.Exists(stem + ".destructs") ? new StringWriter() : null;
@@ -1277,7 +1361,7 @@ static class Cli
                 failureTraces: manifest?.FailureTraces, 
                 deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder,
                 crashMessageSize: manifest?.CrashMessageSize, destructs: destructs,
-                linkArguments: manifest is null ? null : LibraryArguments(manifest));
+                linkArguments: manifest is null ? null : LibraryArguments(manifest), split: library);
         }
         catch (ManifestError e)
         {
@@ -1323,7 +1407,7 @@ static class Cli
                     linkArgs = manifest.LibraryPaths.Select(p => "-L" + p).Concat(manifest.CLibraries.Select(l => "-l" + l))
                         .Concat(Manifest.BoardLinkArguments(script));
                 }
-                Link(ir, exe, target, manifest?.Mode ?? _testMode, linkArgs.Concat(RaceLink(race)));
+                Link(ir, exe, target, manifest?.Mode ?? _testMode, linkArgs.Concat(RaceLink(race)), library);
             }
             catch (ToolError e) { return e.Message; }
 
