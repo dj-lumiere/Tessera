@@ -159,7 +159,19 @@ public sealed class FloatType : DType
 
     /// An LLVM constant for `value` rounded to this type. float and double constants are written as the hex bits
     /// of the equivalent double; half is `0xH` and bfloat `0xR` followed by their own 16 bits.
-    public string Constant(double value) => this == B16 ? $"0xH{BitConverter.HalfToUInt16Bits((Half)value):X4}"
+    public string Constant(double value, string? text = null) =>
+        ExactBits(text) is { } exact ? FromBits(exact) : RoundedConstant(value);
+
+    /// The bits of a decimal float literal `text` as this type, rounded once from the exact decimal value (a `double`
+    /// in between rounds twice), or null when the text is a hex float, a word, or this type is B64 or wider.
+    public BigInteger? ExactBits(string? text)
+    {
+        if (text is null || this != B16 && this != BF16 && this != B32 || HexFloat.IsHex(text)) return null;
+        var (mantBits, expBits) = this == B16 ? (10, 5) : this == BF16 ? (7, 8) : (23, 8);
+        return DecimalFloat.Encode(text, mantBits, expBits);
+    }
+
+    private string RoundedConstant(double value) => this == B16 ? $"0xH{BitConverter.HalfToUInt16Bits((Half)value):X4}"
         : this == BF16 ? $"0xR{ToBFloat16Bits((float)value):X4}"
         : Hex(this == B32 ? (float)value : value);
 

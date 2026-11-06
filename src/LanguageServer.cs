@@ -534,7 +534,8 @@ public static partial class LanguageServer
                 return JsonNode.Parse(body);
             }
             if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                length = int.Parse(line["Content-Length:".Length..].Trim());
+                // A length that is not a number counts as absent, so a bad header never stops the server.
+                length = int.TryParse(line["Content-Length:".Length..].Trim(), out int parsed) && parsed >= 0 ? parsed : -1;
         }
         return null;
     }

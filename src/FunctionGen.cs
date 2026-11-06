@@ -3211,7 +3211,7 @@ public sealed partial class FunctionGen
     {
         if (!HexFloat.IsHex(f.Text))
         {
-            if (expected is FloatType decimalTarget) return new Val(decimalTarget.Constant(f.Value), decimalTarget);
+            if (expected is FloatType decimalTarget) return new Val(decimalTarget.Constant(f.Value, f.Text), decimalTarget);
             if (f.IsWord && HexFloat.IsB128(expected)) return new Val(Compiler.ConstLlvm(new ConstVal(expected, f.WordB128Bits)), expected);
             if (f.IsWord) throw Mismatch(f.Pos, expected, $"{f.Text}, a float literal");
             if (HexFloat.IsB128(expected))

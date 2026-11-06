@@ -250,7 +250,7 @@ public sealed partial class Compiler
             case FloatLit f when HexFloat.IsHex(f.Text) && hint is not null:
                 return HexFloatConst(f, hint, f.Pos);
             case FloatLit f:
-                if (hint is FloatType ft) return new ConstVal(ft, FloatBits(ft, f.Value));
+                if (hint is FloatType ft) return new ConstVal(ft, ft.ExactBits(f.Text) ?? FloatBits(ft, f.Value));
                 if (f.IsWord && HexFloat.IsB128(hint)) return new ConstVal(hint, f.WordB128Bits);
                 throw new CompileError(Li.LiteralNeedsType, f.Pos, hint is null
                     ? "nothing says this float literal's type; name it: B64.add(1.5, 2.0)"

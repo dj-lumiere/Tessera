@@ -3,7 +3,7 @@ namespace Lapila;
 /// Where the LLVM tools the builder runs are. An editor starts the builder with the environment it was started with,
 /// which often lacks the shell's PATH (an IDE backend started by a service): so a tool not on PATH is looked for where
 /// LLVM installs itself.
-internal static class Toolchain
+public static class Toolchain
 {
     /// The clang to run: `LAPILA_CLANG` when set, else `clang` on PATH, else the newest one LLVM installed where its
     /// packages put it. "clang" when none is found, so the error names the tool.
@@ -15,6 +15,14 @@ internal static class Toolchain
     public static bool HasLld => _lld.Value;
 
     private static readonly Lazy<bool> _lld = new(() => Find("ld.lld", "LAPILA_LLD") != "ld.lld");
+
+    /// The newest copy of `tool` where LLVM's packages install it (not looking at PATH), or null. The Revare and Mielia
+    /// builders use it when their own tool is on neither their release package nor PATH.
+    public static string? FindInstalled(string tool)
+    {
+        string exe = OperatingSystem.IsWindows() ? tool + ".exe" : tool;
+        return Installed(exe).FirstOrDefault(File.Exists);
+    }
 
     private static string Find(string tool, string variable)
     {
