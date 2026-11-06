@@ -1,0 +1,47 @@
+# EntityPool.remove takes effect at once: the stamp's fetch fails (received with try), the entity is not destructed and
+# an @T fetched before still reads it, until sweep destructs it, once.
+
+import Hosted
+
+global ENDED: &U64
+
+### A node that counts its end.
+entity Node
+    value: S64
+
+### Makes a node.
+### :param value: Its value.
+### :returns: The node.
+common routine Node.construct(value: S64) -> Me
+    return Me(value)
+
+### Counts one end.
+routine @Node.destruct() -> None
+    Console.show("end {me.value.peek()}")
+    (ENDED.load() + 1).poke_into(ENDED)
+    return
+
+### What a stamp fetches now: the value, or -1 when it fails.
+### :param s: The stamp.
+### :returns: The value or -1.
+routine value_of(s: PoolStamp[Node]) -> S64
+    when try s.fetch()
+        is @Node as n => return n.value.peek()
+        is None => return -1
+
+### Shows the remove, the view that stays valid and the sweep.
+routine start() -> None
+    EntityPool.set_up(memory: HEAP)
+    a: PoolStamp[Node] = EntityPool.add(Node.construct(value: 1))
+    b: PoolStamp[Node] = EntityPool.add(Node.construct(value: 2))
+    view: @Node = a.fetch()
+    EntityPool.remove(a)
+    Console.show("after remove: a {value_of(a)}, b {value_of(b)}, ended {ENDED.load()}")
+    Console.show("view before the remove still reads {view.value.peek()}")
+    EntityPool.sweep()
+    Console.show("after sweep: ended {ENDED.load()}")
+    EntityPool.sweep()
+    Console.show("second sweep: ended {ENDED.load()}")
+    EntityPool.tear_down()
+    Console.show("after tear_down: ended {ENDED.load()}")
+    return

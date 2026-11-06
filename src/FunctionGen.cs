@@ -5021,7 +5021,7 @@ public sealed partial class FunctionGen
 
                 // `===` / `!==` ask whether two names reach the same memory, which an address or a span has, or the same
                 // entity, which a stamp names: values compare with `==` / `!=`.
-                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" or "Stamped" })
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" or "Stamped" or "PoolStamp" })
                     throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 

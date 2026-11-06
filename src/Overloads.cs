@@ -218,7 +218,7 @@ public sealed partial class Compiler
     /// The types `===` and `!==` work on: what `same` and `notsame` mean. Only memory has an identity, a place that two
     /// names can reach, so the standard library's addresses and spans declare them, and so does `Stamped`, which names
     /// an entity (the same slot and generation is the same entity). Nothing else does.
-    private static readonly HashSet<string> IdentityOwners = ["PointedCell", "Addr", "PointedSlice", "Stamped"];
+    private static readonly HashSet<string> IdentityOwners = ["PointedCell", "Addr", "PointedSlice", "Stamped", "PoolStamp"];
 
     /// `a === b` is `a.same(b)`: whether two names reach the same memory. A routine `same` or `notsame` on any other
     /// type would give `===` another meaning, so it is a build error that points at `==` (`eq`).
