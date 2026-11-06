@@ -7065,8 +7065,10 @@ public sealed partial class FunctionGen
     /// ELF deduplicate through a comdat. Mach-O has none and relies on the weak definition. A stdlib routine with an
     /// @export is weak instead, so the program's own export of that name wins at link time too.
     /// The base of a split program (Compiler.ExposeDefinitions) defines each routine once for the delta to link to: a
-    /// plain external definition, an export still weak. An `@inline` routine stays in its own module (the delta
-    /// defines its own copy), so one that would be external is internal there.
+    /// plain external definition, an export still weak but without a comdat: on COFF a comdat definition and the
+    /// program's own plain one of the same name are a duplicate. An `@inline` routine stays in its own module (the delta
+    /// defines its own copy), so it is internal there: as one comdat in both, the linker would keep the program's copy
+    /// and drop the base's, which the base's trace table still names.
     private (string Linkage, string Comdat) Linkage()
     {
         if (_c.Prechecking) return ("", "");
@@ -7076,12 +7078,13 @@ public sealed partial class FunctionGen
         {
             if (_decl.AnnotationNamed("inline") is not null)
             {
-                if (!shared && !exported) return ("internal ", "");
+                if (!exported) return ("internal ", "");
             }
             else
             {
                 _c.NoteExposed(_inst.Symbol);
                 if (!exported || !_decl.IsLibrary) return ("", "");
+                return ("weak ", "");
             }
         }
         if (!shared || (exported && !_decl.IsLibrary)) return ("", "");

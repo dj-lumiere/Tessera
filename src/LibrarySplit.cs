@@ -325,6 +325,12 @@ public sealed partial class Compiler
             if (!given.Hashes.TryGetValue(symbol, out var hash)) added++;
             else if (hash != TextHash(text)) return Unfit($"text {symbol}");
         }
+        // A routine the program's module defines (one not pure here, such as an instance whose failures include the
+        // program's) under a name the base defines too: the linker keeps one copy for both modules' calls, and the
+        // base's trace table names the copy it drops.
+        foreach (var symbol in _functionTexts.Keys)
+            if (!library.Contains(symbol) && given.Hashes.ContainsKey(symbol))
+                return Unfit($"own {symbol}");
         if (added > MostAddedToBase(given.Symbols.Count)) WhyUnfit = $"{added} instances added";
         return added;
     }
