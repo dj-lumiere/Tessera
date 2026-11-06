@@ -1830,16 +1830,16 @@ Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop
   `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
   `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
-  (`Standard/System/Text/MemoryCell.lpa`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
-  3)`, `&S64(at: 0x55d0c1a2b3c0, manager: HEAP)`, `&[S64](data: 0x55d0c1a2b3c0, count: 3, manager: HEAP)`. The manager
+  (`Standard/System/Text/MemoryCell.lpa`): `@S64(0x0000_7FFD_1C2A_3B40)` (its address), `@[S64](data: 0x0000_55D0_C1A2_B3C0, count:
+  3)`, `&S64(at: 0x0000_55D0_C1A2_B3C0, manager: HEAP)`, `&[S64](data: 0x0000_55D0_C1A2_B3C0, count: 3, manager: HEAP)`. The manager
   is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
-  global has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
+  global has none: `&U64(at: 0x0000_55D0_C1A2_B3C0)`. In a template hole and `Console.show(x)` the
   build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
   sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getview()`
   for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `lint`; it is a warning,
   not an error. Exceptions: `@[Byte]` and `@[Char]` are text (a `@[Char]` writes each character's UTF-8 straight into
   the Writer, no memory taken), a `&[Char]` or a `&[Byte]` (STACK or from a manager) writes its list (`['h', 'i']`, `[b'L', b'u']`, like `Items[Char, N]`: its text is `.getslice()`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
-  the entity. `{view.to[Addr]()}` writes only the address (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived
+  the entity. `{view.to[Addr]()}` writes only the address (`0x0000_7FFD_5E8C_1A40`, the pointer width in groups of four uppercase hex digits, an `Addr` writes itself). A derived
   routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
