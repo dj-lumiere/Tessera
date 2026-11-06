@@ -151,6 +151,9 @@ public sealed partial class Compiler
             case VariantType { IsAddressed: true } or VariantType { IsNullable: true }:
                 acc.Add(new Leaf(at, SizeAlign(new PtrType(null), pos).Size, 'p', "ptr"));
                 break;
+            case VariantType { IsZeroNone: true } zeroNone:
+                AddLeaves(zeroNone.Leaves[0], at, acc, pos);
+                break;
             case VariantType { IsFlagged: true } flagged:
             {
                 // The present flag is a C bool, then the value at its own alignment.

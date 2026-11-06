@@ -21,7 +21,7 @@ public sealed partial class Compiler
     private const string PresetForms =
         "literals (inf and nan too), other presets, integer and Bool arithmetic and conversions, B32/B64 " +
         "add/sub/mul/truediv (and their _unchecked forms), float neg, conversions between B16/BF16/B32/B64 (to and " +
-        "to_unchecked), max/min, sizeof/alignof, and T.from_bits(...)";
+        "to_unchecked), max/min, sizeof/alignof/typeid, and T.from_bits(...)";
 
     /// What the value being folded belongs to, for the messages: a preset, or a global's starting value.
     private bool _foldingGlobal;
@@ -293,6 +293,8 @@ public sealed partial class Compiler
                 var (size, align) = SizeAlign(ResolveType(c.TypeArgs[0], env), c.Pos);
                 return new ConstVal(null, c.Name == "sizeof" ? size : align);
             }
+            case CallExpr { Name: "typeid", TypeArgs.Count: 1, Args.Count: 0 } c:
+                return new ConstVal(IntType.U(32), TypeId(ResolveType(c.TypeArgs[0], env), c.Pos));
             case CallExpr c:
                 throw new CompileError(Li.BuildtimeFold, c.Pos, $"'{c.Name}' can't run at build time; {NotBuildtimeTail()}");
             default:

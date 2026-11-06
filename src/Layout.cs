@@ -123,6 +123,25 @@ public sealed partial class Compiler
 
     private DataLayout Layout(Pos pos) => _dataLayout ??= DataLayout.For(Target, pos);
 
+    private readonly Dictionary<uint, (string Name, string Llvm)> _typeIds = [];
+
+    /// `typeid[T]()`: a number for a type that is the same in every module of one program, because it is a hash of the
+    /// type's name (FNV-1a over its UTF-8 bytes, 32 bits, never 0). Two different types of one build with the same number
+    /// are a build error. A type parameter (the generic body checked before an instance) takes no number yet.
+    public uint TypeId(DType t, Pos pos)
+    {
+        uint hash = 2166136261;
+        foreach (byte b in System.Text.Encoding.UTF8.GetBytes(t.Name))
+            hash = (hash ^ b) * 16777619;
+        if (hash == 0) hash = 1;
+        if (t is ArchetypeType) return hash;
+        EnsureTypeDefined(t);
+        if (_typeIds.TryGetValue(hash, out var seen) && (seen.Name != t.Name || seen.Llvm != t.Llvm))
+            throw new CompileError(Li.LayoutProblem, pos, $"typeid[{t.Name}]() and typeid[{seen.Name}]() are both {hash}: two types of one build can't share a type id, so rename one of them");
+        _typeIds[hash] = (t.Name, t.Llvm);
+        return hash;
+    }
+
     /// The size and alignment LLVM gives a type on the target, as `sizeof[T]()` / `alignof[T]()` report at run time.
     public (long Size, long Align) SizeAlign(DType t, Pos pos)
     {
@@ -158,6 +177,8 @@ public sealed partial class Compiler
                 return SizeAlign(field, pos);
             case VariantType { IsAddressed: true } or VariantType { IsNullable: true }:
                 return SizeAlign(new PtrType(null), pos);
+            case VariantType { IsZeroNone: true } zeroNone:
+                return SizeAlign(zeroNone.Leaves[0], pos);
             case VariantType v:
             {
                 if (!_sizing.Add(v.Key)) throw new CompileError(Li.RecursiveValueRecord, pos, $"{v} contains itself");

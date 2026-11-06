@@ -343,7 +343,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
-    public override string Llvm => IsAddressed || IsNullable ? "ptr" : $"%\"{Key}\"";
+    public override string Llvm => IsAddressed || IsNullable ? "ptr" : IsZeroNone ? Leaves[0].Llvm : $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
     /// Each branch's type, in the declaration's order.
@@ -367,6 +367,13 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     /// Whether this is an Optional of an address that is never null itself, `@T?` or `Callable[...]?`: the address alone,
     /// `ptr`, null for None. A value of it is the T's own pointer, so it costs nothing over the T and passes to C as one.
     public bool IsNullable => IsFlagged && !IsAddressed && Leaves[0].Repr is PtrType { Pointee: not null } or CallableType { IsOpen: false };
+
+    /// Whether this is an Optional of a record marked `@none_is_zero` (its first field, an integer, is 0 for None and never 0
+    /// for a value), such as `PoolStamp[T]?`: the record alone, with no flag, the all-zero record being None.
+    public bool IsZeroNone => IsFlagged && !IsAddressed && !IsNullable && Leaves[0] is RecordType { Decl: var d } && d.AnnotationNamed("none_is_zero") is not null;
+
+    /// Whether the Optional has no flag of its own: an address that is null for None, or a `@none_is_zero` record.
+    public bool IsBare => IsNullable || IsZeroNone;
 
     /// The tag's LLVM type: `i1` for a flagged Optional, else `i64`.
     public string TagLlvm => IsFlagged ? "i1" : Tag.Llvm;

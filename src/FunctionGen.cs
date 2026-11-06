@@ -2987,6 +2987,9 @@ public sealed partial class FunctionGen
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             return _c.Count;
+        if (e is CallExpr { Name: "typeid", TypeArgs.Count: 1, Args.Count: 0 } ti
+            && _c.FindFree(ti.Name, _env.File, ti.Pos) is null)
+            return IntType.U(32);
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return SourceLocationPtr(cl.Pos);
@@ -3737,7 +3740,7 @@ public sealed partial class FunctionGen
             return new Val(place, vt);
         }
         // `@T?` and `Callable?` are the address itself: None is null.
-        if (vt.IsNullable) return new Val(vt.LeafIndex(value.Type) == 0 ? value.Op : "null", vt);
+        if (vt.IsBare) return new Val(vt.LeafIndex(value.Type) == 0 ? value.Op : vt.IsNullable ? "null" : "zeroinitializer", vt);
         uint id = vt.LeafId(value.Type);
         string tag = FailureTag(value.Type, vt, id, made ?? _decl.Pos);
         string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {vt.TagLlvm} {tag}, 0");
@@ -3897,7 +3900,7 @@ public sealed partial class FunctionGen
         var vt = (VariantType)whole.Type;
         string slot = NewSlot(vt);
         Line($"store {vt.Llvm} {whole.Op}, ptr {slot}");
-        string tag = EmitTmp(vt.IsNullable ? $"icmp ne ptr {whole.Op}, null" : $"extractvalue {vt.Llvm} {whole.Op}, 0");
+        string tag = PresentTag(vt, whole.Op);
         string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
         string present = EmitTmp($"icmp eq i32 {id}, {vt.LeafId(payload)}");
         var present1 = NewLBlock("narrowed");
@@ -3911,10 +3914,21 @@ public sealed partial class FunctionGen
         return new Val(PayloadLoad(vt, slot, payload), payload);
     }
 
+    /// The tag of a variant value: for an address Optional whether the address is not null, for a `@none_is_zero` Optional
+    /// whether the record's first field is not 0, else the tag stored in the value.
+    private string PresentTag(VariantType vt, string value)
+    {
+        if (vt.IsAddressed || vt.IsNullable) return EmitTmp($"icmp ne ptr {value}, null");
+        if (!vt.IsZeroNone) return EmitTmp($"extractvalue {vt.Llvm} {value}, 0");
+        var first = _c.Fields((RecordType)vt.Leaves[0])[0].Type;
+        string field = EmitTmp($"extractvalue {vt.Llvm} {value}, 0");
+        return EmitTmp($"icmp ne {first.Llvm} {field}, 0");
+    }
+
     /// The branch type's value read out of the variant's stack copy.
     private string PayloadLoad(VariantType vt, string slot, DType branch)
     {
-        if (vt.IsNullable)
+        if (vt.IsBare)
             return vt.LeafIndex(branch) == 0 ? EmitTmp($"load {branch.Llvm}, ptr {slot}") : "zeroinitializer";
         if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
         {
@@ -4202,7 +4216,7 @@ public sealed partial class FunctionGen
     private void EmitVariantWhen(WhenStmt w, Val v, VariantType vt, Func<WhenArm, Action?, string> armBlock,
         List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
-        string tag = EmitTmp(vt.IsAddressed || vt.IsNullable ? $"icmp ne ptr {v.Op}, null" : $"extractvalue {vt.Llvm} {v.Op}, 0");
+        string tag = PresentTag(vt, v.Op);
         string id = EmitTmp(vt.IsFlagged ? $"zext i1 {tag} to i32" : $"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
@@ -4401,7 +4415,7 @@ public sealed partial class FunctionGen
         string value;
         if (branch is VariantType union && vt.LeafIndex(union) < 0 && (union.Decl.IsAnonymous || union.Leaves.All(Crashing.IsCrashable)))
             value = CopyVariant(vt, slot, union);
-        else if (vt.IsNullable)
+        else if (vt.IsBare)
             value = vt.LeafIndex(branch) == 0 ? EmitTmp($"load {branch.Llvm}, ptr {slot}") : "zeroinitializer";
         else if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
         {
@@ -5020,8 +5034,8 @@ public sealed partial class FunctionGen
                     throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
 
                 // `===` / `!==` ask whether two names reach the same memory, which an address or a span has, or the same
-                // entity, which a stamp names: values compare with `==` / `!=`.
-                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" or "Stamped" or "PoolStamp" })
+                // entity, which a stamp names, or whatever a type declares with `same` / `notsame`: values compare with `==` / `!=`.
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType && _c.FindMethod(sameType, b.Op == "===" ? "same" : "notsame", _env.File, b.Pos) is null)
                     throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
@@ -6538,6 +6552,9 @@ public sealed partial class FunctionGen
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } sz
             && _c.FindFree(sz.Name, _env.File, sz.Pos) is null)
             return SizeOrAlign(sz);
+        if (e is CallExpr { Name: "typeid", TypeArgs.Count: 1, Args.Count: 0 } ti
+            && _c.FindFree(ti.Name, _env.File, ti.Pos) is null)
+            return new Val(_c.TypeId(Resolve(ti.TypeArgs[0]), ti.Pos).ToString(), IntType.U(32));
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return CallerLocation(cl.Pos);

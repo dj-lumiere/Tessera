@@ -209,7 +209,6 @@ public sealed partial class Compiler
         RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b) && SameOwnerArgs(a, b));
         RejectOverloadClashes(_blanket.Values, (_, _) => true);
         RejectPointerReceiverClashes();
-        RejectIdentityRoutines();
         CheckAliases();
         CheckLifecycle();
     }
@@ -2432,7 +2431,7 @@ public sealed partial class Compiler
                 // An Optional is an address: the E it points at is defined where its place is.
                 if (_definedTypes.Add(optional.Key)) EnsureTypeDefined(optional.Leaves[0]);
                 break;
-            case VariantType { IsNullable: true } nullable:
+            case VariantType { IsBare: true } nullable:
                 // `@T?` / `Callable?` is the address itself.
                 if (_definedTypes.Add(nullable.Key)) EnsureTypeDefined(nullable.Leaves[0]);
                 break;
@@ -2621,6 +2620,7 @@ public sealed partial class Compiler
         // `.hollow()` (or `T.hollow()`) is the all-zero value, which every type has.
         if (IsHollowCall(e)) return "zeroinitializer";
         // `@T?` / `Callable?`: `None()` is null, anything else is the address.
+        if (t is VariantType { IsZeroNone: true } && e is CallExpr { Name: "None", Args.Count: 0 }) return "zeroinitializer";
         if (t is VariantType { IsNullable: true } nullable)
             return e is CallExpr { Name: "None", Args.Count: 0 } ? "null" : PointerInitializer(e, nullable.Leaves[0], env);
         e = AsRecordLit(e, env);
@@ -2722,7 +2722,7 @@ public sealed partial class Compiler
                     if (NoZeroValueWhere(field, $"{path}.{name}", seen) is { } found)
                         return found;
                 return null;
-            case VariantType { IsNullable: true }:
+            case VariantType { IsBare: true }:
                 return null;
             // An Optional of a Callable open to any failure is a flag and the pair: all zero is None.
             case VariantType { IsFlagged: true, Leaves: [CallableType { IsOpen: true }, ..] }:

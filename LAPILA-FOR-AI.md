@@ -381,6 +381,15 @@ routine start() -> None
     into a global or an existing entity's field is the error above. A BorrowedCell's and a BorrowedSlice's own address and manager
     fields, a `@MemoryManager` (the link to where memory goes back, which the manager check below follows), and a
     `SourceLocation` (the builder's read-only text) don't count as views here.
+  - **`typeid[T]()`** (a builder query like `sizeof`, also in presets): a `U32` that is a hash of the type's name (FNV-1a, never 0), the
+    same in every module of one program including the library base, and a build error when two types of one build share it.
+  - **`EntityPool` and `PoolStamp[T]`** (System/Memory, `EntityPool.lpa`): one pool for entities of many types. `EntityPool.set_up(memory: PAGES)`
+    in `start` reserves a range of address space (the manager must reserve pages), `s = EntityPool.add(steal e)` hands an entity over and
+    gives its 8-byte stamp (`s.fetch()` gives the `@T` or throws `StaleStampError`, `===` compares), `EntityPool.remove(s)` makes every
+    fetch fail at once without destructing, `EntityPool.sweep()` destructs the removed ones and frees their slots, and
+    `EntityPool.tear_down()` at the end of `start` ends the rest. `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
+  - **`@none_is_zero`** on a record whose first field is an integer that is never 0 for a value makes `R?` the record alone, with the all-zero
+    record as None (no flag): `when`, `try`, `is_absent()` and `unwrap()` work as on any Optional.
   - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.lpa`). `x.stamp()` on an entity
     (a `&E` place or an `@E` view: a stamp takes the place of a stored view) gives a `Stamped[E]`, 8 bytes (a slot of
     the program's stamp table, the `PoolManager`, and the slot's generation), a record copied for free that goes
@@ -744,7 +753,7 @@ routine start() -> None
 - A number, `Bool` or choice preset is folded by the builder, and only from literals (`inf` and `nan` too), other presets, integer and
   `Bool` arithmetic and conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64
   `add`/`sub`/`mul`/`truediv` (and their `_unchecked` forms, `+! -! *! /!`), `neg` of every float, `to[T]()` and
-  `to_unchecked[T]()` between `B16`, `BF16`, `B32` and `B64` (`B64.to[B16](0.5)`), `max`/`min`/`sizeof`/`alignof`, and
+  `to_unchecked[T]()` between `B16`, `BF16`, `B32` and `B64` (`B64.to[B16](0.5)`), `max`/`min`/`sizeof`/`alignof`/`typeid`, and
   `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing runs at build time. Overflow, an
   out-of-range conversion, a checked float operation giving inf or NaN, or a `to[T]()` turning a finite float into an
   infinity in a preset is a build error. A literal `inf` is fine (`preset TOP: B64 = inf`): it is written on purpose.
@@ -899,7 +908,7 @@ routine start() -> None
   (`+^ -^` still clamp).
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv`, `%` `mod`, `**`
   `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr`, spans and `Stamped` declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: a type has them by declaring `routine T.same(other: Me) -> Bool` and `notsame`, as `@T`, `Addr`, spans, `Stamped` and `PoolStamp` do, and `===` on a type without them is a build error: values compare with `==`), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/System/Operators.lpa, the names Revare uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
