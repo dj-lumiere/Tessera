@@ -1,7 +1,7 @@
 namespace Lapila;
 
 /// The three families of diagnostic codes. Revare, Mielia and Lapila number their diagnostics from one shared space:
-/// a number names one diagnostic, and the prefix (LI for Lapila) only follows the file's language.
+/// a number names one diagnostic, and the prefix (LP for Lapila) only follows the file's language.
 public enum DiagFamily
 {
     /// A source that does not read (the lexer and the parser).
@@ -22,14 +22,14 @@ public sealed record Code(DiagFamily Family, int Number, string Name, string Sum
     /// The first number a Lapila-only diagnostic may use.
     public const int OwnFrom = 1000;
 
-    public const string Prefix = "LI";
+    public const string Prefix = "LP";
 
     public bool IsWarning => Family == DiagFamily.Warning;
 
-    /// `LI-S007`: the prefix, the family letter and the number in at least three digits.
+    /// `LP-S007`: the prefix, the family letter and the number in at least three digits.
     public string Text => $"{Prefix}-{(char)Family}{Number:D3}";
 
-    /// The opening of a printed diagnostic: `error[LI-S007]` or `warning[LI-W305]`.
+    /// The opening of a printed diagnostic: `error[LP-S007]` or `warning[LP-W305]`.
     public string Head => IsWarning ? $"warning[{Text}]" : $"error[{Text}]";
 
     public override string ToString() => Text;

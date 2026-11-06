@@ -48,7 +48,7 @@ public class FinishLintTests
                     return result
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1001]: t.lpa:6:9: a return outside finish here: jump finish(...) instead", warning);
+        Assert.Contains("warning[LP-W1001]: t.lpa:6:9: a return outside finish here: jump finish(...) instead", warning);
     }
 
     [Fact]

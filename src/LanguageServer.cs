@@ -268,7 +268,7 @@ public static partial class LanguageServer
         }
     }
 
-    // `warning[LI-W305]: file:line:col: text`, the file possibly holding a drive's colon.
+    // `warning[LP-W305]: file:line:col: text`, the file possibly holding a drive's colon.
     private static readonly Regex Warning = new(@"^warning\[[A-Z]+-W\d+\]: (?<file>.*):(?<line>\d+):(?<col>\d+): (?<text>.*)$",
         RegexOptions.Singleline);
 

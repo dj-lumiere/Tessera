@@ -20,7 +20,7 @@ public class MemoryCellLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W1004]: t.lpa:6:20: this shows the cell 'sum' itself (its address and manager): if you meant "
+        Assert.Contains("warning[LP-W1004]: t.lpa:6:20: this shows the cell 'sum' itself (its address and manager): if you meant "
             + "its value, write sum.load()", warning);
     }
 

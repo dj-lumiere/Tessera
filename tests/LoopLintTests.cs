@@ -17,7 +17,7 @@ public class LoopLintTests
                     nothing
                 return
             """));
-        Assert.Contains("warning[LI-W057]: t.lpa:2:5: this loop's body never runs", warning);
+        Assert.Contains("warning[LP-W057]: t.lpa:2:5: this loop's body never runs", warning);
     }
 
     [Fact]

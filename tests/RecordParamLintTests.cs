@@ -25,7 +25,7 @@ public class RecordParamLintTests
             routine blend(a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
                 return a
             """));
-        Assert.Contains("warning[LI-W1002]: t.lpa:1:1: routine 'blend' takes 5 parameters (not counting me)", warning);
+        Assert.Contains("warning[LP-W1002]: t.lpa:1:1: routine 'blend' takes 5 parameters (not counting me)", warning);
         Assert.Contains("into a record", warning);
     }
 

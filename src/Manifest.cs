@@ -462,7 +462,7 @@ public sealed record Manifest(
 
 public sealed class ManifestError(Code code, string path, string message) : Exception($"{path}: {message}")
 {
-    /// The diagnostic code, printed as `error[LI-S1401]`.
+    /// The diagnostic code, printed as `error[LP-S1401]`.
     public Code Code { get; } = code;
 
     /// The whole report line: the code, the manifest's path, and what is wrong.

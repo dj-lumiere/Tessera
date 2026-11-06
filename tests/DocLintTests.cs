@@ -32,7 +32,7 @@ public class DocLintTests
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("warning[LI-W305]: lib/t.lpa:2:8: routine 'helper' has no doc comment", warning);
+        Assert.Contains("warning[LP-W305]: lib/t.lpa:2:8: routine 'helper' has no doc comment", warning);
     }
 
     [Fact]

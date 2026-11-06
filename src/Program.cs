@@ -330,7 +330,7 @@ static partial class Cli
 
     internal sealed class ToolError(Code code, string message) : Exception(message)
     {
-        /// The diagnostic code, printed as `error[LI-S1450]`.
+        /// The diagnostic code, printed as `error[LP-S1450]`.
         public Code Code { get; } = code;
 
         /// The whole report line: the code and what is wrong.

@@ -115,7 +115,7 @@ public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntV
 
 public sealed class CompileError(Code code, Pos pos, string message) : Exception($"{code.Head}: {pos}: {message}")
 {
-    /// The diagnostic code, printed as `error[LI-S007]`.
+    /// The diagnostic code, printed as `error[LP-S007]`.
     public Code Code { get; } = code;
 
     public Pos Pos { get; } = pos;
