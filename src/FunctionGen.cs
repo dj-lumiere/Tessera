@@ -3137,7 +3137,7 @@ public sealed partial class FunctionGen
                 $"a {flagsOfInt.Name} value is made of its members ({string.Join(" and ", flagsOfInt.Decl.Members.Take(2).Select(m => m.Name))}), "
                 + "or none for no member on, not a number"),
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
-            TypedIntLit t => TypedConst(t),
+            TypedIntLit t => TypedConst(t, expected),
             TypedLit t => Eval(t.Literal, t.Type),
             UnitLit u => UnitConst(u),
             FloatLit f => EvalFloatLit(f, expected),
@@ -3294,8 +3294,20 @@ public sealed partial class FunctionGen
         return new Val(op, expected);
     }
 
-    /// `b'A'` is a Byte and `'A'` a Char.
-    private static Val TypedConst(TypedIntLit t) => new(t.Value.ToString(CultureInfo.InvariantCulture), t.Type);
+    /// `'A'` is a Char, and a Byte where a Byte goes. A Byte takes a character below 80 and any `'\\xHH'`, a Char refuses a `'\\xHH'`.
+    private Val TypedConst(TypedIntLit t, DType expected)
+    {
+        if (t.Bits == 32 && expected is IntType { Kind: IntKind.Byte })
+        {
+            if (!t.HexByte && t.Value > 0x7F)
+                throw Err(Li.ByteLiteral, t.Pos, $"a Byte holds one byte, and '{char.ConvertFromUtf32((int)t.Value)}' is more than one: write a byte above 7F "
+                    + "as '\\xE9', or put the text where a @[Byte] goes to get its UTF-8 bytes");
+            return new Val(t.Value.ToString(CultureInfo.InvariantCulture), IntType.Byte);
+        }
+        if (t.HexByte && t.Bits == 32)
+            throw Err(Li.ByteLiteral, t.Pos, $"a Char has no \\xHH escape: write the character with \\uXXXXXX ('\\u0000{t.Value:X2}'), or put the literal where a Byte goes");
+        return new Val(t.Value.ToString(CultureInfo.InvariantCulture), t.Type);
+    }
 
     private Val StringLiteral(StrLit s, DType expected)
     {
@@ -5022,7 +5034,7 @@ public sealed partial class FunctionGen
                     throw Err(Li.OperatorUse, b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr), a span (@[T]) or a stamp has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
-                bool literalLeft = b.Left is IntLit or FloatLit;
+                bool literalLeft = b.Left is IntLit or FloatLit or TypedIntLit { Bits: 32 };
                 var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
                 if (b.Op is "|" or "&" or "^" && (FlagsOf(operand) ?? FlagsOf(TryInfer(b.Right))) is { } bitFlags)
                     throw Err(Li.FlagsUse, b.Pos, FlagsBitwise(b.Op, bitFlags));
@@ -6095,7 +6107,7 @@ public sealed partial class FunctionGen
             }
         }
 
-        // A `&[Char]` or a `&[Byte]` is a collection: shown, it writes its list (`['h', 'i']`, `[b'L', b'u']`), as an
+        // A `&[Char]` or a `&[Byte]` is a collection: shown, it writes its list (`['h', 'i']`, `[Byte('\x4C'), Byte('\x75')]`), as an
         // `Items[Char, N]` does. Only a view, `@[Char]` or `@[Byte]`, writes them as text.
         if (m is { Name: "represent_into", TypeArgs.Count: 0, Args: [var listOut] } && TextPlaceSlice(m.Receiver, rt) is var (elements, kind))
             return PlanCall(kind == IntKind.Char

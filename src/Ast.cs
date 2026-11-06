@@ -459,9 +459,13 @@ public sealed record IntLit(BigInteger Value, Pos Pos, int HexDigits = 0) : Expr
     /// Written in base 10 (not `0x`, `0b` or `0o`): a whole number so written also goes into a binary float place.
     public bool Base10 { get; init; }
 }
-/// A literal whose type is fixed by its spelling: `b'A'` is a Byte (8 bits), `'A'` is a Char (32 bits).
+/// A character literal: `'A'` is a Char (32 bits) and takes the type of a Byte place (8 bits). A Byte itself is made
+/// here from a `Byte('A')` call or by the builder.
 public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos)
 {
+    /// Written as a `'\xHH'` escape: a byte, which a Char place refuses.
+    public bool HexByte { get; init; }
+
     public IntType Type => Bits == 8 ? IntType.Byte : IntType.Char;
 }
 /// A number literal typed by a number type's name, `S64(7)`, `B64(6.022e23)`, `U8(200)`: the literal as a value of

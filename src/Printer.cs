@@ -260,7 +260,7 @@ public sealed class Printer
                 return $"0x{(digits.Length == 0 ? "0" : digits).PadLeft(i.HexDigits, '0')}";
             }
             case TypedIntLit t:
-                return t.Bits == 8 ? $"b'{CharText(t.Value, true)}'" : $"'{CharText(t.Value, false)}'";
+                return t.Bits == 8 ? $"Byte('{CharText(t.Value, true)}')" : $"'{CharText(t.Value, t.HexByte)}'";
             case FloatLit f:
                 return f.Text ?? FloatText(f.Value);
             case StrLit s:
@@ -517,7 +517,7 @@ public sealed class Printer
         return sb.Append('"').ToString();
     }
 
-    private static string CharText(long value, bool isByte)
+    private static string CharText(long value, bool hex)
     {
         switch (value)
         {
@@ -528,7 +528,7 @@ public sealed class Printer
             case '\\': return "\\\\";
             case '\'': return "\\'";
         }
-        if (isByte) return value is >= 0x20 and < 0x7F ? ((char)value).ToString() : $"\\x{value:X2}";
+        if (hex) return value is >= 0x20 and < 0x7F ? ((char)value).ToString() : $"\\x{value:X2}";
         return value is >= 0x20 and < 0x7F ? ((char)value).ToString() : $"\\u{value:X6}";
     }
 

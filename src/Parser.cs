@@ -2029,7 +2029,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Cur is not { Kind: TokenKind.Ident, Escaped: false, Text: "while" }) return false;
         var next = PeekTok(1);
         if (next.Pos.Line != Cur.Pos.Line) return false;
-        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Char or TokenKind.Str or TokenKind.Byte
+        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Char or TokenKind.Str
                || next.Kind == TokenKind.LParen && next.Pos.Col > Cur.Pos.Col + Cur.Text.Length;
     }
 
@@ -2209,7 +2209,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             else if (value is null) cond = ParseExpr();
             else
             {
-                // observations (`is S64 as n`, `is Unit, is Empty`), or one or more constants (`b' ', b'\t' => ...`)
+                // observations (`is S64 as n`, `is Unit, is Empty`), or one or more constants (`' ', '\t' => ...`)
                 cases = [];
                 do cases.Add(IsIdent("is") ? ParseIsPattern() : ParseExpr());
                 while (Accept(TokenKind.Comma));
@@ -2517,7 +2517,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!(IsWordOp("try") || IsWordOp("check"))) return false;
         var next = PeekTok(1);
         if (next.Pos.Line != Cur.Pos.Line || next.Pos.Col <= Cur.Pos.Col + Cur.Text.Length) return false;
-        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Unit or TokenKind.Byte
+        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Unit
                    or TokenKind.Char or TokenKind.Str or TokenKind.LParen or TokenKind.At or TokenKind.LBracket or TokenKind.Dot
                || (next.Kind == TokenKind.Op && next.Text is "-" or "~");
     }
@@ -2760,12 +2760,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case TokenKind.Unit:
                 Next();
                 return new UnitLit(t.IntValue, t.Text.TrimStart('-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '_'), t.Text, t.Pos);
-            case TokenKind.Byte:
-                Next();
-                return new TypedIntLit(Low64(t.IntValue), 8, t.Pos);
             case TokenKind.Char:
                 Next();
-                return new TypedIntLit(Low64(t.IntValue), 32, t.Pos);
+                return new TypedIntLit(Low64(t.IntValue), 32, t.Pos) { HexByte = t.HexByte };
             case TokenKind.Float:
                 Next();
                 return new FloatLit(BitConverter.Int64BitsToDouble(Low64(t.IntValue)), t.Pos) { Text = t.Text };
@@ -2954,6 +2951,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool numbers = typeArgs.Any(a => a is not TypeArgType);
             var targs = numbers ? [] : typeArgs.Select(a => ((TypeArgType)a).Type).ToList();
             var (args, names) = ParseNamedArgs();
+            // `Byte('A')` and `Byte('\\xE9')` are one Byte literal.
+            if (name.Text == "Byte" && path is null && targs.Count == 0 && !numbers && args is [TypedIntLit { Bits: 32 } letter] && (names is null || names.All(n => n is null)))
+            {
+                if (!letter.HexByte && letter.Value > 0x7F)
+                    throw new CompileError(Li.ByteLiteral, letter.Pos, $"a Byte holds one byte, and '{char.ConvertFromUtf32((int)letter.Value)}' is more than one: "
+                        + "write a byte above 7F as '\\xE9', or put the text where a @[Byte] goes to get its UTF-8 bytes");
+                return new TypedIntLit(letter.Value, 8, pos);
+            }
             return AtManager(new CallExpr(name.Text, targs, args, pos)
                 { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null });
         }

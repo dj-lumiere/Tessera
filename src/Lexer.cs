@@ -12,8 +12,7 @@ public enum TokenKind
     Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ +! forms
     Int,         // 42, -5, 0xFF
     Unit,        // 20ms, 4kib: a whole number with a time or size unit (IntValue is the number, Text the literal)
-    Byte,        // b'A': a Byte
-    Char,        // 'A': a Char, a Unicode scalar value
+    Char,        // 'A': a Char, a Unicode scalar value, or a Byte where a Byte goes
     Str,         // "..."
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
@@ -111,7 +110,7 @@ public static class SourceText
 /// IntValue holds an integer literal (a magnitude up to 256 bits, with its sign), a character's code, or a float's
 /// IEEE double bits. Escaped marks a name written between backticks: its Text is the name without them, and it is
 /// never a keyword.
-public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default, bool Escaped = false);
+public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default, bool Escaped = false, bool HexByte = false);
 
 public sealed class CompileError(Code code, Pos pos, string message) : Exception($"{code.Head}: {pos}: {message}")
 {
@@ -199,17 +198,13 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             }
 
             if (c == 'b' && Peek(1) == '\'')
-            {
-                Advance();
-                long v = ReadCharLiteral(pos, byteOnly: true);
-                _tokens.Add(new Token(TokenKind.Byte, $"b'{v}'", pos, v));
-                continue;
-            }
+                throw new CompileError(Li.ByteLiteral, pos, "a literal has no b prefix: write 'x' where a Byte goes (and '\\xE9' for a byte above 7F), "
+                    + "or Byte('x') for one byte anywhere");
 
             if (c == '\'')
             {
-                long v = ReadCharLiteral(pos, byteOnly: false);
-                _tokens.Add(new Token(TokenKind.Char, $"'{v}'", pos, v));
+                long v = ReadCharLiteral(pos, out bool hexByte);
+                _tokens.Add(new Token(TokenKind.Char, $"'{v}'", pos, v, HexByte: hexByte));
                 continue;
             }
 
@@ -360,7 +355,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     {
         if (_tokens.Count == 0) return false;
         var t = _tokens[^1];
-        bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Byte or TokenKind.Char
+        bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Char
             or TokenKind.Str or TokenKind.RParen or TokenKind.RBracket;
         bool word = t.Kind == TokenKind.Ident && !t.Escaped && t.Text is "return" or "becomes" or "and" or "or" or "not"
             or "if" or "until" or "loop" or "then" or "else" or "elseif" or "in" or "to" or "til" or "by" or "with" or "when" or "jump";
@@ -678,10 +673,12 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(value));
     }
 
-    private long ReadCharLiteral(Pos pos, bool byteOnly)
+    /// A character literal. A `'\\xHH'` escape is a byte (reported through `hexByte`), kept for the place to read: a Byte takes it, a Char refuses it.
+    private long ReadCharLiteral(Pos pos, out bool hexByte)
     {
         Advance(); // opening quote
         long v;
+        hexByte = false;
         char c = Peek();
         if (c == '\\')
         {
@@ -691,18 +688,10 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             v = e switch
             {
                 'n' => 10, 't' => 9, 'r' => 13, '0' => 0, '\\' => '\\', '\'' => '\'', '"' => '"',
-                'x' when byteOnly => ReadHexByte(pos),
-                'x' => throw new CompileError(Li.ByteLiteral, pos, "a character takes \\uXXXXXX; \\xXX is a byte"),
-                'u' when !byteOnly => ReadScalar(pos),
-                'u' => throw new CompileError(Li.ByteLiteral, pos, "a byte takes \\xXX; \\uXXXXXX is a character"),
+                'x' => ReadHexByteMarked(pos, out hexByte),
+                'u' => ReadScalar(pos),
                 _ => throw new CompileError(Li.InvalidEscape, pos, $"unknown escape '\\{e}'"),
             };
-        }
-        else if (byteOnly)
-        {
-            if (c > 0x7F) throw new CompileError(Li.ByteLiteral, pos, "a byte literal must hold one ASCII character");
-            v = c;
-            Advance();
         }
         else if (char.IsHighSurrogate(c) && char.IsLowSurrogate(Peek(1)))
         {
@@ -716,9 +705,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             Advance();
         }
         if (Peek() != '\'')
-            throw new CompileError(Li.ByteLiteral, pos, byteOnly
-                ? "a byte literal must hold exactly one byte"
-                : "a character literal must hold exactly one character");
+            throw new CompileError(Li.ByteLiteral, pos, "a character literal must hold exactly one character");
         Advance();
         return v;
     }
@@ -733,6 +720,12 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             throw new CompileError(Li.InvalidEscape, pos, $"\\u{v:X6} is not a Unicode scalar value (a surrogate or past 10FFFF)");
         for (int k = 0; k < 6; k++) Advance();
         return v;
+    }
+
+    private long ReadHexByteMarked(Pos pos, out bool hexByte)
+    {
+        hexByte = true;
+        return ReadHexByte(pos);
     }
 
     private long ReadHexByte(Pos pos)

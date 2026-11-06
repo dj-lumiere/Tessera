@@ -108,7 +108,7 @@ public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
         };
         if (Kind is IntKind.Byte && hexDigits != 2)
         {
-            error = "a Byte literal is written in hex with exactly 2 digits (0x00), or as a byte literal (b'A')";
+            error = "a Byte literal is written in hex with exactly 2 digits (0x00), or as a character literal where a Byte goes ('A')";
             return null;
         }
         if (Kind is IntKind.Char)

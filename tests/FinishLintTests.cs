@@ -21,7 +21,7 @@ public class FinishLintTests
 
                 if text.is_empty()
                     jump finish(0)
-                stack.add_last(b'(')
+                stack.add_last(Byte('('))
                 jump finish(stack.count())
 
                 block finish(result: U64)

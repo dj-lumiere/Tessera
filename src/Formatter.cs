@@ -196,13 +196,7 @@ public static class Formatter
             {
                 int end = i;
                 while (end < s.Length && (char.IsAsciiLetterOrDigit(s[end]) || s[end] == '_')) end++;
-                if (s[i] == 'b' && end == i + 1 && end < s.Length && s[end] == '\'')
-                {
-                    end = Math.Min(SkipLiteral(s, end) + 1, s.Length);
-                    pieces.Add(new Piece(Role.Operand, s[i..end], space));
-                }
-                else
-                    pieces.Add(new Piece(Role.Word, s[i..end], space));
+                pieces.Add(new Piece(Role.Word, s[i..end], space));
                 i = end;
             }
             else if (char.IsAsciiDigit(c))
@@ -968,13 +962,13 @@ public static class Formatter
         {
             var t = tokens[i];
             bool previousIsOperand = i > 0 && tokens[i - 1].Kind is TokenKind.Ident or TokenKind.RParen or TokenKind.RBracket
-                or TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte or TokenKind.Unit
+                or TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Unit
                 && !(tokens[i - 1].Kind == TokenKind.Ident && ChainWords.Contains(tokens[i - 1].Text));
             bool startsPrimary = t.Kind switch
             {
                 TokenKind.Ident => !ChainWords.Contains(t.Text) && !(i + 1 < n && tokens[i + 1].Kind == TokenKind.Colon) && !previousIsOperand
                     && !(i > 0 && tokens[i - 1].Kind == TokenKind.Dot),
-                TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte or TokenKind.Unit or TokenKind.LParen
+                TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Unit or TokenKind.LParen
                     => !previousIsOperand,
                 TokenKind.Dot => !previousIsOperand && i + 1 < n && tokens[i + 1].Kind == TokenKind.Ident,
                 _ => false,

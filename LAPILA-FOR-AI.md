@@ -592,7 +592,7 @@ routine start() -> None
       return
 
   routine start() -> None
-      refill(count: 4, fill: b'\x41')
+      refill(count: 4, fill: Byte('\x41'))
       return
   ```
 
@@ -840,13 +840,13 @@ routine start() -> None
   ```
 
 - **`when` as a statement.** `when` alone takes condition arms (`n < 10 => ...`), tested in order, the first that
-  holds taken. `when v` takes value arms: constants (`1, 2 =>`, `b'+', b'-' =>`, `Shape.CIRCLE =>`), observations of
+  holds taken. `when v` takes value arms: constants (`1, 2 =>`, `Byte('+'), Byte('-') =>`, `Shape.CIRCLE =>`), observations of
   a variant (`is S64 as n =>`, `is None =>`, `is A, is B =>`), `else =>`, and `else as rest =>`. The one line after
   `=>` is a call, a fill of a field (`me.next <- Node.construct(v) from HEAP`), `return`, `break`, `continue`, or
   `nothing` (go on after the `when`), or the arm takes its lines under it (a binding, `x: &T <- ...`, needs them). Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member
   (a flags value has no `when v`: test it with `has` in a condition `when`),
   a variant `when` without `else` observes every branch. There are no range patterns: test ranges with a chained
-  comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
+  comparison (`Byte('0') <= c <= Byte('9') =>`) in a condition `when`.
 - **`nothing` is the line with no work:** an arm with nothing to do (`Light.YELLOW => nothing`), and the body of a
   record, entity or crashable with no member variables (`record Console`, then `    nothing` on the next line). A type
   written as a header alone is a build error, and so is a line written `pass`.
@@ -953,7 +953,7 @@ routine start() -> None
   `if` that knows it's safe: compute it under that `if`, or in the `continue with` of the pass that uses it (those
   values are evaluated only on that path). A value `when` runs only the arm taken, and tests its conditions in
   order, stopping at the first that holds.
-- Range checks are chained comparisons: `b'0' <= c <= b'9'` is the closed `[lo, hi]`, `0 <= i < len` the half-open
+- Range checks are chained comparisons: `Byte('0') <= c <= Byte('9')` is the closed `[lo, hi]`, `0 <= i < len` the half-open
   `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain).
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target, and so is a count
   parameter (`needs U64 COUNT`).
@@ -1052,7 +1052,7 @@ routine start() -> None
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
-  a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
+  a character literal is a `Byte` where a `Byte` goes (`'A'`, `'\xE9'`), `Byte('A')` makes one in any place, a character above 7F is a build error there, and a `Byte` hex literal has exactly two digits (`0x0A`). A `b` before a quote is a build error (LP-G1004).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to[U32]()` and `n.to[Char]()`
   convert (the second is failable and throws `NotAScalarError` for a surrogate or a value above 0x10FFFF).
 - Conversions are methods: `n.to[S64]()`, `b.to[U64]()` (Bool to 0/1), `x.to[B64]()`. Float to integer is
@@ -1231,8 +1231,8 @@ routine start() -> None
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
   back once (`line: &[Byte] <- Console.ask_line(HEAP)`, then `drop line`), and observe an `Optional` or `Check` of one
   with `when` (`when try Console.ask_line(manager)` then `is BorrowedSlice[Byte] as line => ...`). A BorrowedSlice lends itself to a text routine at
-  a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
-  character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
+  a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, and `'..'` where a `Byte` goes), `\uXXXXXX` one
+  character by exactly six hex digits (strings, `'..'`), and `'\xXX'` is a build error where a `Char` goes, so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
 - A string literal is also an array literal whose count the build knows: its UTF-8 bytes where `Items[Byte, N]` or a
   STACK `&[Byte]` goes (`"루미"` is 6), its code points where `Items[Char, N]`, a STACK `&[Char]` or `@[Char]` goes
@@ -1827,7 +1827,7 @@ Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Optional[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, `Byte`
-  (`b'L'`, `b'\x0A'`: the byte literal that makes it, the same as its `diagnose_into`), and `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view:
+  (`Byte('\x4C')`, `Byte('\x0A')`: the `Byte(...)` that makes it, the same as its `diagnose_into`), and `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view:
   `{line.getslice()}`).
 - **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
   `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
@@ -1839,13 +1839,13 @@ Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop
   sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getview()`
   for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `lint`; it is a warning,
   not an error. Exceptions: `@[Byte]` and `@[Char]` are text (a `@[Char]` writes each character's UTF-8 straight into
-  the Writer, no memory taken), a `&[Char]` or a `&[Byte]` (STACK or from a manager) writes its list (`['h', 'i']`, `[b'L', b'u']`, like `Items[Char, N]`: its text is `.getslice()`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
+  the Writer, no memory taken), a `&[Char]` or a `&[Byte]` (STACK or from a manager) writes its list (`['h', 'i']`, `[Byte('\x4C'), Byte('\x75')]`, like `Items[Char, N]`: its text is `.getslice()`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
   the entity. `{view.to[Addr]()}` writes only the address (`0x0000_7FFD_5E8C_1A40`, the pointer width in groups of four uppercase hex digits, an `Addr` writes itself). A derived
   routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
-- `v.diagnose_into(out)` writes a value as Lapila source: `"a\n"`, `'A'`, `b'A'`, `None()`, `[1, 2]`; a variant as the value it holds diagnoses itself (`3` for an `Optional[S64]` holding 3). A record or
+- `v.diagnose_into(out)` writes a value as Lapila source: `"a\n"`, `'A'`, `Byte('\x41')`, `None()`, `[1, 2]`; a variant as the value it holds diagnoses itself (`3` for an `Optional[S64]` holding 3). A record or
   record gets routines written for it with `@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `obeys` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
