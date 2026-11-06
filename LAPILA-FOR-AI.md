@@ -383,11 +383,14 @@ routine start() -> None
     `SourceLocation` (the builder's read-only text) don't count as views here.
   - **`typeid[T]()`** (a builder query like `sizeof`, also in presets): a `U32` that is a hash of the type's name (FNV-1a, never 0), the
     same in every module of one program including the library base, and a build error when two types of one build share it.
-  - **`EntityPool` and `PoolStamp[T]`** (System/Memory, `EntityPool.lpa`): one pool for entities of many types. `EntityPool.set_up(memory: PAGES)`
-    in `start` reserves a range of address space (the manager must reserve pages), `s = EntityPool.add(steal e)` hands an entity over and
-    gives its 8-byte stamp (`s.fetch()` gives the `@T` or throws `StaleStampError`, `===` compares), `EntityPool.remove(s)` makes every
-    fetch fail at once without destructing, `EntityPool.sweep()` destructs the removed ones and frees their slots, and
-    `EntityPool.tear_down()` at the end of `start` ends the rest. `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
+  - **`EntityPool` and `PoolStamp[T]`** (System/Memory, `EntityPool.lpa`): one pool for entities of many types, one pool at a time (a second
+    `set_up` while one lives is `UnacceptedValueError`). `pool: &EntityPool <- EntityPool.set_up(memory: PAGES)` in `start` reserves a range of
+    address space (a manager that doesn't handle pages is refused with a message that says to pass `PAGES`) and the pool is an entity the
+    program ends: `drop pool` (or the builder's give back of a STACK place) sweeps, makes every stamp stale, destructs the entities left and
+    releases the range, and a pool not ended when `start` returns is a build error. `s = EntityPool.add(steal e)` hands an entity over and gives its
+    8-byte stamp (`s.fetch()` gives the `@T`, or throws `StaleStampError` once removed or once the pool ended, `===` compares),
+    `EntityPool.remove(s)` makes every fetch fail at once without destructing, and `EntityPool.sweep()` destructs the removed ones and frees
+    their slots. `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
   - **`@none_is_zero`** on a record whose first field is an integer that is never 0 for a value makes `R?` the record alone, with the all-zero
     record as None (no flag): `when`, `try`, `is_absent()` and `unwrap()` work as on any Optional.
   - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.lpa`). `x.stamp()` on an entity
