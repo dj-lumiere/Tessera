@@ -3,29 +3,52 @@
 # Forward emitter over the characters (Char) of a UTF-8 @[Byte].
 # Advances by a variable number of bytes per step via utf8_decode.
 # emit() throws AbsentValueError after the last character.
-# A malformed byte sequence yields U+FFFD (the replacement character) and
-# advances past the offending byte, so iteration always terminates.
+# A malformed byte sequence throws MalformedUtf8Error naming the byte, unless
+# the emitter is lossy (made by chars_lossy): then it yields U+FFFD (the
+# replacement character) and advances past the offending byte, so iteration
+# always terminates.
 #
 # Satisfies concept Emitter[BytesCharsEmitter, Char].
 
 module System/Text
 
-### Emitter over the characters (`Char`) of a UTF-8 {@[Byte]}. It satisfies `Emitter[BytesCharsEmitter, Char]`. A malformed sequence yields U+FFFD and skips one byte, so iteration always ends.
+### The failure of reading bytes as UTF-8 that are not well formed: a bad lead or continuation byte, an overlong form, a surrogate, a value past U+10FFFF, or a sequence cut short.
+crashable MalformedUtf8Error
+    ### The position of the first byte of the malformed sequence.
+    index: U64
+
+### Emitter over the characters (`Char`) of a UTF-8 {@[Byte]}. It satisfies `Emitter[BytesCharsEmitter, Char]`. A malformed sequence throws `MalformedUtf8Error`. An emitter made by `chars_lossy` yields U+FFFD instead and skips one byte, so iteration always ends.
 record BytesCharsEmitter
 obeys Emitter[BytesCharsEmitter, Char]
     str: @[Byte]
     index: U64
+    lossy: Bool
 
-### Starts an emitter at the first byte of `str`.
+### Writes which byte the malformed sequence starts at.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine MalformedUtf8Error.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("Malformed UTF-8 at byte {me.index}.")
+    return
+
+### Starts an emitter at the first byte of `str` that throws `MalformedUtf8Error` on a malformed sequence.
 ### :param str: The view to iterate. It is not copied, so its bytes must outlive the emitter.
 ### :returns: An emitter positioned before the first element.
 common routine BytesCharsEmitter.construct(str: @[Byte]) -> Me
-    emitter: Me = Me(str: str, index: 0)
+    emitter: Me = Me(str: str, index: 0, lossy: false)
+    return emitter
+
+### Starts an emitter at the first byte of `str` that yields U+FFFD for a malformed sequence.
+### :param str: The view to iterate. It is not copied, so its bytes must outlive the emitter.
+### :returns: An emitter positioned before the first element.
+common routine BytesCharsEmitter.construct_lossy(str: @[Byte]) -> Me
+    emitter: Me = Me(str: str, index: 0, lossy: true)
     return emitter
 
 ### Yields the next element and advances the emitter.
 ### :returns: The next element, in order.
-### :throws: Throws `AbsentValueError` after the last element has been yielded.
+### :throws: Throws `AbsentValueError` after the last element has been yielded, and `MalformedUtf8Error` at a malformed sequence unless the emitter is lossy.
 routine @BytesCharsEmitter.emit() -> Char
     index: U64 = me.index.peek()
     str: @[Byte] = me.str.peek()
@@ -36,6 +59,9 @@ routine @BytesCharsEmitter.emit() -> Char
     data: @Byte = str.data
     decoded: Utf8Decoded = utf8_decode(bytes: data, pos: index, len: str.count)
     ok: Bool = decoded.ok
+    lossy: Bool = me.lossy.peek()
+    if not ok and not lossy
+        throw MalformedUtf8Error(index: index)
     # on a decode error next_pos == index, so advance by 1 to avoid an infinite loop
     safe_next: U64 = index + 1
     advance: U64 = when

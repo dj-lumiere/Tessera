@@ -1220,8 +1220,10 @@ routine start() -> None
   into units), `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `Clock.monotonic()`
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`borrow(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
-- Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
-  U+FFFD), and text in memory from a manager is a `BorrowedSlice[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.lpa`:
+- Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks). Malformed UTF-8 fails by default:
+  `chars()` throws `MalformedUtf8Error` (its `index` is the byte the bad sequence starts at, receive it with
+  `check iter.emit()`, as a `try` gives `None` for it and for the end alike) and `require_utf8()` checks the whole
+  text. The replacement character is asked for by name: `chars_lossy()` yields U+FFFD for a bad sequence. Text in memory from a manager is a `BorrowedSlice[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.lpa`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
   `split(separator:, manager:)` and `words(manager:)` (a `BorrowedSlice[@[Byte]]` of views into the text, Revare's and
   Mielia's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
@@ -1284,7 +1286,7 @@ routine start() -> None
   (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
   channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
   (Standard/System/Crashables.lpa), plus
-  `OutOfMemoryError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
+  `OutOfMemoryError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`), `MalformedUtf8Error` (`index`),
   `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
   their routines.
 - **A failure nobody receives stops the program where it happens.** A `throw` in a program's routine stops on its own

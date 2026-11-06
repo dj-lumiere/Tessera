@@ -5,8 +5,8 @@
 # FileManager.read_all) is a `BorrowedSlice[Byte]`, which the caller drops. The routines here are on `@[Byte]`: a `BorrowedSlice[Byte]` is
 # lent to them as a view, by argument and by receiver.
 #
-# Nothing checks that the bytes are UTF-8, but is_utf8 does when it matters. The character operations read a malformed
-# sequence as U+FFFD and move on, so they are defined for any bytes. eq, compare, and hash look at the bytes only.
+# Nothing checks that the bytes are UTF-8, but is_utf8 does when it matters. The character operations fail with
+# MalformedUtf8Error on a malformed sequence, and the _lossy twin (chars_lossy) reads it as U+FFFD and moves on. eq, compare, and hash look at the bytes only.
 
 module System/Text
 
@@ -299,6 +299,24 @@ routine @[Byte].is_utf8() -> Bool
 routine @@[Byte].is_utf8() -> Bool
     return me.peek().is_utf8()
 
+### Checks that the bytes are well-formed UTF-8 and gives them back as the text they are.
+### :returns: The same bytes.
+### :throws: Throws `MalformedUtf8Error` naming the first byte of the first malformed sequence.
+routine @[Byte].require_utf8() -> @[Byte]
+    until pos >= me.count with pos: U64 = 0
+        d: Utf8Decoded = utf8_decode(bytes: me.data, pos, len: me.count)
+        if d.ok
+            continue with pos: d.next_pos
+        throw MalformedUtf8Error(index: pos)
+    then
+        return me
+
+### Checks that the bytes are well-formed UTF-8 and gives them back as the text they are.
+### :returns: The same bytes.
+### :throws: Throws `MalformedUtf8Error` naming the first byte of the first malformed sequence.
+routine @@[Byte].require_utf8() -> @[Byte]
+    return me.peek().require_utf8()
+
 ### Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
 ### :param index: The byte position.
 ### :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
@@ -331,16 +349,30 @@ routine @@[Byte].bytes() -> BytesEmitter
     iter: BytesEmitter = me.peek().bytes()
     return iter
 
-### Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
+### Iterates over the characters, decoding UTF-8. The emitter throws `MalformedUtf8Error` at a malformed sequence,
+### naming the byte it starts at. Receive it with `check iter.emit()` (a `try` gives `None` for it as for the end).
 ### :returns: A {BytesCharsEmitter} positioned at the first character.
 routine @[Byte].chars() -> BytesCharsEmitter
-    iter: BytesCharsEmitter = BytesCharsEmitter(str: me.getview(), index: 0)
+    iter: BytesCharsEmitter = BytesCharsEmitter(str: me.getview(), index: 0, lossy: false)
     return iter
 
-### Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
+### Iterates over the characters, decoding UTF-8. The emitter throws `MalformedUtf8Error` at a malformed sequence,
+### naming the byte it starts at.
 ### :returns: A {BytesCharsEmitter} positioned at the first character.
 routine @@[Byte].chars() -> BytesCharsEmitter
     iter: BytesCharsEmitter = me.peek().chars()
+    return iter
+
+### Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD and skips one byte.
+### :returns: A {BytesCharsEmitter} positioned at the first character.
+routine @[Byte].chars_lossy() -> BytesCharsEmitter
+    iter: BytesCharsEmitter = BytesCharsEmitter(str: me.getview(), index: 0, lossy: true)
+    return iter
+
+### Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD and skips one byte.
+### :returns: A {BytesCharsEmitter} positioned at the first character.
+routine @@[Byte].chars_lossy() -> BytesCharsEmitter
+    iter: BytesCharsEmitter = me.peek().chars_lossy()
     return iter
 
 # -- splitting -----------------------------------------------------------------

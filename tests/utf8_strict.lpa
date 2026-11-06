@@ -1,0 +1,61 @@
+# Reading bytes as characters fails on malformed UTF-8 and names the byte: chars() throws MalformedUtf8Error at the
+# first malformed sequence, and require_utf8 checks the whole text. chars_lossy() reads the same bytes with U+FFFD in
+# the place of each malformed byte.
+
+import Hosted
+
+### Reads every character of the text strictly and shows how many came before the end or the failure.
+### :param text: The bytes to read.
+routine read_strict(text: @[Byte]) -> None
+    iter: &BytesCharsEmitter <- text.chars()
+
+    loop with count: U64 = 0
+        when check iter.emit()
+            is Char as char => continue with count: count + 1
+            is MalformedUtf8Error as e =>
+                Console.show("{count} characters, then malformed at byte {e.index}")
+                return
+            is AbsentValueError as e =>
+                Console.show("{count} characters, well formed")
+                return
+
+### Reads every character of the text with replacement and shows them as code points.
+### :param text: The bytes to read.
+routine read_lossy(text: @[Byte]) -> None
+    iter: &BytesCharsEmitter <- text.chars_lossy()
+
+    loop with count: U64 = 0, replaced: U64 = 0
+        c: Optional[Char] = try iter.emit()
+        when c
+            is Char as char =>
+                if char.to[U32]() == 0xFFFD
+                    continue with count: count + 1, replaced: replaced + 1
+                continue with count: count + 1, replaced: replaced
+            is None =>
+                Console.show("{count} characters, {replaced} replaced")
+                return
+
+### Checks the text with require_utf8 and shows the result.
+### :param text: The bytes to check.
+routine require(text: @[Byte]) -> None
+    when check text.require_utf8()
+        is @[Byte] as ok => Console.show("require_utf8: {ok.count()} bytes ok")
+        is MalformedUtf8Error as e => Console.show("require_utf8: byte {e.index}")
+    return
+
+routine start() -> None
+    good: @[Byte] = "a안😀"
+    bad_lead: @[Byte] = "ok \xFF\xFE bad"
+    truncated: @[Byte] = "ab\xE2\x82"
+    overlong: @[Byte] = "\xC0\x80"
+    read_strict(good)
+    read_strict(bad_lead)
+    read_strict(truncated)
+    read_strict(overlong)
+    read_lossy(good)
+    read_lossy(bad_lead)
+    read_lossy(truncated)
+    require(good)
+    require(bad_lead)
+    require(truncated)
+    return
