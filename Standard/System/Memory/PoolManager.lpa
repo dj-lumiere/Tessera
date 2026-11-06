@@ -56,13 +56,16 @@ secret global POOL_MEMORY: &(@MemoryManager?)
 ### The highest generation any slot ever reached, in any pool. It survives the end of a pool, and the next pool's fresh
 ### slots start above it, so a stamp of an ended pool never matches a slot of a later one.
 secret global POOL_HIGH: &U32
+
 ### The generation this pool's fresh slots start at.
 secret global POOL_FIRST: &U32
 
 ### How many slots a chunk holds.
 secret preset POOL_CHUNK_SLOTS: U64 = 4096
+
 ### How many entries the type table has: a power of two, with room for every type a program is likely to keep.
 secret preset POOL_TYPE_ROOM: U64 = 1024
+
 ### The bytes in front of an entity in its slot: the type id and the generation.
 secret preset POOL_HEADER: U64 = 8
 ### The pages committed at a time, a multiple of every page size.
@@ -87,22 +90,9 @@ record Stamped[T]
 entity PoolManager
     nothing
 
-### Makes the value that stands for the pool: it holds no values, the state is in the globals.
-### :returns: The pool.
-secret common routine PoolManager.construct() -> Me
-    return Me()
-
 ### A stamp whose entity was removed from the pool, whose slot was reused, or whose pool has ended.
 crashable StaleStampError
     nothing
-
-### Writes `The entity this stamp names was removed from the pool, or the pool has ended.`
-### :typeparam TWriter: The Writer's type.
-### :param out: Where it goes.
-routine StaleStampError.message_into[TWriter](out: @TWriter) -> None
-needs TWriter obeys Writer
-    out.write("The entity this stamp names was removed from the pool, or the pool has ended.")
-    return
 
 ### The head of a slot: 8 bytes in front of the entity.
 secret record SlotHeader
@@ -132,6 +122,19 @@ secret record PoolType
     destroy: Callable[(Addr,), None]
     ### The bytes of a slot of this type, a multiple of 16.
     stride: U64
+
+### Makes the value that stands for the pool: it holds no values, the state is in the globals.
+### :returns: The pool.
+secret common routine PoolManager.construct() -> Me
+    return Me()
+
+### Writes `The entity this stamp names was removed from the pool, or the pool has ended.`
+### :typeparam TWriter: The Writer's type.
+### :param out: Where it goes.
+routine StaleStampError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("The entity this stamp names was removed from the pool, or the pool has ended.")
+    return
 
 ### The bytes of a slot of `T`: the header and the entity rounded up to 16 bytes.
 ### :typeparam T: The entity's type.
@@ -206,7 +209,7 @@ secret routine raise_generation_floor(floor: U32) -> None
 ### :throws: Throws `UnacceptedValueError` when a pool lives already, the manager doesn't handle pages, or the slots of earlier pools used up the generations (U32.MAX - 1 reached).
 ### :throws: Throws `OutOfMemoryError` when there is no memory for the tables.
 @uses_pool
-common routine PoolManager.set_up(memory: @MemoryManager) -> PoolManager
+common routine PoolManager.set_up(memory: @MemoryManager) -> Me
     if not memory.has_pages()
         throw UnacceptedValueError(description: "The PoolManager reserves address space, and this memory manager doesn't handle pages: call PoolManager.set_up(memory: PAGES).")
     if POOL_HIGH.load() >= U32.MAX - 1
@@ -238,7 +241,7 @@ common routine PoolManager.set_up(memory: @MemoryManager) -> PoolManager
     POOL_TYPES.store(types)
     POOL_MEMORY.store(memory)
     POOL_BASE.store(base)
-    return PoolManager.construct()
+    return Me.construct()
 
 ### Whether `set_up` was called.
 ### :returns: True once the pool is set up.
@@ -306,7 +309,9 @@ secret routine take_chunk(entry: @PoolType) -> Bool
 secret routine take_slot(entry: @PoolType) -> U32
     free: U32 = entry.free.peek()
     if free != 0
-        entry.free.poke(slot_address(free).stride(POOL_HEADER).to[@U32]().peek())
+        entry.free.poke(slot_address(free).stride(POOL_HEADER)
+            .to[@U32]()
+            .peek())
         return free
     if entry.fresh_next.peek() == entry.fresh_end.peek()
         if not take_chunk(entry)
@@ -403,7 +408,10 @@ needs AnyType T
             memory.give_back(POOL_REMOVED.load())
         POOL_REMOVED.store(fresh)
         POOL_REMOVED_ROOM.store(grown)
-    POOL_REMOVED.load().to[@U32]().stride(waiting).poke(stamp.slot)
+    POOL_REMOVED.load()
+        .to[@U32]()
+        .stride(waiting)
+        .poke(stamp.slot)
     POOL_REMOVED_COUNT.store(waiting + 1)
     header.generation.poke(generation + 1)
     note_generation(generation + 1)
@@ -431,7 +439,10 @@ common routine PoolManager.sweep() -> None
         waiting: U64 = POOL_REMOVED_COUNT.load()
         if waiting == 0
             return
-        slot: U32 = POOL_REMOVED.load().to[@U32]().stride(waiting - 1).peek()
+        slot: U32 = POOL_REMOVED.load()
+            .to[@U32]()
+            .stride(waiting - 1)
+            .peek()
         POOL_REMOVED_COUNT.store(waiting - 1)
         end_slot(slot)
 
@@ -440,7 +451,7 @@ common routine PoolManager.sweep() -> None
 ### gives the range and the tables back, so another pool can be set up.
 @uses_pool
 routine @PoolManager.destruct() -> None
-    PoolManager.sweep()
+    Me.sweep()
     when POOL_MEMORY.load()
         is @MemoryManager as memory =>
             for pass in 0 til 2
