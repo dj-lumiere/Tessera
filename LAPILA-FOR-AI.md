@@ -1854,7 +1854,8 @@ Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop
 - `out.write("x = {x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals:
   `"{sum2([7, 8])}"`, `"{text.find("world")}"`), `{{` is a literal brace,
-  a bare number literal in a hole or in `Console.show(7)` has no type and is a build error that suggests `S64(7)`,
+  a number literal in a hole or in `Console.show(7)`, and a calculation of literals alone (`{1 + 2 * 3}`), has no type
+  from anywhere and takes the default: an integer literal is an `S64` and a float literal a `B64`, on every target,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`, `Console.output().write(...)`). It's only ever a method: there is
   no free `write(out, "...")`, and no `print` / `eprint` (the console's lines are `Console.show` / `Console.alert`).
@@ -2801,7 +2802,7 @@ S1100 memory and access, S1120 work, S1130 failures, S1150 control flow, S1180 e
 - `LI-S1070`: A call that cannot run at build time, in a preset.
 - `LI-S1071`: A preset whose value or type cannot be a preset (an entity, an address, itself).
 - `LI-S1072`: A buildtime calculation that divides by zero, overflows or does not fit.
-- `LI-S1073`: A number literal that nothing gives a type.
+- `LI-S1073`: A number literal that nothing gives a type where no default applies (a literal receiver of a call: `S64.abs(...)`).
 - `LI-S1074`: A global or preset initializer of the wrong form.
 - `LI-S1075`: A string literal that does not fit the array or the character width it fills.
 - `LI-S1076`: An address literal that is malformed or too wide for the target.

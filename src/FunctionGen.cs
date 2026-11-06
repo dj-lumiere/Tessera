@@ -2865,7 +2865,8 @@ public sealed partial class FunctionGen
     {
         // A call's type is asked again by every call above it in a chain (the plan, the checks, the evaluation), and each
         // answer asks the receiver's: kept per node, a long chain costs a few answers per link instead of a few to the power of its length.
-        if (e is not (CallExpr or NsCallExpr or MethodCallExpr)) return InferNode(e);
+        // An operator is kept by its own node too, since each answer desugars it into a new call (`1 - 2 * 3 + 4 ...`).
+        if (e is not (CallExpr or NsCallExpr or MethodCallExpr or BinaryExpr or UnaryExpr)) return InferNode(e);
         var key = (e, _reach > 0);
         if (_inferred.TryGetValue(key, out var known)) return known;
         var type = InferNode(e);
@@ -2874,6 +2875,9 @@ public sealed partial class FunctionGen
     }
 
     private readonly Dictionary<(Expr, bool), DType?> _inferred = new(new InferKeyComparer());
+
+    /// Above 0 while a call's type is asked on its own (Infer): a literal receiver then takes no default type.
+    private int _askingType;
 
     private sealed class InferKeyComparer : IEqualityComparer<(Expr, bool)>
     {
@@ -2936,7 +2940,13 @@ public sealed partial class FunctionGen
             case NsCallExpr or MethodCallExpr when TemplateCall(e) is not null:
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
-                return InferCall(e, null);
+                // A call on untyped literals alone (`2 * 3`) has no type of its own: it takes the one its place gives
+                // when it is planned there (the default S64 or B64 only when its place gives none), so asking for its
+                // type on its own gives none instead of the default or the error.
+                _askingType++;
+                try { return InferCall(e, null); }
+                catch (CompileError error) when (error.Code == Li.LiteralNeedsType) { return null; }
+                finally { _askingType--; }
             default:
                 return null;
         }
@@ -4556,7 +4566,7 @@ public sealed partial class FunctionGen
     /// A memory cell shows itself (MemoryCellWrite), never the value it holds.
     private void WriteShown(Expr writer, Expr shown, string shower)
     {
-        UntypedLiteral(shown, shown.Pos, $"{shower}(...)");
+        shown = DefaultLiterals(shown);
         if (InferQuiet(shown) is { } t and not PtrType && ManagedMemory(t) is null && !IsPointedSlice(t)
             && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
             throw Err(Li.ShowNotAvailable, shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
@@ -4578,17 +4588,33 @@ public sealed partial class FunctionGen
         }
     }
 
-    /// A number literal written as text (a template hole, `Console.show(7)`) has nothing that gives it a type, so it
-    /// is a build error at the literal that says how to give it one.
-    private void UntypedLiteral(Expr value, Pos at, string where)
+    /// A number literal written as text (a template hole, `Console.show(7)`) has nothing that gives it a type, so it takes
+    /// the default one: an integer literal is an S64 and a float literal a B64, on every target. So does every literal of a
+    /// calculation of literals alone (`1 + 2 * 3`). Anything else is the value as written.
+    private Expr DefaultLiterals(Expr value)
     {
-        var literal = value is UnaryExpr { Op: "-", Operand: var operand } ? operand : value;
-        if (literal is not (IntLit or FloatLit) || Infer(value) is not null) return;
-        string type = literal is FloatLit ? "B64" : "S64";
-        string written = new Printer().Expr(value);
-        throw Err(Li.LiteralNeedsType, at, $"nothing says this literal's type in {where}: name it, {type}({written}), or bind it with its type "
-            + $"first (x: {type} = {written}) and write that name");
+        if (LiteralsAlone(value) is null || Infer(value) is not null) return value;
+        return Defaulted(value);
     }
+
+    private static Expr Defaulted(Expr e) => e switch
+    {
+        IntLit lit => new TypedLit(lit, IntType.S(64), lit.Pos),
+        FloatLit lit => new TypedLit(lit, FloatType.B64, lit.Pos),
+        UnaryExpr { Op: "-", Operand: IntLit or FloatLit } u => new TypedLit(u, u.Operand is FloatLit ? FloatType.B64 : IntType.S(64), u.Pos),
+        UnaryExpr u => u with { Operand = Defaulted(u.Operand) },
+        BinaryExpr b => b with { Left = Defaulted(b.Left), Right = Defaulted(b.Right) },
+        _ => e,
+    };
+
+    /// The first number literal of an expression made of number literals and operators alone, or null for any other.
+    private static Expr? LiteralsAlone(Expr e) => e switch
+    {
+        IntLit or FloatLit => e,
+        UnaryExpr { Op: "-", Operand: var operand } => LiteralsAlone(operand),
+        BinaryExpr b when Operators.Routine(b.Op) is not null && LiteralsAlone(b.Left) is { } first && LiteralsAlone(b.Right) is not null => first,
+        _ => null,
+    };
 
     /// `S64(7)`: a number type's name called with one number literal is that literal as a value of the type. Null for
     /// a call that is no such thing. With anything but a literal it is a build error that points to `to[T]()`.
@@ -4749,7 +4775,7 @@ public sealed partial class FunctionGen
             // A call to no routine at all is reported as that, not as a missing method of the writer it would be handed to.
             if (value is CallExpr unknownCall && Infer(value) is null && PlanCall(value, null) is null)
                 throw Err(Li.UnknownName, at, UnknownCall(unknownCall));
-            UntypedLiteral(value, at, $"{{{source.Trim()}}}");
+            value = DefaultLiterals(value);
             Flush();
             _templateHole = source.Trim();
             try
@@ -6044,8 +6070,16 @@ public sealed partial class FunctionGen
             // whatever the arguments or the result are.
             rt = m.Receiver is StrLit
                 ? BytesType(m.Receiver.Pos)
-                : BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
+                : BlanketReceiverType(m) ?? m.Args.Select(TryInfer).FirstOrDefault(t => t is not null)
                   ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
+            // Where nothing gives it a type, a number literal takes the default one, on every target (`same: Bool = 0 == 1`).
+            if (rt is null && _askingType == 0)
+                rt = m.Receiver switch
+                {
+                    IntLit or UnaryExpr { Op: "-", Operand: IntLit } => IntType.S(64),
+                    FloatLit or UnaryExpr { Op: "-", Operand: FloatLit } => FloatType.B64,
+                    _ => null,
+                };
             if (rt is null)
             {
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"[{string.Join(", ", m.TypeArgs)}]");
