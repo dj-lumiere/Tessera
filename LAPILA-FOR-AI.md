@@ -139,7 +139,7 @@ routine start() -> None
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`, which crashes with `UnacceptedValueError`
   on the zero address, or `a.to[@T?]()`, which gives None for it (take it apart with `when`). An `Addr` moves by a `ByteSize` with `+%` /
   `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
-  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `PointedCell[T]` is
+  check no bounds. `a.align_up[16]()` / `a.align_down[16]()` / `a.is_aligned[16]()` round to a power-of-two alignment (any other in `[...]` is a build error), `a.align_up(by: size)` and the others take a `ByteSize` known only at run time (`UnacceptedValueError` when it isn't a power of two), and `align_up` throws `IntegerOverflowError` past the end of the address space. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `PointedCell[T]` is
   written (`@@Byte`, `@Items[@S32, 3]`); it keeps its name only where routines are declared on it or called through
   it (`routine PointedCell[T].peek`). An annotation is a `@name` line of its own
   above the declaration, one per line: `@target(os: "windows")`, then `@external("c")`, then `@noreturn`. `@T` is
@@ -1007,7 +1007,7 @@ routine start() -> None
   SEQ_CST, MemoryOrder F = if S == ACQ_REL then ACQUIRE else if S == RELEASE then RELAXED else S`): where a choice
   member goes, a bare member name is that member.
 - **`build_error("text")`** is a line that is a build error where an instance reaches it. A `when` or an `if` on a
-  value type parameter goes straight to the side it takes, so a `build_error` on another side is never reached and
+  value type parameter (compared after the operators a preset takes, as in `(A & (A -% 1)) != 0`) goes straight to the side it takes, so a `build_error` on another side is never reached and
   costs nothing: `if O == MemoryOrder.RELEASE` then `build_error("you gave peek_unbroken the order {O}, ...")` refuses
   that one instance. A `{P}` in the text is the value parameter P of the instance (a choice member by its name). The
   error points at the program's own line that made the instance (followed up through generic and standard library

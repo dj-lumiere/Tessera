@@ -4180,7 +4180,8 @@ public sealed partial class FunctionGen
     };
 
     /// Whether every part of a condition is known when the builder writes it: literals, value type parameters and
-    /// choice members, under comparisons, `and`, `or` and `not`.
+    /// choice members, under arithmetic and bitwise operators (`(A & (A -% 1)) != 0`), comparisons, `and`, `or` and
+    /// `not`.
     private bool Buildtime(Expr e) => e switch
     {
         IntLit or BoolLit or TypedIntLit => true,
@@ -4188,6 +4189,7 @@ public sealed partial class FunctionGen
         PresetRef { Owner: null, Path: null } r => _env.Get(r.Name) is ConstArg,
         PresetRef { Owner: { } owner } => TryResolveOwner(owner) is ChoiceType { Decl.IsFlags: false },
         BinaryExpr { Op: "==" or "!=" or "<" or "<=" or ">" or ">=" or "and" or "or" } b => Buildtime(b.Left) && Buildtime(b.Right),
+        BinaryExpr { Op: not ("===" or "!==") } b when Operators.Routine(b.Op) is not null => Buildtime(b.Left) && Buildtime(b.Right),
         ChainedComparison chain => chain.Operands.All(Buildtime),
         UnaryExpr { Op: "not" } n => Buildtime(n.Operand),
         _ => false,

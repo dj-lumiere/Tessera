@@ -81,6 +81,78 @@ routine Addr.sub_wrap(other: Me) -> ByteSize
     b: U64 = ptrtoint[Me, U64](other)
     return ByteSize.construct(bytes: a -% b)
 
+# -- alignment -----------------------------------------------------------------
+
+### The first address at or after `me` that is a multiple of `ALIGN` bytes: `a.align_up[16]()`.
+### :typeparam ALIGN: The alignment in bytes, a power of two (any other is a build error).
+### :returns: The aligned address, `me` itself when it is aligned already.
+### :throws: Throws `IntegerOverflowError` when that address would be past the end of the address space.
+routine Addr.align_up[ALIGN]() -> Me
+needs U64 ALIGN
+    if ALIGN == 0 or (ALIGN & (ALIGN -% 1)) != 0
+        build_error("you gave align_up the alignment {ALIGN}, which is not a power of two: give it 1, 2, 4, 8, 16, ...")
+    return me.align_up(by: ByteSize.construct(bytes: ALIGN))
+
+### The last address at or before `me` that is a multiple of `ALIGN` bytes: `a.align_down[16]()`.
+### :typeparam ALIGN: The alignment in bytes, a power of two (any other is a build error).
+### :returns: The aligned address, `me` itself when it is aligned already.
+routine Addr.align_down[ALIGN]() -> Me
+needs U64 ALIGN
+    if ALIGN == 0 or (ALIGN & (ALIGN -% 1)) != 0
+        build_error("you gave align_down the alignment {ALIGN}, which is not a power of two: give it 1, 2, 4, 8, 16, ...")
+    return me.align_down(by: ByteSize.construct(bytes: ALIGN))
+
+### Whether `me` is a multiple of `ALIGN` bytes: `a.is_aligned[16]()`.
+### :typeparam ALIGN: The alignment in bytes, a power of two (any other is a build error).
+### :returns: `true` when the address is aligned.
+routine Addr.is_aligned[ALIGN]() -> Bool
+needs U64 ALIGN
+    if ALIGN == 0 or (ALIGN & (ALIGN -% 1)) != 0
+        build_error("you gave is_aligned the alignment {ALIGN}, which is not a power of two: give it 1, 2, 4, 8, 16, ...")
+    return me.is_aligned(by: ByteSize.construct(bytes: ALIGN))
+
+### The first address at or after `me` that is a multiple of `by`, for an alignment known only while the program runs.
+### :param by: The alignment, a power of two.
+### :returns: The aligned address, `me` itself when it is aligned already.
+### :throws: Throws `UnacceptedValueError` when `by` is not a power of two, and `IntegerOverflowError` when the
+###     address would be past the end of the address space.
+routine Addr.align_up(by: ByteSize) -> Me
+    mask: U64 = alignment_mask(by)
+    a: U64 = ptrtoint[Me, U64](me)
+    up: U64 = (a + mask) & mask.bitnot()
+    r: Me = addr_offset(base: me, bytes: bitcast[U64, S64](up - a))
+    return r
+
+### The last address at or before `me` that is a multiple of `by`, for an alignment known only while the program runs.
+### :param by: The alignment, a power of two.
+### :returns: The aligned address, `me` itself when it is aligned already.
+### :throws: Throws `UnacceptedValueError` when `by` is not a power of two.
+routine Addr.align_down(by: ByteSize) -> Me
+    mask: U64 = alignment_mask(by)
+    a: U64 = ptrtoint[Me, U64](me)
+    back: U64 = 0 -% (a & mask)
+    r: Me = addr_offset(base: me, bytes: bitcast[U64, S64](back))
+    return r
+
+### Whether `me` is a multiple of `by`, for an alignment known only while the program runs.
+### :param by: The alignment, a power of two.
+### :returns: `true` when the address is aligned.
+### :throws: Throws `UnacceptedValueError` when `by` is not a power of two.
+routine Addr.is_aligned(by: ByteSize) -> Bool
+    mask: U64 = alignment_mask(by)
+    a: U64 = ptrtoint[Me, U64](me)
+    return (a & mask) == 0
+
+### The low bits an address of alignment `by` has clear: `by` less one.
+### :param by: The alignment.
+### :returns: The mask.
+### :throws: Throws `UnacceptedValueError` when `by` is not a power of two.
+secret routine alignment_mask(by: ByteSize) -> U64
+    bytes: U64 = by.bytes()
+    if not bytes.is_power_of_two()
+        throw UnacceptedValueError(description: "An alignment is a power of two (1, 2, 4, 8, 16, ...), and this one isn't.")
+    return bytes - 1
+
 ### The raw byte-offset arithmetic behind `+%` and `-%`: a `getelementptr i8` with no bounds checking.
 ### :param base: The starting address.
 ### :param bytes: The signed byte distance to move.

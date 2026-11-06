@@ -458,6 +458,9 @@ public sealed partial class Compiler
                     v = name is "floordiv" or "div_trunc" ? q : r;
                     break;
                 }
+                case "add_wrap": return new ConstVal(it, Wrap(a + b, it));
+                case "sub_wrap": return new ConstVal(it, Wrap(a - b, it));
+                case "mul_wrap": return new ConstVal(it, Wrap(a * b, it));
                 case "min": return new ConstVal(it, BigInteger.Min(a, b));
                 case "max": return new ConstVal(it, BigInteger.Max(a, b));
                 case "bitand": return new ConstVal(it, Wrap(Unsigned(a, it.Bits) & Unsigned(b, it.Bits), it));
@@ -499,8 +502,8 @@ public sealed partial class Compiler
     }
 
     /// The answer to a condition every part of which the builder knows, such as `O == MemoryOrder.ACQUIRE` in an
-    /// instance whose value parameter O is ACQUIRE: comparisons of integers and of choice members (`==` and `!=`),
-    /// `and`, `or`, `not` and Bool constants. Null when any part isn't known at build time, and the condition is then
+    /// instance whose value parameter O is ACQUIRE: comparisons of integers (worked out with the operators a preset
+    /// takes) and of choice members (`==` and `!=`), `and`, `or`, `not` and Bool constants. Null when any part isn't known at build time, and the condition is then
     /// tested where it runs.
     public bool? FoldCondition(Expr e, TypeEnv env)
     {
