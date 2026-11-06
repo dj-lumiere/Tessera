@@ -201,7 +201,6 @@ public static class Li
     public static readonly Code CrossThreadView = S(1109, "CrossThreadView", "A view handed to work that runs on another thread.");
     public static readonly Code MemoryCheckLimit = S(1110, "MemoryCheckLimit", "A routine with too many paths for the memory check to follow.");
     public static readonly Code LateinitRead = S(1111, "LateinitRead", "A lateinit place read before it is filled.");
-    public static readonly Code StampProblem = S(1112, "StampProblem", "A stamp taken of something that has no stamp slot.");
     public static readonly Code NothingToGiveBack = S(1113, "NothingToGiveBack", "A drop of a value that has nothing to give back.");
     public static readonly Code ChannelSharing = S(1114, "ChannelSharing", "A channel that hands out a value it cannot hand over safely.");
     public static readonly Code AccessHeldTwice = S(1115, "AccessHeldTwice", "Access to something taken again while it is already held.");

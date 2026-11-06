@@ -369,7 +369,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     public bool IsNullable => IsFlagged && !IsAddressed && Leaves[0].Repr is PtrType { Pointee: not null } or CallableType { IsOpen: false };
 
     /// Whether this is an Optional of a record marked `@none_is_zero` (its first field, an integer, is 0 for None and never 0
-    /// for a value), such as `PoolStamp[T]?`: the record alone, with no flag, the all-zero record being None.
+    /// for a value), such as `Stamped[T]?`: the record alone, with no flag, the all-zero record being None.
     public bool IsZeroNone => IsFlagged && !IsAddressed && !IsNullable && Leaves[0] is RecordType { Decl: var d } && d.AnnotationNamed("none_is_zero") is not null;
 
     /// Whether the Optional has no flag of its own: an address that is null for None, or a `@none_is_zero` record.

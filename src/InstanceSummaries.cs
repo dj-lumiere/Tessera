@@ -111,16 +111,12 @@ public sealed partial class Compiler
 
     private Recording? CurrentRecording => _recordings.Count > 0 ? _recordings.Peek() : null;
 
-    /// Whether the program may change how a library instance is built, so no summary may stand for one: it stamps a
-    /// library entity (`Stamped[...]` changes the entity's layout), or it adds routines to a library type or to every
+    /// Whether the program may change how a library instance is built, so no summary may stand for one: it adds routines to a library type or to every
     /// type (a library routine's call may then mean one of them).
     public bool ProgramChangesLibrary()
     {
         foreach (var r in _allRoutines.Where(r => !r.IsLibrary && r.Owner is not null))
             if (IsBlanketOwner(r) || OwnerDeclQuiet(r) is { IsLibrary: true }) return true;
-        if (_stampedNames is { Count: > 0 } stamped
-            && _records.Values.SelectMany(g => g).Any(d => d.IsLibrary && d.IsEntity && stamped.Contains(d.Name)))
-            return true;
         return false;
     }
 

@@ -1,94 +1,107 @@
-# Lapila stdlib: the EntityPool and PoolStamp, a pool that keeps entities of many types and links to them by stamps
+# Lapila stdlib: the PoolManager and Stamped, a pool that keeps entities of many types and links to them by stamps
 #
-# `EntityPool.add(steal node)` hands an entity to the pool, which keeps it in a slot and gives a `PoolStamp[Node]`, 8
+# `PoolManager.add(steal node)` hands an entity to the pool, which keeps it in a slot and gives a `Stamped[Node]`, 8
 # bytes: the slot's number and the slot's generation. `stamp.fetch()` gives the entity's `@T`, or throws
-# `StaleStampError` when the generation in the slot is not the stamp's. `EntityPool.remove(stamp)` takes effect at once:
+# `StaleStampError` when the generation in the slot is not the stamp's. `PoolManager.remove(stamp)` takes effect at once:
 # the slot's generation goes up, so every later `fetch` of any stamp of it fails, but the entity stays in its slot and
-# nothing is destructed. `EntityPool.sweep()` destructs the removed entities and makes their slots free for the next
+# nothing is destructed. `PoolManager.sweep()` destructs the removed entities and makes their slots free for the next
 # `add`, in time proportional to how many were removed. Until the sweep an `@T` fetched before the `remove` still
-# points at a live entity. The pool is an entity the program holds, `pool: &EntityPool <- EntityPool.set_up(memory: PAGES)`:
+# points at a live entity. The pool is an entity the program holds, `pool: &PoolManager <- PoolManager.set_up(memory: PAGES)`:
 # ending it (`drop pool`, or the builder's give back of a STACK place at the exit of `start`) sweeps, makes every stamp
 # stale, destructs the entities that are left and gives the pool's memory back. A fetch after that throws `StaleStampError`.
-# A link that may be missing is a `PoolStamp[T]?`: a `@none_is_zero` record, so it is the 8-byte stamp itself and the
+# A link that may be missing is a `Stamped[T]?`: a `@none_is_zero` record, so it is the 8-byte stamp itself and the
 # all-zero stamp is None.
 #
 # The pool reserves one range of address space when it is set up (64 GiB on a 64-bit target) and commits pages of it as
 # it grows, so nothing ever moves and a slot's address is the range's start plus the slot's number times 16. A slot is
 # a header and the entity: the header is 8 bytes, the type id (`typeid[T]()`, 0 while the slot holds no entity) and
 # the generation, and the entity follows at 8 bytes. The slots of one type sit side by side in chunks of 4,096 slots
-# taken from the range one after the other. A fetch reads the range's start and the slot's generation, with no
-# lock. Adding, removing and sweeping take a short lock (the one of the PoolManager's table). Slot 0 is the range's
+# taken from the range one after the other. A fetch reads the range's start and the slot's generation. The pool belongs
+# to one thread, like a global the program changes: no lock guards it, and the build refuses a routine that a work runs on
+# another thread to use it (see the thread rule in LAPILA-FOR-AI.md). Slot 0 is the range's
 # first 16 bytes, never given out and with generation 1, so an all-zero stamp is always stale. A slot whose generation
 # reaches U32.MAX is retired, never used again. A global high-water mark of the generations survives the end of a pool and
 # the next pool's fresh slots start above it, so a stamp of an ended pool never matches a later pool's slot, and when the
-# mark is about to pass U32.MAX the next set_up is refused. The stamps don't carry the pool: the pool's state is globals, so a fetch is the same
-# two reads. `EntityPool.set_up(memory: PAGES)` is called in `start`,
-# before the first `add`, with a memory manager that reserves pages. Only one pool lives at a time.
+# mark is about to pass U32.MAX the next set_up is refused. The stamps don't carry the pool: the pool's state is globals.
+# `PoolManager.set_up(memory: PAGES)` is called in `start`, before the first `add`, with a memory manager that reserves
+# pages. Only one pool lives at a time.
 
 module System/Memory
 
 ### The start of the reserved range, zero before set_up. Slot n is at this address plus n times 16.
-secret global ENTITY_BASE: &Addr
+secret global POOL_BASE: &Addr
 ### The bytes reserved.
-secret global ENTITY_RESERVED: &U64
+secret global POOL_RESERVED: &U64
 ### The bytes of the range committed so far, from its start.
-secret global ENTITY_COMMITTED: &U64
+secret global POOL_COMMITTED: &U64
 ### The first 16-byte unit of the range no chunk has taken.
-secret global ENTITY_TOP: &U64
-### The table of types, `ENTITY_TYPE_ROOM` entries of `PoolType` found by their type id.
-secret global ENTITY_TYPES: &Addr
+secret global POOL_TOP: &U64
+### The table of types, `POOL_TYPE_ROOM` entries of `PoolType` found by their type id.
+secret global POOL_TYPES: &Addr
 ### The chunks taken so far: one `PoolChunk` each.
-secret global ENTITY_CHUNK_LIST: &Addr
+secret global POOL_CHUNK_LIST: &Addr
 ### How many chunks the chunk list has room for.
-secret global ENTITY_CHUNK_ROOM: &U64
+secret global POOL_CHUNK_ROOM: &U64
 ### How many chunks there are.
-secret global ENTITY_CHUNK_COUNT: &U64
+secret global POOL_CHUNK_COUNT: &U64
 ### The slots removed and not swept yet, one U32 each.
-secret global ENTITY_REMOVED: &Addr
+secret global POOL_REMOVED: &Addr
 ### How many slots the removed list has room for.
-secret global ENTITY_REMOVED_ROOM: &U64
+secret global POOL_REMOVED_ROOM: &U64
 ### How many removed slots wait for a sweep.
-secret global ENTITY_REMOVED_COUNT: &U64
+secret global POOL_REMOVED_COUNT: &U64
 ### Where the tables come from and which reserved the range, None before set_up.
-secret global ENTITY_MEMORY: &(@MemoryManager?)
+secret global POOL_MEMORY: &(@MemoryManager?)
 
 ### The highest generation any slot ever reached, in any pool. It survives the end of a pool, and the next pool's fresh
 ### slots start above it, so a stamp of an ended pool never matches a slot of a later one.
-secret global ENTITY_HIGH: &U32
+secret global POOL_HIGH: &U32
 ### The generation this pool's fresh slots start at.
-secret global ENTITY_FIRST: &U32
+secret global POOL_FIRST: &U32
 
 ### How many slots a chunk holds.
-secret preset ENTITY_CHUNK_SLOTS: U64 = 4096
+secret preset POOL_CHUNK_SLOTS: U64 = 4096
 ### How many entries the type table has: a power of two, with room for every type a program is likely to keep.
-secret preset ENTITY_TYPE_ROOM: U64 = 1024
+secret preset POOL_TYPE_ROOM: U64 = 1024
 ### The bytes in front of an entity in its slot: the type id and the generation.
-secret preset ENTITY_HEADER: U64 = 8
+secret preset POOL_HEADER: U64 = 8
 ### The pages committed at a time, a multiple of every page size.
-secret preset ENTITY_COMMIT_STEP: U64 = 1048576
+secret preset POOL_COMMIT_STEP: U64 = 1048576
 
-### A link to an entity in the EntityPool: the entity's slot and the slot's generation when the entity was added. The
+### A link to an entity in the PoolManager: the entity's slot and the slot's generation when the entity was added. The
 ### stamp doesn't keep the entity alive and copies for free. `fetch()` reads the entity while its slot has this
-### generation. A link that may be missing is a `PoolStamp[T]?`, which is this record alone with the all-zero record as
+### generation. A link that may be missing is a `Stamped[T]?`, which is this record alone with the all-zero record as
 ### None (slot 0 is never given out).
 ### :typeparam T: The entity's type.
 @none_is_zero
-record PoolStamp[T]
+record Stamped[T]
     ### The entity's slot, never 0.
     secret slot: U32
     ### The slot's generation when the entity was added.
     secret generation: U32
 
 ### The program's pool of entities, one at a time. The program holds it from `set_up` and ends it, which destructs the
-### entities left and gives the memory back: `pool: &EntityPool <- EntityPool.set_up(memory: PAGES)` in `start`. The
+### entities left and gives the memory back: `pool: &PoolManager <- PoolManager.set_up(memory: PAGES)` in `start`. The
 ### pool's state is globals, so its routines are called on the type and the stamps don't carry the pool.
-entity EntityPool
+entity PoolManager
     nothing
 
 ### Makes the value that stands for the pool: it holds no values, the state is in the globals.
 ### :returns: The pool.
-secret common routine EntityPool.construct() -> Me
+secret common routine PoolManager.construct() -> Me
     return Me()
+
+### A stamp whose entity was removed from the pool, whose slot was reused, or whose pool has ended.
+crashable StaleStampError
+    nothing
+
+### Writes `The entity this stamp names was removed from the pool, or the pool has ended.`
+### :typeparam TWriter: The Writer's type.
+### :param out: Where it goes.
+routine StaleStampError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter obeys Writer
+    out.write("The entity this stamp names was removed from the pool, or the pool has ended.")
+    return
 
 ### The head of a slot: 8 bytes in front of the entity.
 secret record SlotHeader
@@ -125,7 +138,7 @@ secret record PoolType
 @inline
 secret routine slot_stride[T]() -> U64
 needs AnyType T
-    raw: U64 = ENTITY_HEADER + sizeof[T]()
+    raw: U64 = POOL_HEADER + sizeof[T]()
     rounded: U64 = (raw + 15) // 16 * 16
     return when
         rounded < 16 => 16
@@ -144,15 +157,15 @@ needs AnyType T
 ### :returns: Its address.
 @inline
 secret routine slot_address(slot: U32) -> @Byte
-    return bitcast[Addr, @Byte](pool_read(ENTITY_BASE)).stride(slot.to[U64]() << 4)
+    return bitcast[Addr, @Byte](POOL_BASE.load()).stride(slot.to[U64]() << 4)
 
 ### The entry of a type in the type table: the one with this id, else the empty one it would take. Called with the lock
 ### held, or on a table that doesn't change.
 ### :param id: The type id, not 0.
 ### :returns: The entry.
 secret routine type_entry(id: U32) -> @PoolType
-    table: @PoolType = ENTITY_TYPES.load().to[@PoolType]()
-    mask: U64 = ENTITY_TYPE_ROOM - 1
+    table: @PoolType = POOL_TYPES.load().to[@PoolType]()
+    mask: U64 = POOL_TYPE_ROOM - 1
     loop with at: U64 = id.to[U64]() & mask
         entry: @PoolType = table.stride(at)
         found: U32 = entry.id.peek()
@@ -164,27 +177,25 @@ secret routine type_entry(id: U32) -> @PoolType
 ### :returns: The manager.
 ### :throws: Throws `UnacceptedValueError` when `set_up` wasn't called.
 secret routine entity_memory() -> @MemoryManager
-    when ENTITY_MEMORY.load()
+    when POOL_MEMORY.load()
         is @MemoryManager as memory => return memory
         is None =>
-            throw UnacceptedValueError(description: "The EntityPool is not set up: call EntityPool.set_up(memory: PAGES) in start, before the first add.")
+            throw UnacceptedValueError(description: "The PoolManager is not set up: call PoolManager.set_up(memory: PAGES) in start, before the first add.")
 
 ### Records a generation a slot reached: the high-water mark only goes up. Called with the lock held, or while the pool ends.
 ### :param generation: The generation.
 @inline
 secret routine note_generation(generation: U32) -> None
-    if generation > ENTITY_HIGH.load()
-        ENTITY_HIGH.store(generation)
+    if generation > POOL_HIGH.load()
+        POOL_HIGH.store(generation)
     return
 
-### Raises the floor of the generations: the next pool's fresh slots start above `floor`, so none of its stamps equals a
-### stamp of any earlier pool. It never lowers the mark. For a test of the limit, and for a program that wants the
-### stamps of its pools apart by more than the pools themselves.
+### Raises the floor of the generations: the next pool's fresh slots start above `floor`. It never lowers the mark. Not
+### part of the language a program sees: it is exported under a C name so a test of the generation limit can reach it.
 ### :param floor: The generation the next pool starts above.
-common routine EntityPool.raise_generation_floor(floor: U32) -> None
-    lock_pool()
+@export("lapila_pool_raise_generation_floor")
+secret routine raise_generation_floor(floor: U32) -> None
     note_generation(floor)
-    unlock_pool()
     return
 
 ### Sets the pool up: it reserves its range of address space from `memory`, which also gives its tables. A program calls
@@ -193,51 +204,44 @@ common routine EntityPool.raise_generation_floor(floor: U32) -> None
 ### :returns: The pool, which the program ends.
 ### :throws: Throws `UnacceptedValueError` when a pool lives already, the manager doesn't handle pages, or the slots of earlier pools used up the generations (U32.MAX - 1 reached).
 ### :throws: Throws `OutOfMemoryError` when there is no memory for the tables.
-common routine EntityPool.set_up(memory: @MemoryManager) -> EntityPool
+common routine PoolManager.set_up(memory: @MemoryManager) -> PoolManager
     if not memory.has_pages()
-        throw UnacceptedValueError(description: "The EntityPool reserves address space, and this memory manager doesn't handle pages: call EntityPool.set_up(memory: PAGES).")
-    lock_pool()
-    if ENTITY_HIGH.load() >= U32.MAX - 1
-        unlock_pool()
-        throw UnacceptedValueError(description: "The EntityPool's generations are used up: slots of earlier pools reached the last generation, so another pool could not tell its stamps from theirs. Restart the program.")
-    when ENTITY_MEMORY.load()
+        throw UnacceptedValueError(description: "The PoolManager reserves address space, and this memory manager doesn't handle pages: call PoolManager.set_up(memory: PAGES).")
+    if POOL_HIGH.load() >= U32.MAX - 1
+        throw UnacceptedValueError(description: "The PoolManager's generations are used up: slots of earlier pools reached the last generation, so another pool could not tell its stamps from theirs. Restart the program.")
+    when POOL_MEMORY.load()
         is @MemoryManager =>
-            unlock_pool()
-            throw UnacceptedValueError(description: "An EntityPool lives already, and only one can at a time: end it (drop it) before setting up another.")
+            throw UnacceptedValueError(description: "An PoolManager lives already, and only one can at a time: end it (drop it) before setting up another.")
         is None => nothing
     reserved: U64 = when
         sizeof[Addr]() == 8 => 68719476736
         else => 268435456
     base: Addr = memory.reserve(reserved)
     if base.is_hollow()
-        unlock_pool()
-        throw UnacceptedValueError(description: "The EntityPool needs a memory manager that reserves pages: call EntityPool.set_up(memory: PAGES).")
-    types: Addr = allocate[PoolType](count: ENTITY_TYPE_ROOM, manager: memory)
+        throw UnacceptedValueError(description: "The PoolManager needs a memory manager that reserves pages: call PoolManager.set_up(memory: PAGES).")
+    types: Addr = allocate[PoolType](count: POOL_TYPE_ROOM, manager: memory)
     if types.is_hollow()
         memory.release(base, reserved)
-        unlock_pool()
         throw OutOfMemoryError()
-    types.to[@PoolType]().zeroinit(ENTITY_TYPE_ROOM)
-    if not memory.commit(base, ENTITY_COMMIT_STEP)
+    types.to[@PoolType]().zeroinit(POOL_TYPE_ROOM)
+    if not memory.commit(base, POOL_COMMIT_STEP)
         memory.release(base, reserved)
         memory.give_back(types)
-        unlock_pool()
         throw OutOfMemoryError()
     base.to[@SlotHeader]().generation.poke(1)
-    ENTITY_FIRST.store(ENTITY_HIGH.load() + 1)
-    ENTITY_RESERVED.store(reserved)
-    ENTITY_COMMITTED.store(ENTITY_COMMIT_STEP)
-    ENTITY_TOP.store(1)
-    ENTITY_TYPES.store(types)
-    ENTITY_MEMORY.store(memory)
-    pool_write(ENTITY_BASE, value: base)
-    unlock_pool()
-    return EntityPool.construct()
+    POOL_FIRST.store(POOL_HIGH.load() + 1)
+    POOL_RESERVED.store(reserved)
+    POOL_COMMITTED.store(POOL_COMMIT_STEP)
+    POOL_TOP.store(1)
+    POOL_TYPES.store(types)
+    POOL_MEMORY.store(memory)
+    POOL_BASE.store(base)
+    return PoolManager.construct()
 
 ### Whether `set_up` was called.
 ### :returns: True once the pool is set up.
-common routine EntityPool.is_set_up() -> Bool
-    when ENTITY_MEMORY.load()
+common routine PoolManager.is_set_up() -> Bool
+    when POOL_MEMORY.load()
         is @MemoryManager => return true
         is None => return false
 
@@ -246,8 +250,8 @@ common routine EntityPool.is_set_up() -> Bool
 ### :param id: The type id of its slots.
 ### :returns: False when the manager has no memory.
 secret routine note_chunk(first: U32, id: U32) -> Bool
-    count: U64 = ENTITY_CHUNK_COUNT.load()
-    if count == ENTITY_CHUNK_ROOM.load()
+    count: U64 = POOL_CHUNK_COUNT.load()
+    if count == POOL_CHUNK_ROOM.load()
         memory: @MemoryManager = entity_memory()
         grown: U64 = when
             count == 0 => 64
@@ -256,14 +260,14 @@ secret routine note_chunk(first: U32, id: U32) -> Bool
         if fresh.is_hollow()
             return false
         if count > 0
-            fresh.to[@PoolChunk]().copy(src: ENTITY_CHUNK_LIST.load().to[@PoolChunk](), count)
-            memory.give_back(ENTITY_CHUNK_LIST.load())
-        ENTITY_CHUNK_LIST.store(fresh)
-        ENTITY_CHUNK_ROOM.store(grown)
-    entry: @PoolChunk = ENTITY_CHUNK_LIST.load().to[@PoolChunk]().stride(count)
+            fresh.to[@PoolChunk]().copy(src: POOL_CHUNK_LIST.load().to[@PoolChunk](), count)
+            memory.give_back(POOL_CHUNK_LIST.load())
+        POOL_CHUNK_LIST.store(fresh)
+        POOL_CHUNK_ROOM.store(grown)
+    entry: @PoolChunk = POOL_CHUNK_LIST.load().to[@PoolChunk]().stride(count)
     entry.first.poke(first)
     entry.type_id.poke(id)
-    ENTITY_CHUNK_COUNT.store(count + 1)
+    POOL_CHUNK_COUNT.store(count + 1)
     return true
 
 ### Takes a chunk of slots for a type from the end of the range, committing pages when it reaches past the committed ones.
@@ -272,23 +276,23 @@ secret routine note_chunk(first: U32, id: U32) -> Bool
 ### :returns: False when the range is full or the pages can't be committed.
 secret routine take_chunk(entry: @PoolType) -> Bool
     stride: U64 = entry.stride.peek()
-    first: U64 = ENTITY_TOP.load()
-    end: U64 = first + ENTITY_CHUNK_SLOTS * stride // 16
-    if (end << 4) > ENTITY_RESERVED.load() or end >= 4294967296
+    first: U64 = POOL_TOP.load()
+    end: U64 = first + POOL_CHUNK_SLOTS * stride // 16
+    if (end << 4) > POOL_RESERVED.load() or end >= 4294967296
         return false
-    committed: U64 = ENTITY_COMMITTED.load()
+    committed: U64 = POOL_COMMITTED.load()
     if (end << 4) > committed
-        step: U64 = ((end << 4) - committed + ENTITY_COMMIT_STEP - 1) // ENTITY_COMMIT_STEP * ENTITY_COMMIT_STEP
+        step: U64 = ((end << 4) - committed + POOL_COMMIT_STEP - 1) // POOL_COMMIT_STEP * POOL_COMMIT_STEP
         step_to: U64 = when
-            committed + step > ENTITY_RESERVED.load() => ENTITY_RESERVED.load() - committed
+            committed + step > POOL_RESERVED.load() => POOL_RESERVED.load() - committed
             else => step
-        at: Addr = pool_read(ENTITY_BASE) +% ByteSize.construct(bytes: committed)
+        at: Addr = POOL_BASE.load() +% ByteSize.construct(bytes: committed)
         if not entity_memory().commit(at, step_to)
             return false
-        ENTITY_COMMITTED.store(committed + step_to)
+        POOL_COMMITTED.store(committed + step_to)
     if not note_chunk(first.to[U32](), entry.id.peek())
         return false
-    ENTITY_TOP.store(end)
+    POOL_TOP.store(end)
     entry.fresh_next.poke(first.to[U32]())
     entry.fresh_end.poke(end.to[U32]())
     return true
@@ -300,14 +304,14 @@ secret routine take_chunk(entry: @PoolType) -> Bool
 secret routine take_slot(entry: @PoolType) -> U32
     free: U32 = entry.free.peek()
     if free != 0
-        entry.free.poke(slot_address(free).stride(ENTITY_HEADER).to[@U32]().peek())
+        entry.free.poke(slot_address(free).stride(POOL_HEADER).to[@U32]().peek())
         return free
     if entry.fresh_next.peek() == entry.fresh_end.peek()
         if not take_chunk(entry)
             return 0
     next: U32 = entry.fresh_next.peek()
     entry.fresh_next.poke(next + (entry.stride.peek() // 16).to[U32]())
-    slot_address(next).to[@SlotHeader]().generation.poke(ENTITY_FIRST.load())
+    slot_address(next).to[@SlotHeader]().generation.poke(POOL_FIRST.load())
     return next
 
 ### Hands `value` to the pool, which keeps it in a slot from now on, and gives its stamp.
@@ -315,13 +319,12 @@ secret routine take_slot(entry: @PoolType) -> U32
 ### :param value: The entity, handed over.
 ### :returns: The stamp.
 ### :throws: Throws `OutOfMemoryError` when the range is full or its pages can't be committed. Throws `UnacceptedValueError` for a type aligned past 8 bytes, or when the type table is full. The value ends before the failure goes on.
-common routine EntityPool.add[T](value: T) -> PoolStamp[T]
+common routine PoolManager.add[T](value: T) -> Stamped[T]
 needs AnyType T
     if alignof[T]() > 8
         drop value
-        throw UnacceptedValueError(description: "The EntityPool keeps types aligned to at most 8 bytes.")
+        throw UnacceptedValueError(description: "The PoolManager keeps types aligned to at most 8 bytes.")
     id: U32 = typeid[T]()
-    lock_pool()
     entry: @PoolType = type_entry(id)
     if entry.id.peek() == 0
         entry.id.poke(id)
@@ -329,45 +332,43 @@ needs AnyType T
         entry.stride.poke(slot_stride[T]())
     slot: U32 = take_slot(entry)
     if slot == 0
-        unlock_pool()
         drop value
         throw OutOfMemoryError()
     base: @Byte = slot_address(slot)
-    base.stride(ENTITY_HEADER).to[@T]().poke(steal value)
+    base.stride(POOL_HEADER).to[@T]().poke(steal value)
     header: @SlotHeader = base.to[@SlotHeader]()
     header.type_id.poke(id)
     generation: U32 = header.generation.peek()
-    unlock_pool()
-    return PoolStamp[T](slot, generation)
+    return Stamped[T](slot, generation)
 
 ### The entity the stamp was added with, in its slot.
 ### :typeparam T: The entity's type.
 ### :returns: The entity's view.
 ### :throws: `StaleStampError` when the entity was removed, or its slot was reused.
 @inline
-routine PoolStamp[T].fetch() -> @T
+routine Stamped[T].fetch() -> @T
 needs AnyType T
-    start: Addr = pool_read(ENTITY_BASE)
+    start: Addr = POOL_BASE.load()
     if start.is_hollow()
         throw StaleStampError()
     base: @Byte = bitcast[Addr, @Byte](start).stride(me.slot.to[U64]() << 4)
-    if pool_read(base.to[@SlotHeader]().generation) != me.generation
+    if base.to[@SlotHeader]().generation.peek() != me.generation
         throw StaleStampError()
-    return base.stride(ENTITY_HEADER).to[@T]()
+    return base.stride(POOL_HEADER).to[@T]()
 
 ### Whether two stamps are of the same entity, the same slot and generation: `a === b`. A stamp names an entity, so it
 ### compares by identity and has no `==`.
 ### :typeparam T: The entity's type.
 ### :param other: The other stamp.
 ### :returns: True for the same slot and generation.
-routine PoolStamp[T].same(other: Me) -> Bool
+routine Stamped[T].same(other: Me) -> Bool
     return me.slot == other.slot and me.generation == other.generation
 
 ### Whether two stamps are of different entities: `a !== b`.
 ### :typeparam T: The entity's type.
 ### :param other: The other stamp.
 ### :returns: True when the slot or the generation differs.
-routine PoolStamp[T].notsame(other: Me) -> Bool
+routine Stamped[T].notsame(other: Me) -> Bool
     return me.slot != other.slot or me.generation != other.generation
 
 ### Removes the entity of a stamp, at once: every `fetch` of its stamps fails from now on. The entity stays in its slot
@@ -375,36 +376,32 @@ routine PoolStamp[T].notsame(other: Me) -> Bool
 ### :typeparam T: The entity's type.
 ### :param stamp: The entity's stamp.
 ### :throws: `StaleStampError` when the entity was removed already. Throws `OutOfMemoryError` when the removed list can't grow.
-common routine EntityPool.remove[T](stamp: PoolStamp[T]) -> None
+common routine PoolManager.remove[T](stamp: Stamped[T]) -> None
 needs AnyType T
-    if pool_read(ENTITY_BASE).is_hollow()
+    if POOL_BASE.load().is_hollow()
         throw StaleStampError()
     header: @SlotHeader = slot_address(stamp.slot).to[@SlotHeader]()
-    lock_pool()
     generation: U32 = header.generation.peek()
     if generation != stamp.generation
-        unlock_pool()
         throw StaleStampError()
-    waiting: U64 = ENTITY_REMOVED_COUNT.load()
-    if waiting == ENTITY_REMOVED_ROOM.load()
+    waiting: U64 = POOL_REMOVED_COUNT.load()
+    if waiting == POOL_REMOVED_ROOM.load()
         memory: @MemoryManager = entity_memory()
         grown: U64 = when
             waiting == 0 => 64
             else => waiting * 2
         fresh: Addr = allocate[U32](count: grown, manager: memory)
         if fresh.is_hollow()
-            unlock_pool()
             throw OutOfMemoryError()
         if waiting > 0
-            fresh.to[@U32]().copy(src: ENTITY_REMOVED.load().to[@U32](), count: waiting)
-            memory.give_back(ENTITY_REMOVED.load())
-        ENTITY_REMOVED.store(fresh)
-        ENTITY_REMOVED_ROOM.store(grown)
-    ENTITY_REMOVED.load().to[@U32]().stride(waiting).poke(stamp.slot)
-    ENTITY_REMOVED_COUNT.store(waiting + 1)
-    pool_write(header.generation, value: generation + 1)
+            fresh.to[@U32]().copy(src: POOL_REMOVED.load().to[@U32](), count: waiting)
+            memory.give_back(POOL_REMOVED.load())
+        POOL_REMOVED.store(fresh)
+        POOL_REMOVED_ROOM.store(grown)
+    POOL_REMOVED.load().to[@U32]().stride(waiting).poke(stamp.slot)
+    POOL_REMOVED_COUNT.store(waiting + 1)
+    header.generation.poke(generation + 1)
     note_generation(generation + 1)
-    unlock_pool()
     return
 
 ### Ends the entity in a slot, makes the slot free (unless it is retired), and marks it empty. Called without the lock.
@@ -414,67 +411,62 @@ secret routine end_slot(slot: U32) -> None
     header: @SlotHeader = base.to[@SlotHeader]()
     entry: @PoolType = type_entry(header.type_id.peek())
     destroy: Callable[(Addr,), None] = entry.destroy.peek()
-    destroy.call(base.stride(ENTITY_HEADER).to[Addr]())
-    lock_pool()
+    destroy.call(base.stride(POOL_HEADER).to[Addr]())
     header.type_id.poke(0)
     if header.generation.peek() != U32.MAX
-        base.stride(ENTITY_HEADER).to[@U32]().poke(entry.free.peek())
+        base.stride(POOL_HEADER).to[@U32]().poke(entry.free.peek())
         entry.free.poke(slot)
-    unlock_pool()
     return
 
 ### Destructs the entities removed so far and makes their slots free for reuse. The time is proportional to the number
 ### of removed entities. An `@T` fetched before the `remove` must not be used after this.
-common routine EntityPool.sweep() -> None
+common routine PoolManager.sweep() -> None
     loop
-        lock_pool()
-        waiting: U64 = ENTITY_REMOVED_COUNT.load()
+        waiting: U64 = POOL_REMOVED_COUNT.load()
         if waiting == 0
-            unlock_pool()
             return
-        slot: U32 = ENTITY_REMOVED.load().to[@U32]().stride(waiting - 1).peek()
-        ENTITY_REMOVED_COUNT.store(waiting - 1)
-        unlock_pool()
+        slot: U32 = POOL_REMOVED.load().to[@U32]().stride(waiting - 1).peek()
+        POOL_REMOVED_COUNT.store(waiting - 1)
         end_slot(slot)
 
 ### Ends the pool: sweeps, makes every stamp stale (the generation of each live slot goes up first, so a destruct that
 ### fetches another pooled entity always sees it ended, whatever the order), destructs the entities that are left, and
 ### gives the range and the tables back, so another pool can be set up.
-routine @EntityPool.destruct() -> None
-    EntityPool.sweep()
-    when ENTITY_MEMORY.load()
+routine @PoolManager.destruct() -> None
+    PoolManager.sweep()
+    when POOL_MEMORY.load()
         is @MemoryManager as memory =>
             for pass in 0 til 2
-                for number in 0 til ENTITY_CHUNK_COUNT.load()
-                    chunk: @PoolChunk = ENTITY_CHUNK_LIST.load().to[@PoolChunk]().stride(number)
+                for number in 0 til POOL_CHUNK_COUNT.load()
+                    chunk: @PoolChunk = POOL_CHUNK_LIST.load().to[@PoolChunk]().stride(number)
                     step: U32 = (type_entry(chunk.type_id.peek()).stride.peek() // 16).to[U32]()
-                    for index in 0 til ENTITY_CHUNK_SLOTS
+                    for index in 0 til POOL_CHUNK_SLOTS
                         slot: U32 = chunk.first.peek() + index.to[U32]() * step
                         header: @SlotHeader = slot_address(slot).to[@SlotHeader]()
                         if header.type_id.peek() != 0
                             if pass == 0
-                                pool_write(header.generation, value: header.generation.peek() + 1)
+                                header.generation.poke(header.generation.peek() + 1)
                                 note_generation(header.generation.peek())
                             else
                                 end_slot(slot)
-            start: Addr = ENTITY_BASE.load()
-            pool_write(ENTITY_BASE, value: Addr.zero())
-            memory.release(start, ENTITY_RESERVED.load())
-            memory.give_back(ENTITY_TYPES.load())
-            if ENTITY_CHUNK_ROOM.load() > 0
-                memory.give_back(ENTITY_CHUNK_LIST.load())
-            if ENTITY_REMOVED_ROOM.load() > 0
-                memory.give_back(ENTITY_REMOVED.load())
-            ENTITY_RESERVED.store(0)
-            ENTITY_COMMITTED.store(0)
-            ENTITY_TOP.store(0)
-            ENTITY_TYPES.store(Addr.zero())
-            ENTITY_CHUNK_LIST.store(Addr.zero())
-            ENTITY_CHUNK_ROOM.store(0)
-            ENTITY_CHUNK_COUNT.store(0)
-            ENTITY_REMOVED.store(Addr.zero())
-            ENTITY_REMOVED_ROOM.store(0)
-            ENTITY_REMOVED_COUNT.store(0)
-            ENTITY_MEMORY.store(None())
+            start: Addr = POOL_BASE.load()
+            POOL_BASE.store(Addr.zero())
+            memory.release(start, POOL_RESERVED.load())
+            memory.give_back(POOL_TYPES.load())
+            if POOL_CHUNK_ROOM.load() > 0
+                memory.give_back(POOL_CHUNK_LIST.load())
+            if POOL_REMOVED_ROOM.load() > 0
+                memory.give_back(POOL_REMOVED.load())
+            POOL_RESERVED.store(0)
+            POOL_COMMITTED.store(0)
+            POOL_TOP.store(0)
+            POOL_TYPES.store(Addr.zero())
+            POOL_CHUNK_LIST.store(Addr.zero())
+            POOL_CHUNK_ROOM.store(0)
+            POOL_CHUNK_COUNT.store(0)
+            POOL_REMOVED.store(Addr.zero())
+            POOL_REMOVED_ROOM.store(0)
+            POOL_REMOVED_COUNT.store(0)
+            POOL_MEMORY.store(None())
             return
         is None => return

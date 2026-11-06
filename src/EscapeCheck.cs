@@ -62,6 +62,11 @@ public sealed class EscapeCheck
 
     /// A call to a routine with a body: the callee's symbol, and each of its parameters' atoms (`me` first). A call
     /// through a Callable value has no callee symbol, and `Through` holds the atoms of the value called.
+    /// Whether a routine is one of the pool's: setting it up, adding, fetching, removing, sweeping, or ending it.
+    public static bool UsesPool(RoutineDecl d) =>
+        d.IsLibrary && d.Module == "System/Memory" && d.Owner?.Name is "PoolManager" or "Stamped"
+        && d.Name is "set_up" or "add" or "fetch" or "remove" or "sweep" or "destruct";
+
     public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text)
     {
         public HashSet<Atom>? Through { get; init; }
@@ -148,6 +153,9 @@ public sealed class EscapeCheck
         public HashSet<int> Writes { get; } = [];
         public Dictionary<string, Why> WritesGlobals { get; } = [];
 
+        /// The first call it makes (itself or through the routines it calls) that uses the pool, which belongs to one thread.
+        public Why? UsesPool { get; set; }
+
         /// The thread-local globals whose memory it may return (the global's name and the level the address is
         /// returned at): each thread's own copy, gone when the thread ends.
         public Dictionary<(string Global, int Level), Why> ReturnsThreadLocal { get; } = [];
@@ -159,7 +167,7 @@ public sealed class EscapeCheck
         /// The part of StoresOut that lands in a global every thread shares (not a @threadlocal one).
         public Dictionary<(int Param, int Level), Why> StoresOutShared { get; } = [];
 
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count + (UsesPool is null ? 0 : 1)
             + ReturnsThreadLocal.Count + ThreadLocalInto.Count + StoresOutShared.Count;
     }
 
@@ -259,6 +267,7 @@ public sealed class EscapeCheck
         merged.Writes.UnionWith(b.Writes);
         foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
         foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
+        merged.UsesPool = a.UsesPool ?? b.UsesPool;
         foreach (var (k, v) in a.ReturnsThreadLocal) merged.ReturnsThreadLocal[k] = v;
         foreach (var (k, v) in b.ReturnsThreadLocal) merged.ReturnsThreadLocal.TryAdd(k, v);
         foreach (var (k, v) in a.ThreadLocalInto) merged.ThreadLocalInto[k] = v;
@@ -532,6 +541,8 @@ public sealed class EscapeCheck
                 var args = call.Args.Select(Resolve).ToList();
                 // Work runs on another thread: what it changes, it changes next to this routine.
                 // The library shares what it shares under its own exclusive accesses.
+                if (!library && all.GetValueOrDefault(call.Callee)?.Inst.Decl is { } called && EscapeCheck.UsesPool(called))
+                    found.UsesPool ??= new Why(call.Pos, Routine, call.Text);
                 if (call.Work && errors is not null && !facts.Inst.Decl.IsLibrary) CheckWork(call, Resolve(call.Through ?? []), args, errors);
                 if (call.Through is { } through) Through(call, Resolve(through), args, call.Args, found, errors, 0);
                 else Apply(call, call.Callee, args, call.Args, found, errors, 0);
@@ -556,6 +567,18 @@ public sealed class EscapeCheck
             {
                 if (Of(routine) is not { } e) continue;
                 string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
+                if (e.UsesPool is { } pool)
+                {
+                    var chain = new List<string>();
+                    for (var w = pool; w is not null; w = w.Inner) chain.Add(w.Routine);
+                    var at = pool.Store;
+                    errors.Add(new CompileError(Li.GlobalChangedAcrossThreads, call.Pos, $"{call.Text} runs '{name}' on another thread, and it uses the "
+                        + $"pool ({string.Join(" calls ", chain)}, line {at.Pos.Line}: {at.Text}): a PoolManager belongs to one thread, like a global "
+                        + "the program changes, so a routine another thread runs can't set it up, add to it, fetch from it, remove from it, sweep it "
+                        + "or end it. Keep the entities on one thread, or put a graph that threads share behind a manager such as Guarded, or "
+                        + "under an exclusive access" + Note));
+                    break;
+                }
                 foreach (var ((local, _), why) in e.ReturnsThreadLocal.OrderBy(r => r.Key.Global, StringComparer.Ordinal))
                 {
                     var at = why.Store;
@@ -627,6 +650,7 @@ public sealed class EscapeCheck
                                     break;
                             }
                 foreach (var (g, why) in e.WritesGlobals) found.WritesGlobals.TryAdd(g, new Why(call.Pos, Routine, call.Text, why));
+                if (e.UsesPool is { } pool) found.UsesPool ??= new Why(call.Pos, Routine, call.Text, pool);
             }
             foreach (var ((param, level), why) in e.StoresOut)
             {

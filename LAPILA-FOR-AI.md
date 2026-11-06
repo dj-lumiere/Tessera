@@ -370,7 +370,7 @@ routine start() -> None
     error when the view's source can end (a place of the routine or its caller): `me.next.poke(t) keeps 't' (a view the caller handed in) in a field of the
     entity Node, which any routine that reaches the entity may use later, and the build can't compare those later uses
     with where that view's place is given back: keep a Stamped of the entity there ...`. Keep a `Stamped[E]` of an
-    entity (below) for a link that may outlive what it points at (a tree node's parent), make the field an `&E?` when
+    entity in the PoolManager (below) for a link that may outlive what it points at (a tree node's parent), make the field an `&E?` when
     one holder keeps the value, or hand the view as an argument to the routines that use it. An `Addr` (turned back
     with `.to[@T?]()` and a `when`) is for links the program keeps right itself with no check (the runtime's
     scheduler queues). An entity made with a view (`Me(source: text, ...)`, a matcher over text) is a value
@@ -383,49 +383,32 @@ routine start() -> None
     `SourceLocation` (the builder's read-only text) don't count as views here.
   - **`typeid[T]()`** (a builder query like `sizeof`, also in presets): a `U32` that is a hash of the type's name (FNV-1a, never 0), the
     same in every module of one program including the library base, and a build error when two types of one build share it.
-  - **`EntityPool` and `PoolStamp[T]`** (System/Memory, `EntityPool.lpa`): one pool for entities of many types, one pool at a time (a second
-    `set_up` while one lives is `UnacceptedValueError`). `pool: &EntityPool <- EntityPool.set_up(memory: PAGES)` in `start` reserves a range of
-    address space (a manager that doesn't handle pages is refused with a message that says to pass `PAGES`) and the pool is an entity the
-    program ends: `drop pool` (or the builder's give back of a STACK place) sweeps, makes every stamp stale, destructs the entities left and
-    releases the range, and a pool not ended when `start` returns is a build error. `s = EntityPool.add(steal e)` hands an entity over and gives its
-    8-byte stamp (`s.fetch()` gives the `@T`, or throws `StaleStampError` once removed or once the pool ended, `===` compares),
-    `EntityPool.remove(s)` makes every fetch fail at once without destructing, and `EntityPool.sweep()` destructs the removed ones and frees
-    their slots. Generations only go up across pools (a stamp of an ended pool never matches a later pool's slot), and when they reach the last one
-    the next `set_up` is refused with `UnacceptedValueError` (`EntityPool.raise_generation_floor(floor:)` raises the mark, for tests). `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
+  - **`PoolManager` and `Stamped[T]`** (System/Memory, `PoolManager.lpa`): the way to link entities that must see when one ends. The
+    entities a link needs go in the pool: `pool: &PoolManager <- PoolManager.set_up(memory: PAGES)` in `start` reserves a range of address space
+    (a manager that doesn't handle pages is refused with a message that says to pass `PAGES`), `s = PoolManager.add(e)` hands an entity of
+    any type over and gives its `Stamped[E]`, 8 bytes (a slot and its generation) copied for free, kept in a field, a global, a list.
+    `s.fetch()` gives the entity's `@E`, or throws `StaleStampError` once it was removed or the pool ended: a bare `fetch()` crashes,
+    `try s.fetch()` gives None. There is no empty `Stamped[E]` (its `slot` and `generation` are `secret`): a link that may be missing is a
+    `Stamped[E]?`, which is `@none_is_zero` (the stamp alone, the all-zero stamp None, no flag), taken with one `try link.fetch()` (None for no
+    link and for a removed entity), and `check link.fetch()` tells `AbsentValueError` (no link) from `StaleStampError`. Two stamps compare with
+    `===` / `!==` (the same slot and generation, declared as `same` / `notsame`). A stamp has no `==` and is no `Set` or `Dict` key. It doesn't
+    keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
+    `PoolManager.remove(s)` takes effect at once (every `fetch` of the stamp fails, a second `remove` of it throws `StaleStampError`) and does
+    not run the `destruct` or reuse the slot, so an `@E` fetched earlier stays valid. `PoolManager.sweep()` runs the `destruct` of the removed
+    entities and frees their slots, a freed slot coming back with a higher generation (time proportional to how many were removed), so call it
+    where no earlier view is in use. The pool is an entity the program ends: `drop pool` (or the builder's give back of its STACK place) makes
+    every stamp stale first, then runs each remaining entity's `destruct` (which cleans up only its own entity: a `fetch` of another pooled
+    entity there is a stale stamp) and releases the range. A pool not ended when `start` returns is a build error. One pool at a time: a
+    second `set_up` while one lives is `UnacceptedValueError`. Generations only go up across pools, so a stamp of an ended pool never
+    matches a later pool's slot, and when they reach `U32.MAX - 1` the next `set_up` is refused. A slot whose generation reaches `U32.MAX`
+    is retired. Entities sit in 4,096-slot chunks per type taken from one reserved range and never move (slot address = range start +
+    slot * 16), and `typeid[T]()` names the type in the pool's table. A type aligned past 8 bytes is refused. The pool is not locked.
+    **The pool belongs to one thread** (the rule is a global's, `LI-S448`): a routine that work runs on another thread, or one it calls,
+    that sets the pool up, `add`s, `fetch`es, `remove`s, `sweep`s or ends it is a build error that names the call chain
+    (`t.put_work(work) runs 'work' on another thread, and it uses the pool (work calls read, line 19: s.fetch()): a PoolManager belongs to one
+    thread ...`). A graph that threads share goes behind a manager such as `Guarded` or under an exclusive access.
   - **`@none_is_zero`** on a record whose first field is an integer that is never 0 for a value makes `R?` the record alone, with the all-zero
     record as None (no flag): `when`, `try`, `is_absent()` and `unwrap()` work as on any Optional.
-  - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.lpa`). `x.stamp()` on an entity
-    (a `&E` place or an `@E` view: a stamp takes the place of a stored view) gives a `Stamped[E]`, 8 bytes (a slot of
-    the program's stamp table, the `PoolManager`, and the slot's generation), a record copied for free that goes
-    anywhere: a field (`parent: Stamped[Node]?`), a global, a list. `s.fetch()` (failable) gives the entity's `@E`
-    wherever it lives now, and throws `StaleStampError` once it ended: a bare `fetch()` crashes, `try s.fetch()` gives
-    None. A `Stamped[E]` always points at an entity that existed: it has no empty value (its `slot` and `generation`
-    are `secret`, so `Stamped[E](slot: 0, generation: 0)` is a build error), and a link that may be missing is a
-    `Stamped[E]?`, taken with one `try link.fetch()` (`None` for no link and for an ended entity). `check link.fetch()`
-    tells `AbsentValueError` (no link) from `StaleStampError` (ended). A stamp doesn't keep the entity alive, and the view `fetch()` gives has a source the builder doesn't follow.
-    Two stamps compare with `===` / `!==` (the same entity: the same slot and generation). A stamp has no `==` and is no
-    `Set` or `Dict` key: a set that groups by "same entity" keys on a number the program assigns. The `PoolManager` is a service: `start` calls
-    `PoolManager.set_up(memory: HEAP)` (any manager) before the first `stamp()`, with or without an OS. A `stamp()`
-    before it, or a second `set_up`, crashes with `UnacceptedValueError`. The builder gives an entity type a hidden
-    U32 slot (the last member of its layout) only when the program's source writes `Stamped[E]` with that type's name
-    somewhere: a `stamp()` of an entity that has none is a build error that says to write the type, and of a record
-    (copied where it goes) one that says to keep a copy. The first `stamp()` takes a slot (a freed one, else a new
-    one, slot 0 never) and writes the entity's address in it, and later stamps of the entity give the same slot (and
-    write its address again). The slot ends (address cleared, generation up, the slot free for the next entity, so an
-    old stamp of it still fails) only where the entity ends, first thing in its `destruct` (written or the builder's
-    walk): `drop`, the give back of a STACK place, the old value of `y <- v`, the walk of what holds it. A move keeps
-    the stamps: where a value that holds a stamped entity (the entity, or an entity holding one by value, at any
-    depth) leaves its place (`steal` out of a place or an element, a value parameter handed on, `return` of a STACK
-    place) the builder clears the slot's address, and every write of a whole value to memory (`poke`, `<-`, binding
-    a place, the caller's place of a returned `E?`) gives it the new one, so a stamp fails only while its entity is
-    between two places. Collections that move elements by bytes keep them too: `copy`/`copy_into` and a `List` or
-    `PriorityQueue` that reallocates call `move_stamps[T](at, count)` (the new address of `count` values in a row),
-    which builds to nothing for a type that holds no stamped entity. `release_stamps[T](at, count)` ends the stamps of
-    `count` entities in a row. A slot whose generation reaches `U32.MAX` is retired. The table is 64 KiB chunks of
-    4,096 entries that never move and a directory of their addresses that doubles (the old one kept to the end).
-    `fetch()` reads the entry once with no lock. Threads come later: between `fetch()` on one thread and the entity's
-    end on another, the program orders the two itself. `PoolManager.take` / `end` / `lookup` / `generation` / `is_set_up` are for a language runtime that keeps the slot itself (Revare's runtime, `Ingrid/runtime-lapila/stamps.lpa`, shares the table). A byte copy inside `danger` the program writes itself carries
-    the slot along: the code that does it answers for it.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
     outlive it. Give `m` back first.
@@ -711,8 +694,8 @@ routine start() -> None
 - `@export("lapila_stamp_next")` above a `global` defines it under that C name, visible outside the module, so a
   library linked with the program (a language runtime's) reaches the same variable through an `@external("c")`
   declaration of the name. Only a global: a preset, an `@external("c")` or a `@threadlocal` global with `@export` is a
-  build error. The standard library exports the stamp table's directory and next-slot bound this way
-  (`lapila_stamp_directory`, `lapila_stamp_next`), which Revare's inlined `Stamped` fetch reads.
+  build error. Ingrid's runtime exports Revare's stamp table this way (`lapila_stamp_directory`, `lapila_stamp_next`),
+  which Revare's inlined `Stamped` fetch reads.
 - `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the
   running thread's copy. Its address stays on its thread: handing it to work on another thread (`t.put_work(work)` "hands
   the work the address of this thread's 'X'"), work returning it ("runs 'f' on another thread, and it returns the
@@ -912,7 +895,7 @@ routine start() -> None
   (`+^ -^` still clamp).
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv`, `%` `mod`, `**`
   `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: a type has them by declaring `routine T.same(other: Me) -> Bool` and `notsame`, as `@T`, `Addr`, spans, `Stamped` and `PoolStamp` do, and `===` on a type without them is a build error: values compare with `==`), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: a type has them by declaring `routine T.same(other: Me) -> Bool` and `notsame`, as `@T`, `Addr`, spans and `Stamped` do, and `===` on a type without them is a build error: values compare with `==`), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (`>>>` fills with 0 bits on every integer type, `Byte` and integer `Vector` lanes, signed ones too), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/System/Operators.lpa, the names Revare uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
@@ -2833,7 +2816,6 @@ S1100 memory and access, S1120 work, S1130 failures, S1150 control flow, S1180 e
 - `LI-S1109`: A view handed to work that runs on another thread.
 - `LI-S1110`: A routine with too many paths for the memory check to follow.
 - `LI-S1111`: A lateinit place read before it is filled.
-- `LI-S1112`: A stamp taken of something that has no stamp slot.
 - `LI-S1113`: A drop of a value that has nothing to give back.
 - `LI-S1114`: A channel that hands out a value it cannot hand over safely.
 - `LI-S1115`: Access to something taken again while it is already held.

@@ -359,8 +359,10 @@ public sealed partial class FunctionGen
             if (Param(i) is { } taken && (taken is PtrType { Pointee: not null } || Compiler.IsCoreSpan(taken, out _))
                 && ReadOnlyOrigin(handed[i]) is var (root, origin))
                 readOnly[i] = (origin, CopyHintFor(root, handed[i]));
-        // A call handed no address may still give one back: the address of the callee's thread-local.
-        if (args.All(a => a.Count == 0) && !CarriesAddress(callee.Ret) && readOnly.Count == 0) return;
+        // A call handed no address may still give one back: the address of the callee's thread-local. A program's routine
+        // is kept whatever it is handed, since it may use the pool, which a work on another thread must not.
+        if (args.All(a => a.Count == 0) && !CarriesAddress(callee.Ret) && readOnly.Count == 0
+            && callee.Decl.IsLibrary && !EscapeCheck.UsesPool(plan.Decl)) return;
         string text = _dropping is not null && plan.Decl.Name == "destruct"
             ? $"drop {Spelled(_dropping)}"
             : Spelled(plan.Receiver is not null

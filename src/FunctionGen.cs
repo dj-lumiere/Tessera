@@ -388,9 +388,6 @@ public sealed partial class FunctionGen
         {
             _moving = true;
             var takenOut = Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos) { Builder = true }, expected);
-            // An entity taken out of its place leaves that address until it lands in another, unless steal a as b
-            // moves its stamps along.
-            StampsLeave(takenOut, s.Pos);
             return takenOut;
         }
         // `steal p.stride(i)`, `steal xs.getslot(0)`: the value an element's place holds, moved out, and the place left
@@ -420,7 +417,6 @@ public sealed partial class FunctionGen
             var (size, align) = _c.SizeAlign(element, s.Pos);
             var taken = new Val(EmitTmp($"load {element.Llvm}, ptr {place.Op}, align {align}"), element);
             Line($"call void @llvm.memset.p0.{_c.Count.Llvm}(ptr {place.Op}, i8 0, {_c.Count.Llvm} {size}, i1 false)");
-            StampsLeave(taken, s.Pos);
             if (MemOn && PlaceKey(s.Value) is { } key)
             {
                 Mem(new MemoryRules.Acquire(key, "emptied", s.Pos) { Entity = element.Name });
@@ -454,9 +450,6 @@ public sealed partial class FunctionGen
             v = fromSlot
                 ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos) { Builder = true }, expected)
                 : Eval(r, expected);
-        // An entity moved out of its slot, or a value parameter handed on, leaves its address until it lands in
-        // another, unless steal a as b moves its stamps along.
-        StampsLeave(v, r.Pos);
         // An entity slot is left hollow, so a later poke into it finds nothing to end.
         if (!_cur.Terminated && EntitySlot(r) && _values.TryGetValue(r.Name, out var slot) && slot.Type is PtrType { Pointee: { } moved })
         {
@@ -479,16 +472,9 @@ public sealed partial class FunctionGen
             _maybeHollow.TryGetValue(from.Name, out var stillHollow);
             var stolen = new StealExpr(st.From, st.Pos);
             var t = Infer(stolen) ?? throw Err(Li.StealMisuse, st.From.Pos, "cannot infer what steal takes here");
-            // The entity's stamps follow it into the new slot.
-            _stampFollows = true;
-            try
-            {
-                EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(t) },
-                    new ClaimExpr(st.Pos) { Contents = stolen }, st.Pos));
-            }
-            finally { _stampFollows = false; }
+            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(t) },
+                new ClaimExpr(st.Pos) { Contents = stolen }, st.Pos));
             if (!_cur.Terminated) RegisterStackPlace(st.Name, st.Pos);
-            StampCall("move_stamp", t, new ValueRef(st.Name, st.NamePos), st.Pos);
             if (stillHollow is not null) _maybeHollow[st.Name] = stillHollow;
             return;
         }
@@ -507,14 +493,8 @@ public sealed partial class FunctionGen
                 + $"Put the new value in at once: steal {new Printer().Expr(st.From, 0)} as {st.Name} inject <new value>, "
                 + "or trade two elements with swap(first, second). Where the place stays empty on purpose, write inject lateinit");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
-        _stampFollows = true;
-        try
-        {
-            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
-                new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
-        }
-        finally { _stampFollows = false; }
-        StampCall("move_stamp", held, new ValueRef(st.Name, st.NamePos), st.Pos);
+        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
+            new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
         if (fromKept is not null) _maybeHollow[st.Name] = fromKept;
         // Left hollow, zeroed in place.
         EvalAny(new MethodCallExpr(st.From, "zeroinit", [], [new IntLit(1, st.Pos)], st.Pos));
@@ -658,15 +638,9 @@ public sealed partial class FunctionGen
         if (_cur.Terminated) return;
         RegisterStackPlace(fresh, st.Inject.Pos);
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
-        _stampFollows = true;
-        try
-        {
-            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
-                new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
-        }
-        finally { _stampFollows = false; }
+        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
+            new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
         if (_cur.Terminated) return;
-        StampCall("move_stamp", held, new ValueRef(st.Name, st.NamePos), st.Pos);
         // For the memory rules the place is taken out and filled again on this line: the poke below is that refill.
         if (MemOn && PlaceKey(st.From) is { } key)
         {
@@ -2010,11 +1984,6 @@ public sealed partial class FunctionGen
             if (MemOn && ManagedValue(types[i]) && types[i] is not PtrType && GivenBackAtExit(types[i]))
                 HoldUntilFailure(b.Params[i].Name);
 
-        // An entity the program stamps ends its slot first thing in its destruct, written or the builder's walk: every
-        // end of the entity (drop, the give back of a STACK place, the old value of y <- v, a holder's walk) runs it.
-        if (ReferenceEquals(b, _decl.Blocks![0]) && _decl.Name == "destruct" && _decl.Params is [{ Name: "me" } self, ..]
-            && _inst.Params[0] is PtrType { Pointee: RecordType owner })
-            StampCall("release_stamp", owner, new ValueRef("me", self.Pos), self.Pos);
         EmitLines(b.Stmts);
         if (!_cur.Terminated)
             throw Err(Li.ReturnForm, b.Pos, b.Name == "entry"
@@ -2996,13 +2965,6 @@ public sealed partial class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return BytesType(tn.Pos);
-        if (e is CallExpr { Name: "stamp_slot" or "stamp_slot_kept", TypeArgs.Count: 1, Args.Count: 1 } ss
-            && _c.FindFree(ss.Name, _env.File, ss.Pos) is null)
-            return ss.Name == "stamp_slot" ? new PtrType(IntType.U(32)) : OptionalPointerType(IntType.U(32), ss.Pos);
-        if (e is CallExpr { Name: "holds_stamps", TypeArgs.Count: 1, Args.Count: 0 } hs && _c.FindFree(hs.Name, _env.File, hs.Pos) is null)
-            return BoolType.Instance;
-        if (e is CallExpr { Name: "follow_stamps", TypeArgs.Count: 1, Args.Count: 1 } fs && _c.FindFree(fs.Name, _env.File, fs.Pos) is null)
-            return VoidType.Instance;
         if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args.Count: 1 } fo && _c.FindFree(fo.Name, _env.File, fo.Pos) is null)
             return IntType.U(32);
         if (e is CallExpr { Name: "diagnose_or_name", TypeArgs.Count: 0, Args.Count: 2 } dn
@@ -3735,8 +3697,6 @@ public sealed partial class FunctionGen
             if (vt.LeafIndex(value.Type) != 0) return new Val("null", vt);
             string place = NewSlot(value.Type);
             Line($"store {value.Type.Llvm} {value.Op}, ptr {place}");
-            // The entities the value holds land in this place and give their stamps its address.
-            StampWalk("move_stamp", value.Type, new Val(place, new PtrType(value.Type)), made ?? default);
             return new Val(place, vt);
         }
         // `@T?` and `Callable?` are the address itself: None is null.
@@ -4402,9 +4362,6 @@ public sealed partial class FunctionGen
             // An Optional's value is the address of the E's place already.
             string place = EmitTmp(vt.IsAddressed ? $"load ptr, ptr {slot}" : $"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
             Define(binding.Name, new Val(place, new PtrType(branch)), binding.Pos);
-            // The value was copied into the when's own slot, so the entities in it give their stamps this address. An
-            // Optional's E is where the call put it already, and that place gave them theirs.
-            if (!vt.IsAddressed) StampWalk("move_stamp", branch, new Val(place, new PtrType(branch)), binding.Pos);
             if (MemOn)
             {
                 _memTracked.Add(binding.Name);
@@ -5164,8 +5121,6 @@ public sealed partial class FunctionGen
                 MemTakeAlong(given[fields[i].Name], $"kept in a {s.Name}");
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {fields[i].Type.Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
-        // A new entity has no slot in the PoolManager's table yet.
-        if (fields.Count > 0 && _c.KeepsStamp(s)) acc = EmitTmp($"insertvalue {s.Llvm} {acc}, i32 0, {_c.StampValuePath(s)}");
         return new Val(acc, s);
     }
 
@@ -5527,9 +5482,6 @@ public sealed partial class FunctionGen
     private CallPlan? PlanCall(Expr e, DType? expected)
     {
         var plan = PlanCallInner(e, expected);
-        if (plan is { Decl: { Name: "stamp", IsLibrary: true, Module: "System/Memory" } stamp } && !_c.Prechecking
-            && plan.Env.Get("T") is DType stamped)
-            CheckStampable(stamped, plan.Pos);
         // `@unavailable("why")` keeps a standard library routine whose call is a build error on this target or board:
         // the routine says why it can't run there, and what the program needs for it.
         if (plan?.Decl.AnnotationNamed("unavailable") is { } unavailable)
@@ -6560,12 +6512,6 @@ public sealed partial class FunctionGen
             return CallerLocation(cl.Pos);
         // `type_name[T]()`: the type's name as the builder writes it (`S32`, `List[S64]`), a Bytes, so generic code
         // can say which type a message is about.
-        if (e is CallExpr { Name: "stamp_slot" or "stamp_slot_kept", TypeArgs.Count: 1, Args.Count: 1 } ss
-            && _c.FindFree(ss.Name, _env.File, ss.Pos) is null)
-            return StampSlot(ss);
-        if (e is CallExpr { Name: "holds_stamps", TypeArgs.Count: 1, Args.Count: 0 } or CallExpr { Name: "follow_stamps", TypeArgs.Count: 1, Args.Count: 1 }
-            && _c.FindFree(((CallExpr)e).Name, _env.File, e.Pos) is null)
-            return StampsBuiltin((CallExpr)e);
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
@@ -6792,10 +6738,6 @@ public sealed partial class FunctionGen
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
             _c.EnsureTypeDefined(sig.Ret);
             var expanded = ExpandTemplate(sig, args, plan.Pos, alignSuffix);
-            // A value written to memory lands there: the entities with a hidden slot it holds get that address.
-            if (sig.Decl is { IsLibrary: true, Name: "poke" or "poke_volatile" or "poke_unaligned" or "poke_into" }
-                && args.Count == 2 && args[sig.Decl.Name == "poke_into" ? 1 : 0] is { Type: PtrType { Pointee: var landed } } dest)
-                StampWalk("move_stamp", landed, dest, plan.Pos);
             return expanded;
         }
 
@@ -7411,8 +7353,6 @@ public sealed partial class FunctionGen
         var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
         EndStatementTemps(v.Type, r.Pos);
-        // An entity going to the caller's place leaves this one's address until it lands there.
-        if (!ReferenceEquals(returned, r.Value)) StampsLeave(v, r.Pos);
         if (_inst.HasOptionalPlace) v = MoveIntoOptionalPlace(v);
         // The value a STACK place held goes to the caller: the place has nothing left to give back.
         if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
@@ -7454,8 +7394,6 @@ public sealed partial class FunctionGen
         {
             string e = EmitTmp($"load {held.Llvm}, ptr {v.Op}");
             Line($"store {held.Llvm} {e}, ptr {OptionalPlaceParam}");
-            // The entity's stamps follow it to the caller's place.
-            StampWalk("move_stamp", held, new Val(OptionalPlaceParam, new PtrType(held)), default);
         }
         Terminate($"br label %{moved.Label}");
         _cur = moved;
