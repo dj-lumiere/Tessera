@@ -390,7 +390,8 @@ routine start() -> None
     releases the range, and a pool not ended when `start` returns is a build error. `s = EntityPool.add(steal e)` hands an entity over and gives its
     8-byte stamp (`s.fetch()` gives the `@T`, or throws `StaleStampError` once removed or once the pool ended, `===` compares),
     `EntityPool.remove(s)` makes every fetch fail at once without destructing, and `EntityPool.sweep()` destructs the removed ones and frees
-    their slots. `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
+    their slots. Generations only go up across pools (a stamp of an ended pool never matches a later pool's slot), and when they reach the last one
+    the next `set_up` is refused with `UnacceptedValueError` (`EntityPool.raise_generation_floor(floor:)` raises the mark, for tests). `PoolStamp[T]?` is `@none_is_zero`: the stamp alone, the all-zero stamp None.
   - **`@none_is_zero`** on a record whose first field is an integer that is never 0 for a value makes `R?` the record alone, with the all-zero
     record as None (no flag): `when`, `try`, `is_absent()` and `unwrap()` work as on any Optional.
   - **`Stamped[E]`: a link that sees when the entity ends** (System/Memory, `Stamped.lpa`). `x.stamp()` on an entity

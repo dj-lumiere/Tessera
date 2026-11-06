@@ -19,7 +19,9 @@
 # taken from the range one after the other. A fetch reads the range's start and the slot's generation, with no
 # lock. Adding, removing and sweeping take a short lock (the one of the PoolManager's table). Slot 0 is the range's
 # first 16 bytes, never given out and with generation 1, so an all-zero stamp is always stale. A slot whose generation
-# reaches U32.MAX is retired, never used again. The stamps don't carry the pool: the pool's state is globals, so a fetch is the same
+# reaches U32.MAX is retired, never used again. A global high-water mark of the generations survives the end of a pool and
+# the next pool's fresh slots start above it, so a stamp of an ended pool never matches a later pool's slot, and when the
+# mark is about to pass U32.MAX the next set_up is refused. The stamps don't carry the pool: the pool's state is globals, so a fetch is the same
 # two reads. `EntityPool.set_up(memory: PAGES)` is called in `start`,
 # before the first `add`, with a memory manager that reserves pages. Only one pool lives at a time.
 
@@ -50,9 +52,11 @@ secret global ENTITY_REMOVED_COUNT: &U64
 ### Where the tables come from and which reserved the range, None before set_up.
 secret global ENTITY_MEMORY: &(@MemoryManager?)
 
-### The generation fresh slots start at: it goes up by 65,536 with each pool that is set up, so a stamp of an ended pool
-### doesn't match the same slot of the next pool (until that slot was removed that many times).
-secret global ENTITY_EPOCH: &U32
+### The highest generation any slot ever reached, in any pool. It survives the end of a pool, and the next pool's fresh
+### slots start above it, so a stamp of an ended pool never matches a slot of a later one.
+secret global ENTITY_HIGH: &U32
+### The generation this pool's fresh slots start at.
+secret global ENTITY_FIRST: &U32
 
 ### How many slots a chunk holds.
 secret preset ENTITY_CHUNK_SLOTS: U64 = 4096
@@ -165,16 +169,37 @@ secret routine entity_memory() -> @MemoryManager
         is None =>
             throw UnacceptedValueError(description: "The EntityPool is not set up: call EntityPool.set_up(memory: PAGES) in start, before the first add.")
 
+### Records a generation a slot reached: the high-water mark only goes up. Called with the lock held, or while the pool ends.
+### :param generation: The generation.
+@inline
+secret routine note_generation(generation: U32) -> None
+    if generation > ENTITY_HIGH.load()
+        ENTITY_HIGH.store(generation)
+    return
+
+### Raises the floor of the generations: the next pool's fresh slots start above `floor`, so none of its stamps equals a
+### stamp of any earlier pool. It never lowers the mark. For a test of the limit, and for a program that wants the
+### stamps of its pools apart by more than the pools themselves.
+### :param floor: The generation the next pool starts above.
+common routine EntityPool.raise_generation_floor(floor: U32) -> None
+    lock_pool()
+    note_generation(floor)
+    unlock_pool()
+    return
+
 ### Sets the pool up: it reserves its range of address space from `memory`, which also gives its tables. A program calls
 ### it in `start`, before its first `add`, and holds the pool until it ends it.
 ### :param memory: A memory manager that reserves pages, such as `PAGES`.
 ### :returns: The pool, which the program ends.
-### :throws: Throws `UnacceptedValueError` when a pool lives already, or the manager doesn't handle pages.
+### :throws: Throws `UnacceptedValueError` when a pool lives already, the manager doesn't handle pages, or the slots of earlier pools used up the generations (U32.MAX - 1 reached).
 ### :throws: Throws `OutOfMemoryError` when there is no memory for the tables.
 common routine EntityPool.set_up(memory: @MemoryManager) -> EntityPool
     if not memory.has_pages()
         throw UnacceptedValueError(description: "The EntityPool reserves address space, and this memory manager doesn't handle pages: call EntityPool.set_up(memory: PAGES).")
     lock_pool()
+    if ENTITY_HIGH.load() >= U32.MAX - 1
+        unlock_pool()
+        throw UnacceptedValueError(description: "The EntityPool's generations are used up: slots of earlier pools reached the last generation, so another pool could not tell its stamps from theirs. Restart the program.")
     when ENTITY_MEMORY.load()
         is @MemoryManager =>
             unlock_pool()
@@ -199,7 +224,7 @@ common routine EntityPool.set_up(memory: @MemoryManager) -> EntityPool
         unlock_pool()
         throw OutOfMemoryError()
     base.to[@SlotHeader]().generation.poke(1)
-    ENTITY_EPOCH.store(ENTITY_EPOCH.load() +% 65536)
+    ENTITY_FIRST.store(ENTITY_HIGH.load() + 1)
     ENTITY_RESERVED.store(reserved)
     ENTITY_COMMITTED.store(ENTITY_COMMIT_STEP)
     ENTITY_TOP.store(1)
@@ -282,7 +307,7 @@ secret routine take_slot(entry: @PoolType) -> U32
             return 0
     next: U32 = entry.fresh_next.peek()
     entry.fresh_next.poke(next + (entry.stride.peek() // 16).to[U32]())
-    slot_address(next).to[@SlotHeader]().generation.poke(ENTITY_EPOCH.load())
+    slot_address(next).to[@SlotHeader]().generation.poke(ENTITY_FIRST.load())
     return next
 
 ### Hands `value` to the pool, which keeps it in a slot from now on, and gives its stamp.
@@ -378,6 +403,7 @@ needs AnyType T
     ENTITY_REMOVED.load().to[@U32]().stride(waiting).poke(stamp.slot)
     ENTITY_REMOVED_COUNT.store(waiting + 1)
     pool_write(header.generation, value: generation + 1)
+    note_generation(generation + 1)
     unlock_pool()
     return
 
@@ -428,6 +454,7 @@ routine @EntityPool.destruct() -> None
                         if header.type_id.peek() != 0
                             if pass == 0
                                 pool_write(header.generation, value: header.generation.peek() + 1)
+                                note_generation(header.generation.peek())
                             else
                                 end_slot(slot)
             start: Addr = ENTITY_BASE.load()
