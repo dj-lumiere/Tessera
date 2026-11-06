@@ -74,6 +74,7 @@ secret preset POOL_COMMIT_STEP: U64 = 1048576
 ### None (slot 0 is never given out).
 ### :typeparam T: The entity's type.
 @none_is_zero
+@entity_link
 record Stamped[T]
     ### The entity's slot, never 0.
     secret slot: U32
@@ -204,6 +205,7 @@ secret routine raise_generation_floor(floor: U32) -> None
 ### :returns: The pool, which the program ends.
 ### :throws: Throws `UnacceptedValueError` when a pool lives already, the manager doesn't handle pages, or the slots of earlier pools used up the generations (U32.MAX - 1 reached).
 ### :throws: Throws `OutOfMemoryError` when there is no memory for the tables.
+@uses_pool
 common routine PoolManager.set_up(memory: @MemoryManager) -> PoolManager
     if not memory.has_pages()
         throw UnacceptedValueError(description: "The PoolManager reserves address space, and this memory manager doesn't handle pages: call PoolManager.set_up(memory: PAGES).")
@@ -319,6 +321,7 @@ secret routine take_slot(entry: @PoolType) -> U32
 ### :param value: The entity, handed over.
 ### :returns: The stamp.
 ### :throws: Throws `OutOfMemoryError` when the range is full or its pages can't be committed. Throws `UnacceptedValueError` for a type aligned past 8 bytes, or when the type table is full. The value ends before the failure goes on.
+@uses_pool
 common routine PoolManager.add[T](value: T) -> Stamped[T]
 needs AnyType T
     if alignof[T]() > 8
@@ -346,6 +349,7 @@ needs AnyType T
 ### :returns: The entity's view.
 ### :throws: `StaleStampError` when the entity was removed, or its slot was reused.
 @inline
+@uses_pool
 routine Stamped[T].fetch() -> @T
 needs AnyType T
     start: Addr = POOL_BASE.load()
@@ -376,6 +380,7 @@ routine Stamped[T].notsame(other: Me) -> Bool
 ### :typeparam T: The entity's type.
 ### :param stamp: The entity's stamp.
 ### :throws: `StaleStampError` when the entity was removed already. Throws `OutOfMemoryError` when the removed list can't grow.
+@uses_pool
 common routine PoolManager.remove[T](stamp: Stamped[T]) -> None
 needs AnyType T
     if POOL_BASE.load().is_hollow()
@@ -420,6 +425,7 @@ secret routine end_slot(slot: U32) -> None
 
 ### Destructs the entities removed so far and makes their slots free for reuse. The time is proportional to the number
 ### of removed entities. An `@T` fetched before the `remove` must not be used after this.
+@uses_pool
 common routine PoolManager.sweep() -> None
     loop
         waiting: U64 = POOL_REMOVED_COUNT.load()
@@ -432,6 +438,7 @@ common routine PoolManager.sweep() -> None
 ### Ends the pool: sweeps, makes every stamp stale (the generation of each live slot goes up first, so a destruct that
 ### fetches another pooled entity always sees it ended, whatever the order), destructs the entities that are left, and
 ### gives the range and the tables back, so another pool can be set up.
+@uses_pool
 routine @PoolManager.destruct() -> None
     PoolManager.sweep()
     when POOL_MEMORY.load()

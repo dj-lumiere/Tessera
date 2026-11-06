@@ -60,13 +60,13 @@ public sealed class EscapeCheck
         public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
     }
 
+    /// Whether a routine is one of the pool's (the standard library marks them `@uses_pool`): setting it up, adding,
+    /// fetching, removing, sweeping, or ending it.
+    public static bool UsesPool(RoutineDecl d) =>
+        d.IsLibrary && d.AnnotationNamed("uses_pool") is not null;
+
     /// A call to a routine with a body: the callee's symbol, and each of its parameters' atoms (`me` first). A call
     /// through a Callable value has no callee symbol, and `Through` holds the atoms of the value called.
-    /// Whether a routine is one of the pool's: setting it up, adding, fetching, removing, sweeping, or ending it.
-    public static bool UsesPool(RoutineDecl d) =>
-        d.IsLibrary && d.Module == "System/Memory" && d.Owner?.Name is "PoolManager" or "Stamped"
-        && d.Name is "set_up" or "add" or "fetch" or "remove" or "sweep" or "destruct";
-
     public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text)
     {
         public HashSet<Atom>? Through { get; init; }
@@ -156,6 +156,10 @@ public sealed class EscapeCheck
         /// The first call it makes (itself or through the routines it calls) that uses the pool, which belongs to one thread.
         public Why? UsesPool { get; set; }
 
+        /// The first call it makes (itself or through the routines it calls) through a Callable value the build can't name
+        /// the routines of (a parameter, or a value read out of memory): it may be any routine the program turns into a value.
+        public Why? CallsUnknown { get; set; }
+
         /// The thread-local globals whose memory it may return (the global's name and the level the address is
         /// returned at): each thread's own copy, gone when the thread ends.
         public Dictionary<(string Global, int Level), Why> ReturnsThreadLocal { get; } = [];
@@ -167,7 +171,7 @@ public sealed class EscapeCheck
         /// The part of StoresOut that lands in a global every thread shares (not a @threadlocal one).
         public Dictionary<(int Param, int Level), Why> StoresOutShared { get; } = [];
 
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count + (UsesPool is null ? 0 : 1)
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count + (UsesPool is null ? 0 : 1) + (CallsUnknown is null ? 0 : 1)
             + ReturnsThreadLocal.Count + ThreadLocalInto.Count + StoresOutShared.Count;
     }
 
@@ -268,6 +272,7 @@ public sealed class EscapeCheck
         foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
         foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
         merged.UsesPool = a.UsesPool ?? b.UsesPool;
+        merged.CallsUnknown = a.CallsUnknown ?? b.CallsUnknown;
         foreach (var (k, v) in a.ReturnsThreadLocal) merged.ReturnsThreadLocal[k] = v;
         foreach (var (k, v) in b.ReturnsThreadLocal) merged.ReturnsThreadLocal.TryAdd(k, v);
         foreach (var (k, v) in a.ThreadLocalInto) merged.ThreadLocalInto[k] = v;
@@ -579,6 +584,20 @@ public sealed class EscapeCheck
                         + "under an exclusive access" + Note));
                     break;
                 }
+                if (e.CallsUnknown is { } unknown && PooledRoutineValue() is { } valued)
+                {
+                    var chain = new List<string>();
+                    for (var w = unknown; w is not null; w = w.Inner) chain.Add(w.Routine);
+                    var at = unknown.Store;
+                    var used = Of(valued)!.UsesPool!;
+                    errors.Add(new CompileError(Li.GlobalChangedAcrossThreads, call.Pos, $"{call.Text} runs '{name}' on another thread, and it calls a "
+                        + $"routine value ({string.Join(" calls ", chain.Distinct())}, line {at.Pos.Line}: {at.Text}) the build can't name the routine of, and "
+                        + $"'{all[valued].Inst.Decl.DisplayName}', which the program turns into a routine value, uses the pool (line {used.Store.Pos.Line}: "
+                        + $"{used.Store.Text}): a PoolManager belongs to one thread, like a global the program changes. Call the routine itself, "
+                        + "or keep the entities on one thread, or put a graph that threads share behind a manager such as Guarded, or under an "
+                        + "exclusive access" + Note));
+                    break;
+                }
                 foreach (var ((local, _), why) in e.ReturnsThreadLocal.OrderBy(r => r.Key.Global, StringComparer.Ordinal))
                 {
                     var at = why.Store;
@@ -619,6 +638,21 @@ public sealed class EscapeCheck
             }
         }
 
+        /// A routine the program turns into a routine value that uses the pool, or null: what a call through a Callable
+        /// the build can't name may reach.
+        private string? PooledRoutineValue()
+        {
+            var named = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var f in all.Values)
+            {
+                foreach (var c in f.Calls)
+                    foreach (var atom in c.Args.SelectMany(a => a).Concat(c.Through ?? []).OfType<RoutineAtom>()) named.Add(atom.Symbol);
+                foreach (var atom in f.Stores.SelectMany(st => st.Value).Concat(f.Returns.SelectMany(r => r.Value)).OfType<RoutineAtom>())
+                    named.Add(atom.Symbol);
+            }
+            return named.FirstOrDefault(r => all.GetValueOrDefault(r) is { Inst.Decl.IsLibrary: false } && Of(r)?.UsesPool is not null);
+        }
+
         /// The effects of a call to `callee` with these arguments (`places` as written, for where a store lands).
         private void Apply(CallFact call, string callee, List<HashSet<Atom>> args, List<HashSet<Atom>> places, Effects found,
             List<CompileError>? errors, int depth)
@@ -651,6 +685,7 @@ public sealed class EscapeCheck
                             }
                 foreach (var (g, why) in e.WritesGlobals) found.WritesGlobals.TryAdd(g, new Why(call.Pos, Routine, call.Text, why));
                 if (e.UsesPool is { } pool) found.UsesPool ??= new Why(call.Pos, Routine, call.Text, pool);
+                if (e.CallsUnknown is { } unknown) found.CallsUnknown ??= new Why(call.Pos, Routine, call.Text, unknown);
             }
             foreach (var ((param, level), why) in e.StoresOut)
             {
@@ -720,6 +755,8 @@ public sealed class EscapeCheck
             var routines = through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct().ToList();
             foreach (var routine in routines) Apply(call, routine, args, places, found, errors, depth + 1);
             var parameters = through.OfType<ParamAtom>().ToList();
+            if (!facts.Inst.Decl.IsLibrary && (parameters.Count > 0 || routines.Count == 0))
+                found.CallsUnknown ??= new Why(call.Pos, Routine, call.Text, inner);
             // A routine value read out of memory (a global, a field) names no routine here: the routines stored there
             // are the program's to get right, and the check doesn't follow them.
             foreach (var p in parameters)

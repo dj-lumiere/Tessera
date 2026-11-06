@@ -121,10 +121,10 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAnnotations =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", "race_check", "unavailable", "refused", "reshaping", "positional", "throws", ExpensiveCallLint.Annotation, BlockRule.Generated];
+         "no_builtins", "untraced", "trace", "heap_check", "race_check", "unavailable", "refused", "reshaping", "positional", "throws", "uses_pool", ExpensiveCallLint.Annotation, BlockRule.Generated];
 
     /// Annotations a type, a field or a preset takes, besides those a routine takes.
-    private static readonly HashSet<string> TypeAnnotations = ["aggregate", "aligned", "layout", "union", "threadlocal", "derive", "none_is_zero"];
+    private static readonly HashSet<string> TypeAnnotations = ["aggregate", "aligned", "layout", "union", "threadlocal", "derive", "none_is_zero", "entity_link"];
 
     /// A declaration or a field of the program that is written with an annotation the builder doesn't know is a build
     /// error, wherever the declaration stands and whether or not anything uses it.

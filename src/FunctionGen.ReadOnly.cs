@@ -152,12 +152,12 @@ public sealed partial class FunctionGen
         seen ??= [];
         switch (t)
         {
-            case RecordType { Decl.Name: "Stamped" } stamp when stamp.Decl.Module == "System/Memory":
-                return stamp.ToString();
+            case RecordType link when link.Decl.AnnotationNamed("entity_link") is not null:
+                return link.ToString();
             case RecordType s when seen.Add(s.Key):
                 foreach (var (name, type) in _c.Fields(s))
                     if (WayToChange(type, seen) is { } held)
-                        return type is RecordType { Decl.Name: "Stamped" } ? $"{name}: {held}" : $"{name}.{held}";
+                        return type is RecordType linked && linked.Decl.AnnotationNamed("entity_link") is not null ? $"{name}: {held}" : $"{name}.{held}";
                 return null;
             case VariantType v when seen.Add(v.Key):
                 foreach (var branch in v.Branches)

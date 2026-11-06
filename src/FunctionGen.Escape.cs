@@ -387,7 +387,6 @@ public sealed partial class FunctionGen
     {
         if (_escape is null) return;
         var args = argExprs.Select((a, i) => Atoms(a, i < ct.Params.Count ? ct.Params[i] : null)).ToList();
-        if (args.All(a => a.Count == 0)) return;
         _escapeCalls[(pos, "call")] = _escape.Calls.Count;
         _escape.Calls.Add(new EscapeCheck.CallFact("", args, pos, Spelled(new MethodCallExpr(callee, "call", [], argExprs, pos)))
             { Through = AtomsOf(callee) });

@@ -406,7 +406,12 @@ routine start() -> None
     **The pool belongs to one thread** (the rule is a global's, `LI-S448`): a routine that work runs on another thread, or one it calls,
     that sets the pool up, `add`s, `fetch`es, `remove`s, `sweep`s or ends it is a build error that names the call chain
     (`t.put_work(work) runs 'work' on another thread, and it uses the pool (work calls read, line 19: s.fetch()): a PoolManager belongs to one
-    thread ...`). A graph that threads share goes behind a manager such as `Guarded` or under an exclusive access.
+    thread ...`). A graph that threads share goes behind a manager such as `Guarded` or under an exclusive access. A call through a routine value is followed to the routines the value is made of (`f = tidy.to[Callable]()` in the same
+    routine); a value the build can't name (a global, a field, a parameter) counts as any routine the program turns into a routine value, so
+    a work that calls one while some such routine uses the pool is the same error.
+  - **`@entity_link`** on a record marks it as a way to change an entity: its `fetch()` gives the entity's view, so the view of a
+    shared read access reads it where it is and no further, and the record (or anything holding it) is not copied out of such a view. `Stamped`
+    has it, and a user record with it is treated the same; a record merely named `Stamped` is not.
   - **`@none_is_zero`** on a record whose first field is an integer that is never 0 for a value makes `R?` the record alone, with the all-zero
     record as None (no flag): `when`, `try`, `is_absent()` and `unwrap()` work as on any Optional.
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a

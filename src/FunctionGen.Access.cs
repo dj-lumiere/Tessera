@@ -70,9 +70,8 @@ public sealed partial class FunctionGen
         return false;
     }
 
-    /// Whether `m` is `fetch()` on a `Stamped`.
-    private bool IsStampFetch(MethodCallExpr m) => InferQuiet(m.Receiver) is RecordType { Decl.Name: "Stamped" } r
-        && r.Decl.Module == "System/Memory";
+    /// Whether `m` is `fetch()` on a record marked `@entity_link`: a link whose `fetch()` gives the entity's view.
+    private bool IsStampFetch(MethodCallExpr m) => InferQuiet(m.Receiver) is RecordType r && r.Decl.AnnotationNamed("entity_link") is not null;
 
     /// A write through the view of a shared read access, or handing it to a routine that may move its memory, is a
     /// build error: a shared read access reads only.
