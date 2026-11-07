@@ -9,7 +9,7 @@ namespace Lapila;
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
 /// It's a warning, not an error: `lapila check`, `build`, and `run` print it for the program's own files, and
-/// `lapila lint` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
+/// `lapila check <folder>` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
 public static class ChainLint
 {
     public const int MaxOperations = 3;

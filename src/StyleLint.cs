@@ -2,7 +2,7 @@ namespace Lapila;
 
 /// Every style warning: the chain lint's, the finish lint's, the record-parameter lint's, the loop lint's, (given the
 /// source lines) the
-/// doc lint's, and (given the builds) the expensive-call lint's, for what `check`, `build`, `run`, `lint`, and the
+/// doc lint's, and (given the builds) the expensive-call lint's, for what `check`, `build`, `run`, and the
 /// language server print.
 public static class StyleLint
 {

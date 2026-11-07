@@ -114,7 +114,7 @@ dotnet test tests                # optional: every golden test and example as an
 ### Hello, world
 
 ```bash
-dotnet run -- buildandrun examples/hello.lpa
+dotnet run -- run examples/hello.lpa
 ```
 
 [`examples/`](examples/README.md) continues from there, one idea per program, in reading order.
@@ -131,14 +131,14 @@ starting points.
 ```
 lapila new   [<folder>]                      Start a solution: config.toml, main.lpa, .gitignore, .vscode/
 lapila build                                 Build the solution its config.toml describes (here or above)
-lapila buildandrun                           Build it and run it
+lapila run                                   Build it and run it
 lapila build <file.lpa>...                    Build an executable from these files
-lapila buildandrun <file.lpa>... [-- <argument>...]  Build and run these files
+lapila run <file.lpa>... [-- <argument>...]  Build and run these files
 lapila codegen [<file.lpa>...] [out.ll]      Write the program's LLVM IR without building it
 lapila test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 lapila check [<target>] [<file.lpa>...]       Type-check the files and all they reach, or with no file the whole stdlib
-lapila fmt   [--check] <file-or-dir>...      Format .lpa files in place
-lapila lint  <file-or-dir>...                Print the style warnings
+lapila check <folder>...                     Print the style warnings of every .lpa file in the folders
+lapila format [--check] <file-or-dir>...     Format .lpa files in place (`format -`: standard input to standard output)
 lapila docs  <source-dir> <output-dir>       Write the API reference pages of a library
 lapila lsp                                   Run the language server (for an editor)
 lapila help | version
@@ -148,9 +148,9 @@ lapila help | version
 `config.toml`'s `mode`. Every mode carries debug information, DWARF or CodeView and a `.pdb` on Windows MSVC: a
 debugger stops on Lapila lines and shows routine parameters, bindings, and loop-carried values by name.
 From a checkout, run it as `dotnet run -- <command>`. `<target>` (for `test` and `check`) is `--target
-<arch-os-abi>` (default: this machine), `--cpu <name>`, and `--feature <name>[,...]`. `build` and `buildandrun` take no flags.
+<arch-os-abi>` (default: this machine), `--cpu <name>`, and `--feature <name>[,...]`. `build` and `run` take no flags.
 With files, all of them form one solution, and one file with a `config.toml` in its own folder takes that file's
-settings. Without files, `build` and `buildandrun` read the nearest `config.toml`, which names the package and sets the
+settings. Without files, `build` and `run` read the nearest `config.toml`, which names the package and sets the
 target, mode, sources, module folders, and link options (see
 [Modules → The solution manifest](https://lapila.lumi-dev.xyz/Modules/#the-solution-manifest)):
 
@@ -184,7 +184,7 @@ sources = ["src"]
   `System` (the heap and page managers) need libc. A target without an operating system builds without them
   and uses `Unhosted` (the startup steps, the CPU events, the interrupt controller, the timer, the serial port,
   and the round robin threads).
-- **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
+- **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`format`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Lapila.tmbundle/`](Lapila.tmbundle/)).
 
 ## Lapila, Revare, and Mielia

@@ -10,7 +10,7 @@ namespace Lapila;
 /// `.hollow()` when no value is ready yet, which its `destruct` leaves alone, so a path that never filled it is safe.
 ///
 /// Warnings, like ChainLint's: `lapila check`, `build`, and `run` print them for the program's own files, and
-/// `lapila lint` for any file.
+/// `lapila check <folder>` for any file.
 public static class FinishLint
 {
     public const string BlockName = "finish";

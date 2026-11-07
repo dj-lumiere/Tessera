@@ -11,7 +11,7 @@ namespace Lapila;
 /// checked like any other, since every type that meets the concept repeats the signature.
 ///
 /// A warning, like ChainLint's: `lapila check`, `build`, and `run` print it for the program's own files, and
-/// `lapila lint` for any file.
+/// `lapila check <folder>` for any file.
 public static class RecordParamLint
 {
     /// The parameter count, `me` not counted, at which a routine takes a record instead.

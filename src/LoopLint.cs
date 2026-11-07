@@ -4,7 +4,7 @@ namespace Lapila;
 /// `until false` never ends by itself, which `loop` says, and the language server offers to write `loop` there.
 ///
 /// A warning, like ChainLint's: `lapila check`, `build`, and `run` print it for the program's own files, and
-/// `lapila lint` for any file.
+/// `lapila check <folder>` for any file.
 public static class LoopLint
 {
     public static List<string> Check(IEnumerable<Decl> decls)

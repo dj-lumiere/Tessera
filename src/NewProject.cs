@@ -49,9 +49,9 @@ static class NewProject
                   "version": "2.0.0",
                   "tasks": [
                     {
-                      "label": "buildandrun",
+                      "label": "run",
                       "type": "shell",
-                      "command": "lapila buildandrun",
+                      "command": "lapila run",
                       "group": { "kind": "build", "isDefault": true },
                       "problemMatcher": []
                     },
@@ -79,7 +79,7 @@ static class NewProject
             File.WriteAllText(path, text);
             Console.WriteLine($"  created  {relative}");
         }
-        Console.WriteLine("Run it with: lapila buildandrun");
+        Console.WriteLine("Run it with: lapila run");
         return 0;
     }
 }

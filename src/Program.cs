@@ -11,23 +11,23 @@ static partial class Cli
         usage:
           lapila new   [<folder>]      start a solution: config.toml, main.lpa, .gitignore, VS Code files
           lapila check [<target>] [<trace>] [<file.lpa>...]   type-check the files' routines and all they reach, or with no file every non-generic routine of the stdlib
+          lapila check <folder>...      print the style warnings of every .lpa file in the folders (see the warnings below)
           lapila build                 build the solution its config.toml describes (here or above)
           lapila build <file.lpa>...    build the files: one file with a config.toml in its own folder takes that
                                         config.toml's settings, others build for this machine in debug
-          lapila buildandrun           build it and run it
-          lapila buildandrun <file.lpa>... [-- <argument>...]   build the files the same way and run the program
+          lapila run                   build it and run it
+          lapila run   <file.lpa>... [-- <argument>...]   build the files the same way and run the program
           lapila codegen [<file.lpa>...] [<out.ll>]   write the program's LLVM IR without building it (next to the
                                         first file, or to <out.ll>)
           lapila test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.lpa>...
-          lapila fmt   [--check] <file-or-dir>...   format .lpa files in place (--check: list files that would change)
-          lapila fmt   -               format the source on standard input to standard output (for an editor)
+          lapila format [--check] <file-or-dir>...   format .lpa files in place (--check: list files that would change)
+          lapila format -              format the source on standard input to standard output (for an editor)
           lapila lsp                   run the language server on standard input and output (for an editor)
-          lapila lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
           lapila docs  <source-dir> <output-dir>   write the API reference pages of a library from its ### docs
           lapila help                  print this text
           lapila version               print the builder's version
 
-        build, buildandrun and codegen take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
+        build, run and codegen take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
                 mode, [debug] emit-llvm, trace, race-check, heap-check, ...), and a flag that it can say is an error
                 naming the key. Its output goes to build/ next to it. A config.toml with no executable under [target]
                 builds a library linked into another program: its sources files as LLVM IR, build/<package name>.ll,
@@ -56,15 +56,15 @@ static partial class Cli
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
-        lint: warns on a chain of more than three calls, and in a routine with a block named finish (the block that
+        warnings (check on folders): warns on a chain of more than three calls, and in a routine with a block named finish (the block that
               releases what the routine holds and is its only return), on a return outside finish, on a routine with
               blocks not written yet (todo), on a routine with five or more parameters (me aside,
               C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a ### doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
               :returns: when it returns a value. It also warns on a call to an @expensive routine from a block on a
-              loop (it builds the files to know which routine each call is). check, build, and run print the same
-              warnings for the program's own files. Exits 1 when there is one, the expensive calls aside: there is
+              loop (it builds the files to know which routine each call is). check on files, build, and run print the
+              same warnings for the program's own files. Exits 1 when there is one, the expensive calls aside: there is
               no way yet to accept one that is meant, so they don't fail it.
         """;
 
@@ -106,15 +106,16 @@ static partial class Cli
             {
                 "new" => NewProject.Run(args[1..], BuilderVersion()),
                 "build" => Build(args[1..]),
-                "buildandrun" => Run(args[1..]),
+                "run" => Run(args[1..]),
                 "codegen" => Codegen(args[1..]),
-                "run" => Fail("there is no 'run' command: to build and run the program, use lapila buildandrun"),
+                "buildandrun" => Fail("there is no 'buildandrun' command: use lapila run"),
+                "fmt" => Fail("there is no 'fmt' command: use lapila format"),
+                "lint" => Fail("there is no 'lint' command: use lapila check <folder>"),
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
                 "daemon" => BuildDaemon.Serve(),
                 "lsp" => LanguageServer.Run(StdlibDir),
-                "fmt" => Fmt(args[1..]),
-                "lint" => LintFiles(args[1..]),
+                "format" => Fmt(args[1..]),
                 "docs" => Docs(args[1..]),
                 "version" => Version(),
                 "help" => Help(),
@@ -205,7 +206,7 @@ static partial class Cli
 
     private static int LintFiles(string[] args)
     {
-        if (args.Length == 0) return Fail("lint: give files or directories to lint");
+        if (args.Length == 0) return Fail("check: give folders to check");
         var files = args.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.lpa", SearchOption.AllDirectories)
             : [p]).Order().ToList();
@@ -416,7 +417,7 @@ static partial class Cli
         return BuildModes.Parse(name) ?? throw new ToolError(Li.BadOption, $"--mode is {BuildModes.Names}, not \"{name}\"");
     }
 
-    /// The files of `lapila build` or `lapila buildandrun`. The commands take files and nothing else: a flag that config.toml
+    /// The files of `lapila build` or `lapila run`. The commands take files and nothing else: a flag that config.toml
     /// can say is an error that names the key, and one that is gone is an error that says what does its work now.
     /// The message for a source file that still has an extension Lapila sources had before (`.te`, then `.li`), or null.
     public static string? OldSourceMessage(string file) =>
@@ -447,6 +448,8 @@ static partial class Cli
     /// import syntax yet).
     private static int Check(string[] args)
     {
+        // Folders are checked as sources: the style warnings and the expensive calls on a loop, file by file.
+        if (args.Any(Directory.Exists)) return LintFiles(args);
         var targetArgs = new TargetArgs();
         var files = new List<string>();
         bool? trace = null;
@@ -1314,7 +1317,7 @@ static partial class Cli
                 catch (ObjectDisposedException) { }
             });
         }
-        // A test (its output captured) gets limitSeconds. `lapila buildandrun` waits as long as the program runs: a long
+        // A test (its output captured) gets limitSeconds. `lapila run` waits as long as the program runs: a long
         // check, such as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
         // hangs with its pipes open still runs into the limit instead of blocking the read forever.
         if (!captureOutput)

@@ -5,7 +5,7 @@ using System.Text;
 
 namespace Lapila;
 
-/// The build daemon: a `lapila daemon` process that builds a manifest's program for `lapila build` and `lapila buildandrun`
+/// The build daemon: a `lapila daemon` process that builds a manifest's program for `lapila build` and `lapila run`
 /// when the manifest says `[target] use-daemon = true`. It keeps what a build reads again unchanged (the standard
 /// library's declarations, the target's CPU and data layout) between builds, so a build after an edit parses only the
 /// program's own files. It builds one request at a time, and stops after half an hour without one.

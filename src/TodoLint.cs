@@ -4,7 +4,7 @@ namespace Lapila;
 /// block first and filled in later says what is left without an error on each block.
 ///
 /// A warning, like ChainLint's: `lapila check`, `build`, and `run` print it for the program's own files, and
-/// `lapila lint` for any file. A test or scratch file (DocLint.IsLibraryFile) is left out: a todo there is the
+/// `lapila check <folder>` for any file. A test or scratch file (DocLint.IsLibraryFile) is left out: a todo there is the
 /// point of the test or a draft, and running it reaches the todo anyway.
 public static class TodoLint
 {

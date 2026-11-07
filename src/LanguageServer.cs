@@ -9,7 +9,7 @@ namespace Lapila;
 /// document that opens or changes is checked the way `lapila check` checks it (its own routines and presets, and every
 /// instance they reach), as the editor holds it, saved or not, together with the files its solution builds with
 /// (`config.toml`'s import closure, or the file alone) and the standard library. Its errors and its style warnings
-/// come back as diagnostics. Formatting is `lapila fmt`'s.
+/// come back as diagnostics. Formatting is `lapila format`'s.
 ///
 /// Typing sends a change per keystroke; a check runs once the document has been still for a moment, on the text it
 /// holds then, so a burst of changes costs one check. The standard library is parsed once and kept while its files
@@ -435,7 +435,7 @@ public static partial class LanguageServer
         return all;
     }
 
-    /// The whole document in `lapila fmt`'s layout, as one edit, or no edit when it is laid out already.
+    /// The whole document in `lapila format`'s layout, as one edit, or no edit when it is laid out already.
     private static JsonArray FormattingEdits(string uri)
     {
         string? text;

@@ -8,17 +8,17 @@ answer.
 ## Toolchain
 
 ```sh
-dotnet run -- buildandrun file.lpa   # build and run (the whole stdlib is always available)
+dotnet run -- run file.lpa   # build and run (the whole stdlib is always available)
 dotnet run -- build file.lpa        # build it: a config.toml in the file's folder gives the settings, else host + debug
 dotnet run -- check file.lpa        # type-check only
 dotnet run -- codegen file.lpa      # write the LLVM IR (file.ll) without building
 dotnet run -- test tests examples             # golden tests (test takes --mode, --target, --trace / --no-trace)
-dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
+dotnet run -- format <files or dirs>     # format in place (--check to only list)
 dotnet run -- build                      # build config.toml's entry (executable = "main.lpa") and its imports into build/
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
-`build` and `buildandrun` take files and nothing else: every setting is in config.toml (`[target] mode = "release"`,
+`build` and `run` take files and nothing else: every setting is in config.toml (`[target] mode = "release"`,
 `triple`, `board`, `cpu`, `features`, `use-daemon`, `[debug] trace = false`, `race-check`, `heap-check`, `emit-llvm`). A flag
 config.toml can say is an error that names the key ("`--mode` isn't an option: write `mode = \"release\"` under
 [target] in config.toml"). The output is named after the entry file (`build/main` for `executable = "main.lpa"`). A
@@ -123,7 +123,7 @@ routine start() -> None
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns `None`, then `:throws:` ("Throws `IndexOutOfBoundsError` when ...", or "Crashes with" in an `infallible` or
   `@noreturn` routine), `:absent:` (when an `Optional` comes back `None`), `:note:`, and `:see:` as needed. No `;` in the
-  prose, facts only. `lapila lint` (and `check` / `build` / `buildandrun` for the program's own files) warns on a routine
+  prose, facts only. `lapila check <folder>` (and `check` / `build` / `run` for the program's own files) warns on a routine
   without one, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
   missing `:returns:`, in every file except those under a `tests`, `playground`, `scratch`, or `generated` directory, and except
   routines a generator wrote (`@source`).
@@ -735,12 +735,12 @@ routine start() -> None
   `BorrowedSlice[T].construct` / `resize`, `@[Byte].concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
   allocating `Console.ask` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
-  only. `lapila lint` (and `check` / `build` / `buildandrun` for the program's own files, and the language server) warns on a
+  only. `lapila check <folder>` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
   direct call to one inside a loop (`for`, `until`, `loop`), since it runs on every round. Not reported: a call
   on a path that leaves the loop, a call inside an `@expensive`
   routine, and a call to a routine that only calls an expensive one. Hoist the call, reuse one buffer across the
   passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
-  (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
+  (Roadmap open question #66), so `check <folder>` prints these and counts them apart without failing. Don't mark what costs
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`SignalCaster.wait`, `wait_on`, a ticket's `retrieve`), which belong in loops.
 - A number, `Bool` or choice preset is folded by the builder, and only from literals (`inf` and `nan` too), other presets, integer and
@@ -821,7 +821,7 @@ routine start() -> None
   `break`: `rows`' `then` runs and the `then` of the loops inside it is skipped. `continue to rows` starts `rows`' next
   round (with carried values: `continue to rows with total: total + 1`). A plain `break` / `continue` stays with the
   innermost loop. A name no loop around the statement has, or a name an enclosing loop already has, is a build error. A
-  loop name nothing uses is a warning (`lint`, `check`, `build`).
+  loop name nothing uses is a warning (`check`, `build`).
 - **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run once whenever the loop is left
   for the line after it: when the loop ends on its own (the condition fails, the range or emitter is exhausted) and
   after its own `break` (a `break` of a loop inside only leaves that loop). A `return` leaves the routine and skips
@@ -929,11 +929,11 @@ routine start() -> None
 - A chain holds at most three calls on one line (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts
   (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to[T]()`), a field doesn't, and each argument and each `{...}`
   write-template hole is its own chain. A chain of more calls goes one call per line, each line after the first starting
-  with its `.` (`fmt` writes it so, and a chain written that way is never too long), or a fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`(x.peek() + y).poke_into(x)`): the basic
+  with its `.` (`format` writes it so, and a chain written that way is never too long), or a fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`(x.peek() + y).poke_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
-  split ordinary updates. `check`/`build`/`buildandrun` warn (not an error) for the program's own files, and
-  `lapila lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, the doc-comment lint, and the expensive-call lint); CI holds `stdlib`, `tests`, and
-  `examples` to 0 warnings, the expensive calls on loops aside (they don't fail `lint`). When the chain sits in a `when` arm or a later `when` condition, don't hoist it
+  split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
+  `lapila check <folder>...` checks every file in the folders (this lint, the `finish` lint above, the record-parameter lint, the doc-comment lint, and the expensive-call lint); CI holds `stdlib`, `tests`, and
+  `examples` to 0 warnings, the expensive calls on loops aside (they don't fail `check`). When the chain sits in a `when` arm or a later `when` condition, don't hoist it
   above (that would run it on paths that didn't): bind it under the arm.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `floordiv`, `mod`, `lt`, `ge`, `arith_shift_right` (`>>`: arithmetic on S, logical on U), and so on. A shift by the width or more
@@ -1535,7 +1535,7 @@ routine start() -> None
 - A tuple value takes its type from where it goes (`t: (S64, S64) = (1, 2)`); with nowhere to take it from, it's
   an error. An `Items` or a `Slots` is `[1, 2]`, never `(1, 2)`, and a tuple never `[1, 2]`.
 - Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(a)` is `a`
-  and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
+  and `format` drops them. In `Callable[(A, B), R]` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
 
 **Entities**
@@ -1846,7 +1846,7 @@ Format through `System/Text` (`Format.lpa`), not printf. printf is for C interop
   global has none: `&U64(at: 0x0000_55D0_C1A2_B3C0)`. In a template hole and `Console.show(x)` the
   build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
   sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getview()`
-  for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `buildandrun`, and `lint`; it is a warning,
+  for the text of an `&Items[Char, N]` or `&Items[Byte, N]`), in `check`, `build`, `run`, and `check <folder>`; it is a warning,
   not an error. Exceptions: `@[Byte]` and `@[Char]` are text (a `@[Char]` writes each character's UTF-8 straight into
   the Writer, no memory taken), a `&[Char]` or a `&[Byte]` (STACK or from a manager) writes its list (`['h', 'i']`, `[Byte('\x4C'), Byte('\x75')]`, like `Items[Char, N]`: its text is `.getslice()`), and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
   the entity. `{view.to[Addr]()}` writes only the address (`0x0000_7FFD_5E8C_1A40`, the pointer width in groups of four uppercase hex digits, an `Addr` writes itself). A derived
@@ -2589,7 +2589,7 @@ value that already is the group passes whole. A pointer and a count that go toge
 counts too: a routine that reaches five only through it still takes a record for the rest, the memory manager staying the
 separate last parameter. Exempt: `@external` declarations, `@export` routines and `@callconv` callbacks (a C ABI sets
 their signature), generated code (files under a `generated` directory, routines with `@source`, what Anvila's Lapila
-emitter writes), and `Callable` types. `lapila lint` warns on the rest (`check`, `build`, `buildandrun` too, for the
+emitter writes), and `Callable` types. `lapila check <folder>` warns on the rest (`check`, `build`, `run` too, for the
 program's own files).
 
 **`Bool` routines: `is_`, `has_`, or membership.** A routine that answers a question names which kind: `is_` asks about
@@ -2653,7 +2653,7 @@ array presets (`K.getitem(i)`, with `preset K: Items[T, COUNT] = [...]`), and fo
 
 ## Style
 
-Run `lapila fmt` on what you write: it writes `name: T = value` (nothing aligned with the line above), spaces routines, joins broken
+Run `lapila format` on what you write: it writes `name: T = value` (nothing aligned with the line above), spaces routines, joins broken
 lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's receiver type as `Me` after it's declared
 (not in `needs` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
 presets, types, protocols, standalone conformances, routines (in your order), and `when_power_on` then `start` last. Follow `../Lapila-Wiki/docs/Style-Guide.md`. In short: one purpose per routine, routines named for what they do (`grow`,

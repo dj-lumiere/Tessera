@@ -3,7 +3,7 @@ using Tomlyn.Model;
 
 namespace Lapila;
 
-/// A solution's `config.toml`: what it builds, for which target. `lapila build` and `lapila buildandrun` without files read
+/// A solution's `config.toml`: what it builds, for which target. `lapila build` and `lapila run` without files read
 /// it from the working directory or the nearest directory above; with a manifest the build takes no flags, since the
 /// manifest is the build configuration. The layout is Revare's and Mielia's.
 ///
