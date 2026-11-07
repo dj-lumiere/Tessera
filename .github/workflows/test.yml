@@ -33,6 +33,10 @@ jobs:
             target: x86_64-windows-msvc
           - os: windows-latest
             target: x86-windows-msvc
+          - os: windows-latest
+            target: x86_64-windows-gnu
+          - os: windows-latest
+            target: x86-windows-gnu
           - os: macos-latest
             target: aarch64-macos-none
 
@@ -71,8 +75,9 @@ jobs:
         if: matrix.target == 'x86-linux-gnu'
         run: sudo apt-get install -y gcc-multilib
 
+      # The MSVC targets build with LLVM for Windows and Visual Studio's libraries, the runner's.
       - name: Cache LLVM 21 (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-msvc')
         id: cache-llvm
         uses: actions/cache@v4
         with:
@@ -80,7 +85,7 @@ jobs:
           key: llvm-21.1.8-win64
 
       - name: Download LLVM 21 (Windows)
-        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-msvc') && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           curl.exe -L -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz"
@@ -91,7 +96,7 @@ jobs:
           Remove-Item llvm.tar.xz
 
       - name: Put LLVM 21 on PATH (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-msvc')
         shell: pwsh
         run: |
           Add-Content $env:GITHUB_PATH 'C:\llvm21\bin'
@@ -110,12 +115,43 @@ jobs:
           DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --find ld
           DEVELOPER_DIR=/Library/Developer/CommandLineTools ld -v
 
+      # The MinGW targets build with llvm-mingw, which the release package brings in toolchain/ next to the builder. The
+      # job puts it in the same place (after the build), so the tests take the package's lookup and nothing from the
+      # runner's own LLVM or Visual Studio.
+      - name: Cache llvm-mingw (Windows)
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-gnu')
+        id: cache-llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: C:\llvm-mingw
+          key: llvm-mingw-20260602-ucrt-x86_64
+
+      - name: Download llvm-mingw (Windows)
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-gnu') && steps.cache-llvm-mingw.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          curl.exe -L -o llvm-mingw.zip "https://github.com/mstorsjo/llvm-mingw/releases/download/20260602/llvm-mingw-20260602-ucrt-x86_64.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'llvm-mingw download failed' }
+          tar -xf llvm-mingw.zip -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'llvm-mingw extract failed' }
+          Move-Item (Join-Path $env:RUNNER_TEMP 'llvm-mingw-20260602-ucrt-x86_64') C:\llvm-mingw
+          Remove-Item llvm-mingw.zip
+
       - name: Verify toolchain
+        if: ${{ !(runner.os == 'Windows' && endsWith(matrix.target, '-gnu')) }}
         run: clang --version
 
       - name: Build
         id: build
         run: dotnet build Lapila.csproj --configuration Release
+
+      - name: Put llvm-mingw where the package has its toolchain (Windows)
+        if: runner.os == 'Windows' && endsWith(matrix.target, '-gnu')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Junction -Path bin\Release\net10.0\toolchain -Target C:\llvm-mingw | Out-Null
+          bin\Release\net10.0\toolchain\bin\clang.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'the bundled clang does not run' }
 
       - name: Check formatting
         if: matrix.target == 'x86_64-linux-gnu'
