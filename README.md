@@ -100,9 +100,22 @@ the places a routine borrowed from STACK at each exit, and borrows and gives bac
 
 ## Quick start
 
+### From a release package
+
+Unpack the package for your system anywhere and put the folder on your `PATH`. It has the builder, the standard
+library, Ingrid's library and its own LLVM toolchain in `toolchain/`, so you don't install clang.
+
+- Windows: nothing else. Programs build for `x86_64-windows-gnu` with the bundled llvm-mingw and run on any Windows
+  10 or newer.
+- Linux: the C library's development files (`libc6-dev` on Debian and Ubuntu, `glibc-devel` on Fedora).
+- macOS: the Command Line Tools (`xcode-select --install`).
+
 ### From source
 
-You need the [.NET 10 SDK](https://dotnet.microsoft.com/) and clang 21 or newer on `PATH`.
+You need the [.NET 10 SDK](https://dotnet.microsoft.com/) and clang 21 or newer on `PATH`. On Windows the default
+target, `x86_64-windows-gnu`, links with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (its UCRT build): put
+its `bin` folder on `PATH`. The MSVC targets (`[target] triple = "x86_64-windows-msvc"`) link with LLVM for Windows
+and Visual Studio's libraries instead.
 
 ```bash
 git clone https://github.com/dj-lumiere/Lapila.git
@@ -145,7 +158,7 @@ lapila help | version
 ```
 
 `<mode>` is `debug` (-O0, the default), `release` (-O2), `release-time` (-O3), or `release-space` (-Os), as a
-`config.toml`'s `mode`. Every mode carries debug information, DWARF or CodeView and a `.pdb` on Windows MSVC: a
+`config.toml`'s `mode`. Every mode carries debug information, DWARF, or CodeView and a `.pdb` for the Windows MSVC targets: a
 debugger stops on Lapila lines and shows routine parameters, bindings, and loop-carried values by name.
 From a checkout, run it as `dotnet run -- <command>`. `<target>` (for `test` and `check`) is `--target
 <arch-os-abi>` (default: this machine), `--cpu <name>`, and `--feature <name>[,...]`. `build` and `run` take no flags.

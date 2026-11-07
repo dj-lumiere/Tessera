@@ -6,10 +6,11 @@ back by hand, and the build checks that every place is given back. The builder e
 ## Install
 
 1. Download the package for your system and unpack it anywhere: `lapila` (or `lapila.exe`), the standard library in
-   `Standard/` and Ingrid's library in `Ingrid/`. Keep the three together, since the builder looks for both folders
-   next to itself.
+   `Standard/`, Ingrid's library in `Ingrid/` and the LLVM toolchain in `toolchain/`. Keep them together, since the
+   builder looks for all three folders next to itself.
 2. Put the folder on your `PATH`.
-3. Install clang 21 or newer and put it on your `PATH` too. The package does not include it.
+3. Windows needs nothing else. Linux needs the C library's development files (`libc6-dev` on Debian and Ubuntu,
+   `glibc-devel` on Fedora), and macOS the Command Line Tools (`xcode-select --install`).
 
 Then `lapila run hello.lpa` builds and runs a file, and `lapila new <name>` starts a project with its `config.toml`.
 
@@ -17,7 +18,9 @@ Then `lapila run hello.lpa` builds and runs a file, and `lapila new <name>` star
 
 - The builder commands: `check`, `build`, `run`, `codegen`, `test`, `lsp`, `format`, `docs`, `help`, `version` and `new`. Every build setting
   is in `config.toml`.
-- Hosted targets: Linux, Windows and macOS, 64-bit, and 32-bit on Linux and Windows.
+- Hosted targets: Linux, Windows and macOS, 64-bit, and 32-bit on Linux and Windows. Windows builds for
+  `x86_64-windows-gnu` (MinGW, with the bundled llvm-mingw) by default. The MSVC targets (`x86_64-windows-msvc`,
+  `x86-windows-msvc`) need LLVM for Windows and Visual Studio, and `[target] triple` in `config.toml` selects them.
 - Targets without an operating system (32-bit ARM, riscv32, aarch64, x86_64): a board file gives the memory map, and
   the builder writes the link script from it.
 - Memory from managers (`MemoryManager` and the heap, stack, pool and global managers), entities with `steal`, failures with

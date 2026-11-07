@@ -27,6 +27,19 @@ config.toml with no `executable` builds a library linked into another program: i
 `test` keep `--target`, `--cpu`, `--feature`, `--board` and `--trace` / `--no-trace` (`test` also `--mode`), since
 they check one tree for many targets.
 
+**Where the tools come from.** The builder runs clang (and lld) to link. It takes `LAPILA_CLANG` when set, else the
+package's own toolchain (`toolchain/bin/clang` next to the builder executable, which the release package brings), else
+`clang` on PATH, else the newest LLVM install it finds (`/usr/lib/llvm-*`, Homebrew, `C:\Program Files\LLVM`). With
+the package's toolchain a link takes its C runtime and the compiler-rt helpers from `toolchain/` (`--sysroot` for
+MinGW, `--rtlib=compiler-rt`, its own lld), so Windows needs nothing installed. Linux still needs the C library's
+development files (crt1.o, libc, libm: `libc6-dev`), macOS the Command Line Tools (the SDK's system library stubs).
+The default target is the machine's: `x86_64-linux-gnu`, `aarch64-macos-none`, and on Windows `x86_64-windows-gnu`
+(MinGW, llvm-mingw's UCRT C runtime, linked statically apart from the UCRT and the Windows DLLs, DWARF debug
+information in the `.exe`). `x86-windows-gnu` is the 32-bit one. The MSVC targets (`x86_64-windows-msvc`,
+`x86-windows-msvc`) stay available with `[target] triple`: they link with LLVM for Windows (the machine's clang, never
+the package's llvm-mingw) and Visual Studio's libraries, and write CodeView into a `.pdb`. A failed MinGW link with a
+clang that isn't the package's says how to get llvm-mingw or switch to MSVC.
+
 Sources end in `.lpa`. A `.te` file given to the builder (or named by `executable`) is a build error that says to
 rename it to `.lpa`, and `[package] tessera-version` is a build error that names `lapila-version`: Lapila has no
 `migrate` command. A build error is printed as `error[LP-S007]: file:line:col: message`, a warning as `warning[LP-W305]: file:line:col: message` (see Diagnostics).
@@ -693,10 +706,10 @@ routine start() -> None
 - An `@export` name a C library the build links already defines is a build error (`@export("abs")`: "names 'abs',
   which libc.so.6, a C library the build links, already defines"). The builder reads the libraries from clang's link
   line for the target (`src/CLibrarySymbols.cs`: an ELF `.so`'s dynamic symbols or a GNU linker script, a `.tbd` of
-  the macOS SDK, a Windows `.lib`'s archive symbol table), only for a program with an `@export`. The compiler's
+  the macOS SDK, the archive symbol table of a Windows `.lib` or a MinGW `lib<name>.a`), only for a program with an `@export`. The compiler's
   runtime (libgcc, compiler-rt) is left out, so a program may define `__udivti3`.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
-  written like any global; dllimport on Windows.
+  written like any global; dllimport for the MSVC targets (MinGW's linker imports a DLL's variable by itself).
 - `@export("lapila_stamp_next")` above a `global` defines it under that C name, visible outside the module, so a
   library linked with the program (a language runtime's) reaches the same variable through an `@external("c")`
   declaration of the name. Only a global: a preset, an `@external("c")` or a `@threadlocal` global with `@export` is a
