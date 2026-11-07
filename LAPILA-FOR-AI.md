@@ -1795,6 +1795,8 @@ the builder gives it back at the end of the body (from STACK). Lapila presets fo
   List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
   `group(name)` (failable: `CaptureNameError` for no capture of that name, `AbsentValueError` for one that took no part,
   so `try m.group(name)` gives `None` for both).
+- A `@TextPattern` search throws `MalformedUtf8Error` (`index` = the byte) when it reads a malformed UTF-8 sequence.
+  Data that may not be text goes through a `BytesPattern`.
 - `BytesPattern` with `byte(v, manager)`, `bytes(b, manager)`, `any_byte`, `byte_range(from:, to:, manager)`,
   `start_of_bytes`, `end_of_bytes`; `BytesMatch.bytes()`.
 - `TextPattern.from_regex(text, manager)` is failable: it throws `PatternSyntaxError`, which `check` receives
