@@ -541,7 +541,8 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         };
 
         string llvmArch = arch switch { "x86" => "i686", "aarch64" when os == "macos" => "arm64", _ => arch };
-        string vendor = os switch { "windows" => "pc", "macos" => "apple", _ => "unknown" };
+        // MinGW's triples name the w64 vendor (x86_64-w64-windows-gnu), the MSVC ones pc.
+        string vendor = os switch { "windows" => abi == "gnu" ? "w64" : "pc", "macos" => "apple", _ => "unknown" };
         string llvmOs = os == "macos" ? "macosx" : os;
         string llvm = abi == "none" ? $"{llvmArch}-{vendor}-{llvmOs}" : $"{llvmArch}-{vendor}-{llvmOs}-{abi}";
         return new BuildTarget(arch, os, abi, size, llvm);
@@ -556,7 +557,10 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
             System.Runtime.InteropServices.Architecture.X86 => "x86",
             var a => throw new PlatformNotSupportedException($"unsupported host architecture {a}"),
         };
-        if (OperatingSystem.IsWindows()) return Parse($"{arch}-windows-msvc");
+        // x86 Windows builds with the MinGW toolchain (llvm-mingw) the release package brings, which needs nothing
+        // installed. The MSVC one (Visual Studio's libraries) stays a target a config.toml can name. ARM Windows has no
+        // package, so it keeps MSVC.
+        if (OperatingSystem.IsWindows()) return Parse(arch == "aarch64" ? "aarch64-windows-msvc" : $"{arch}-windows-gnu");
         if (OperatingSystem.IsMacOS()) return Parse($"{arch}-macos-none");
         return Parse($"{arch}-linux-gnu");
     }
@@ -587,6 +591,10 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         },
         _ => null,
     };
+
+    /// Whether this machine runs the target's programs: its architecture and operating system, whichever C library
+    /// the program links (a Windows machine runs a MinGW program and an MSVC one).
+    public bool RunsHere => Host() is var host && Arch == host.Arch && Os == host.Os;
 
     /// Whether the target has an operating system, which the hosted layer (Hosted) needs.
     public bool HasOs => Os != "none";

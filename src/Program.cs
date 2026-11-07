@@ -33,7 +33,7 @@ static partial class Cli
                 builds a library linked into another program: its sources files as LLVM IR, build/<package name>.ll,
                 every routine keeping a frame record.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), config.toml's
-                [target] mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
+                [target] mode. Every mode has debug information: DWARF, or CodeView and a .pdb for windows-msvc, so a
                 debugger shows Lapila lines, routine parameters, bindings and block parameters.
         <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it
                  ([debug] trace in config.toml). Without either, debug and release builds keep it and release-time and
@@ -505,7 +505,7 @@ static partial class Cli
         File.WriteAllText(ll, compiler.Output());
         try
         {
-            var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo(Toolchain.ClangFor(target)) { RedirectStandardError = true, UseShellExecute = false };
             foreach (var a in new[] { "-c", "-Wno-override-module", "--target=" + target.LlvmTriple, ll, "-o", obj })
                 psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!;
@@ -1049,7 +1049,7 @@ static partial class Cli
         {
             if (manifest.IsLibrary)
                 throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds a library (it names no executable under [target]), which doesn't run on its own; use lapila build");
-            if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
+            if (!manifest.Target.RunsHere)
                 throw new ToolError(Li.TargetMismatch, $"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use lapila build");
             var (built, code) = BuildThroughDaemon(manifest, files);
             if (built is null) return code;
@@ -1114,7 +1114,7 @@ static partial class Cli
                     TraceTable.TableSymbol, nextTable: () => Base()?.Rows is null ? null : TraceTable.BaseTableSymbol);
             var inputs = new List<string> { input };
             if (Base() is { } linked) inputs.Add(linked.Object);
-            var psi = new ProcessStartInfo(Toolchain.Clang)
+            var psi = new ProcessStartInfo(Toolchain.ClangFor(target))
             {
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
@@ -1129,20 +1129,26 @@ static partial class Cli
             if (target.Cpu is not null || target.Features.Count > 0)
                 foreach (var a in CpuModel.ClangCpuArguments(target, target.Features)) psi.ArgumentList.Add(a);
             // U128 / S128 division, B16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
-            // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
-            if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
-            // lld-link reports in English whatever the system locale, and links faster than link.exe.
+            // toolchains get them from libgcc, llvm-mingw from its compiler-rt. The MSVC toolchain has no equivalent, so
+            // link clang's builtins.
+            if (target is { Os: "windows", Abi: "msvc" } && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
+            // lld (lld-link for MSVC) reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
             // On Linux too when it is installed: it links a debug build's objects several times faster than GNU ld.
             if (target.Os == "linux" && Toolchain.HasLld) psi.ArgumentList.Add("-fuse-ld=lld");
+            foreach (var a in Toolchain.BundledLinkArguments(target)) psi.ArgumentList.Add(a);
             // WaitOnAddress and WakeByAddress (Standard/Hosted/Wait.lpa) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
-            // them, so an IR-level call needs the out-of-line copies.
-            if (target is { Os: "windows", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
+            // them, so an IR-level call needs the out-of-line copies. MinGW's C library has them.
+            if (target is { Os: "windows", Abi: "msvc", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
+            // A MinGW program takes its C runtime's own parts (winpthread, the unwinder) into the executable, so it
+            // runs where the toolchain isn't: the UCRT and the Windows libraries are part of Windows.
+            if (target is { Os: "windows", Abi: "gnu" }) psi.ArgumentList.Add("-static");
             // LLVM lowers a float remainder (frem) to C's fmod / fmodf, which glibc keeps in libm, not libc.
             if (target.Os == "linux") psi.ArgumentList.Add("-lm");
-            // The linker keeps the debug information (on Windows, lld-link writes it to a .pdb next to the exe).
+            // The linker keeps the debug information (lld-link writes it to a .pdb next to the exe, MinGW's lld keeps
+            // the DWARF in it).
             psi.ArgumentList.Add("-g");
             foreach (var a in extras) psi.ArgumentList.Add(a);
 
@@ -1161,7 +1167,7 @@ static partial class Cli
                 throw new ToolError(Li.ToolchainMissing, err.Contains("<inline asm>", StringComparison.Ordinal)
                     ? $"the assembler doesn't accept an instruction of an assembly routine. Check its mnemonic and " +
                       $"operands:\n{err}"
-                    : $"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
+                    : $"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}{MinGWHint(target)}");
         }
         catch (AggregateException e) when (e.InnerException is not null)
         {
@@ -1173,6 +1179,14 @@ static partial class Cli
             foreach (var f in made) TryDelete(f);
         }
     }
+
+    /// What a failed link for a MinGW target says when the clang isn't the package's: that target needs llvm-mingw's C
+    /// runtime, which a clang from LLVM for Windows lacks.
+    private static string MinGWHint(BuildTarget target) => target is { Os: "windows", Abi: "gnu" } && !Toolchain.IsBundled
+        ? $"\n{target.Arch}-windows-gnu links with llvm-mingw: the Lapila package brings it in toolchain/ next to the builder, or put " +
+          $"llvm-mingw's bin folder on PATH. To link with Visual Studio's libraries instead, write triple = \"{target.Arch}-windows-msvc\" " +
+          "under [target] in config.toml"
+        : "";
 
     /// A module of a build that reads its crash trace from the stack: optimize, give each traced call its chain, write
     /// the assembly, mark the calls' return addresses (TraceTable). Gives the assembly, which the files made lists, and the
@@ -1232,7 +1246,7 @@ static partial class Cli
     /// Runs clang for one step of a build that reads its crash trace from the stack, for the target and its CPU.
     private static void RunClang(BuildTarget target, IEnumerable<string> args)
     {
-        var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+        var psi = new ProcessStartInfo(Toolchain.ClangFor(target)) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
         psi.ArgumentList.Add("--target=" + target.LlvmTriple);
         foreach (var a in args) psi.ArgumentList.Add(a);
         if (target.Cpu is not null || target.Features.Count > 0)
@@ -1259,7 +1273,7 @@ static partial class Cli
         string? builtins = null;
         try
         {
-            var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardOutput = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo(Toolchain.ClangFor(target)) { RedirectStandardOutput = true, UseShellExecute = false };
             psi.ArgumentList.Add("--target=" + target.LlvmTriple);
             psi.ArgumentList.Add("--rtlib=compiler-rt");
             psi.ArgumentList.Add("-print-libgcc-file-name");

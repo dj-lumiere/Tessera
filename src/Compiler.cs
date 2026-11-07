@@ -2521,8 +2521,10 @@ public sealed partial class Compiler
             CheckExternalVariable(c, external);
             name = "@" + Quote(symbol);
             _globalVars[symbol] = name;
-            // On Windows a variable a DLL exports is reached through its import table.
-            string import = Target.Os == "windows" ? "dllimport " : "";
+            // With MSVC a variable a DLL exports is reached through its import table. MinGW's linker finds that out
+            // itself (auto-import), and a variable its C runtime keeps in the program (__security_cookie) has no import
+            // table entry.
+            string import = Target is { Os: "windows", Abi: "msvc" } ? "dllimport " : "";
             _globals.AppendLine($"{name} = external {import}{threadLocal}global {t.Llvm}");
             return name;
         }

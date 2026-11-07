@@ -17,7 +17,8 @@ namespace Lapila;
 ///   or an archive's symbol table.
 /// - Mach-O (macOS): the text stubs (`.tbd`) of the SDK, which list every symbol of the library and the libraries it
 ///   re-exports.
-/// - COFF (Windows): the import and static libraries (`.lib`), read through the archive's symbol table.
+/// - COFF (Windows): the import and static libraries (`.lib` for MSVC, `lib<name>.a` for MinGW), read through the
+///   archive's symbol table.
 ///
 /// The compiler's runtime (libgcc, compiler-rt) isn't a C library and is left out: a program may define its helpers.
 /// A library that isn't found or can't be read adds nothing. The read happens only for a program with an `@export`,
@@ -57,7 +58,7 @@ public static class CLibrarySymbols
     /// The arguments of the link command clang runs for the target (the last command `-###` prints).
     private static List<string> LinkLine(BuildTarget target, IReadOnlyList<string> linkArguments)
     {
-        var psi = new ProcessStartInfo(Toolchain.Clang)
+        var psi = new ProcessStartInfo(Toolchain.ClangFor(target))
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false,
@@ -70,6 +71,7 @@ public static class CLibrarySymbols
             psi.ArgumentList.Add("-lsynchronization");
         }
         if (target.Os == "linux") psi.ArgumentList.Add("-lm");
+        foreach (var a in Toolchain.BundledLinkArguments(target)) psi.ArgumentList.Add(a);
         foreach (var a in linkArguments) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("clang didn't start");
         p.StandardInput.Close();
@@ -92,7 +94,7 @@ public static class CLibrarySymbols
         for (int i = 1; i < line.Count; i++)
         {
             string a = line[i];
-            if (target.Os == "windows")
+            if (target is { Os: "windows", Abi: "msvc" })
             {
                 if (a.StartsWith("-libpath:", StringComparison.OrdinalIgnoreCase)) dirs.Add(a["-libpath:".Length..]);
                 else if (a.StartsWith("-defaultlib:", StringComparison.OrdinalIgnoreCase)) names.Add(a["-defaultlib:".Length..]);
@@ -107,7 +109,7 @@ public static class CLibrarySymbols
                                               || a.EndsWith(".a", StringComparison.Ordinal) || a.EndsWith(".tbd", StringComparison.Ordinal)))
                 files.Add(a);
         }
-        if (target.Os == "windows")
+        if (target is { Os: "windows", Abi: "msvc" })
         {
             // The static C runtime names the rest of the C library in its own objects, which the link line doesn't show.
             if (names.Any(n => Path.GetFileNameWithoutExtension(n).Equals("libcmt", StringComparison.OrdinalIgnoreCase)))
@@ -132,6 +134,8 @@ public static class CLibrarySymbols
     {
         string[] candidates = target.Os switch
         {
+            // MinGW's import libraries are archives named as GNU ones (libkernel32.a), or .dll.a beside a DLL.
+            "windows" when target.Abi == "gnu" => [$"lib{name}.a", $"lib{name}.dll.a", name + ".lib"],
             "windows" => [name.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) ? name : name + ".lib"],
             "macos" or "darwin" => [$"lib{name}.tbd"],
             _ => [$"lib{name}.so", $"lib{name}.a"],
