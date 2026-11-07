@@ -3,7 +3,8 @@ name: Release
 # A Lapila release (v* tag, e.g. v0.5.0): each job publishes the builder as a NativeAOT binary for its host and packs it
 # with the standard library and Ingrid's library, the layout an installed builder looks for (Standard/ and Ingrid/ next
 # to the binary). The Linux job creates the release, the Windows and macOS jobs run after it and add their packages.
-# The packages carry no clang: the README asks for clang 21 or newer on PATH.
+# The packages carry their own clang, so a user needs nothing else on Windows, the C library's development files on
+# Linux and the Command Line Tools on macOS.
 
 on:
   push:
@@ -16,6 +17,10 @@ permissions:
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # The toolchain the package carries: the official LLVM release on Linux and macOS, llvm-mingw on Windows (the same
+  # versions the Revare package carries).
+  LLVM_VERSION: '22.1.7'
+  LLVM_MINGW: '20260602'
 
 jobs:
   package:
@@ -64,8 +69,74 @@ jobs:
             cp publish/lapila "dist/$name/"
           fi
           cp -R Standard "dist/$name/Standard"
+          cp -R boards "dist/$name/boards"
           cp -R ingrid-checkout/lapila "dist/$name/Ingrid"
           cp README.md LICENSE "dist/$name/"
+
+      # The package carries its own clang (and lld on Linux), in toolchain/ next to the builder, which looks there
+      # first: official LLVM on Linux and macOS, llvm-mingw (UCRT) on Windows with both MinGW sysroots.
+      - name: Bundle the toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          tc="$PWD/dist/lapila-${GITHUB_REF_NAME#v}-${{ matrix.rid }}/toolchain"
+          mkdir -p "$tc/bin" "$tc/lib/clang" dl
+          case "${{ matrix.rid }}" in
+            linux-x64|osx-arm64)
+              asset="LLVM-${LLVM_VERSION}-$([ "${{ matrix.rid }}" = linux-x64 ] && echo Linux-X64 || echo macOS-ARM64)"
+              curl -fsSL -o "dl/$asset.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/$asset.tar.xz"
+              tar -xf "dl/$asset.tar.xz" -C dl
+              root="dl/$asset"
+              cp -L "$root/bin/clang" "$tc/bin/clang"
+              cp -a "$root/lib/clang/${LLVM_VERSION%%.*}" "$tc/lib/clang/"
+              find "$tc/lib/clang" -type d -name include -prune -exec rm -rf {} +
+              if [ "${{ matrix.rid }}" = linux-x64 ]; then
+                cp -L "$root/bin/lld" "$tc/bin/lld"
+                (cd "$tc/bin" && ln -sf lld ld.lld)
+                mkdir -p "$tc/lib/x86_64-unknown-linux-gnu"
+                cp "$root/lib/x86_64-unknown-linux-gnu/libunwind.a" "$tc/lib/x86_64-unknown-linux-gnu/"
+                # The official binaries link a few libraries beyond glibc: carry them beside the tools.
+                for tool in "$tc/bin/clang" "$tc/bin/lld"; do
+                  ldd "$tool" | awk '/=>/ && $3 ~ /^\// { print $3 }' | while read -r dep; do
+                    case "$(basename "$dep")" in
+                      ld-linux-*|libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*) ;;
+                      *) [ -e "$tc/lib/$(basename "$dep")" ] || cp -L "$dep" "$tc/lib/" ;;
+                    esac
+                  done
+                done
+                # The release binaries keep their symbols, and the resource directory carries runtimes Lapila never
+                # links (Fortran, fuzzers, the other sanitizers): the package keeps the builtins, crtbegin/crtend and
+                # the thread sanitizer the race check uses.
+                strip "$tc/bin/clang" "$tc/bin/lld"
+                find "$tc/lib/clang" -type f \( -name '*flang*' -o -name '*fuzzer*' -o -name '*memprof*' -o -name '*msan*' \
+                  -o -name '*asan*' -o -name '*lsan*' -o -name '*dfsan*' -o -name '*xray*' -o -name '*nsan*' -o -name '*rtsan*' \
+                  -o -name '*scudo*' -o -name '*gwp_asan*' -o -name '*orc*' -o -name '*ctx_profile*' \) -delete
+              fi
+              ;;
+            win-x64)
+              mingw="llvm-mingw-${LLVM_MINGW}-ucrt-x86_64"
+              curl -fsSL -o "dl/$mingw.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW}/$mingw.zip"
+              7z x -y -odl "dl/$mingw.zip" > /dev/null
+              root="dl/$mingw"
+              for f in clang.exe "clang-${LLVM_VERSION%%.*}.exe" ld.lld.exe "libLLVM-${LLVM_VERSION%%.*}.dll" libclang-cpp.dll \
+                       libc++.dll libunwind.dll libwinpthread-1.dll libffi-8.dll; do
+                cp "$root/bin/$f" "$tc/bin/"
+              done
+              mkdir -p "$tc/lib/clang/${LLVM_VERSION%%.*}/lib/windows"
+              cp "$root/lib/clang/${LLVM_VERSION%%.*}/lib/windows/libclang_rt.builtins-x86_64.a" \
+                 "$root/lib/clang/${LLVM_VERSION%%.*}/lib/windows/libclang_rt.builtins-i386.a" \
+                 "$tc/lib/clang/${LLVM_VERSION%%.*}/lib/windows/"
+              for sysroot in x86_64-w64-mingw32 i686-w64-mingw32; do
+                cp -R "$root/$sysroot" "$tc/$sysroot"
+                rm -rf "$tc/$sysroot/share"
+              done
+              ;;
+          esac
+
+      - name: Archive
+        shell: bash
+        run: |
+          name="lapila-${GITHUB_REF_NAME#v}-${{ matrix.rid }}"
           cd dist
           if [ "${{ runner.os }}" = Windows ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null
@@ -75,25 +146,27 @@ jobs:
             shasum -a 256 "$name.tar.gz" > "checksums-${{ matrix.rid }}.txt"
           fi
 
-      # The check hands its IR to clang, and the runner's own clang is older than the LLVM the builder writes for.
-      - name: Install LLVM 21 (Linux)
-        if: runner.os == 'Linux'
+      # The unpacked package builds and runs a program with the system's own LLVM out of PATH: Standard/, Ingrid/ and the
+      # toolchain all come from beside the builder.
+      - name: Check the package
+        shell: bash
         run: |
-          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh 21
-          test -x /usr/bin/clang-21
-          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
-          clang --version | grep -q 'clang version 21' || { clang --version; echo 'clang is not LLVM 21'; exit 1; }
-
-      # The packed builder finds its own Standard/ and Ingrid/ and checks a program.
-      - name: Check the package (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          dir="$PWD/dist/lapila-${version}-${{ matrix.rid }}"
-          mkdir -p smoke && cd smoke
-          "$dir/lapila" version
-          "$dir/lapila" check "$GITHUB_WORKSPACE/examples/fizzbuzz.lpa"
+          set -euo pipefail
+          name="lapila-${GITHUB_REF_NAME#v}-${{ matrix.rid }}"
+          stage="$RUNNER_TEMP/lapila-stage"
+          rm -rf "$stage" && mkdir -p "$stage" && cd "$stage"
+          if [ "${{ runner.os }}" = Windows ]; then
+            7z x -y "$GITHUB_WORKSPACE/dist/$name.zip" > /dev/null
+            exe="$stage/$name/lapila.exe"
+            bare="/c/Windows/System32:/c/Windows:/usr/bin"
+          else
+            tar -xzf "$GITHUB_WORKSPACE/dist/$name.tar.gz"
+            exe="$stage/$name/lapila"
+            bare="/usr/bin:/bin"
+          fi
+          cp "$GITHUB_WORKSPACE/examples/fizzbuzz.lpa" .
+          PATH="$bare" "$exe" version
+          PATH="$bare" "$exe" run fizzbuzz.lpa | head -5
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
