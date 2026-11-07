@@ -244,6 +244,24 @@ public sealed partial class Compiler
         return $"{{ {VariantType.Tag.Llvm}, [0 x {alignType}], [{words} x i{wordBits}] }}";
     }
 
+    /// Builds the recovering form of every routine of the program that writes `@throws`, so its list is checked against
+    /// what the routine can pass on even where no `try` or `check` reaches it: a bare call of it stops the program on a
+    /// failure, and the list is still the routine's promise to the callers that do receive.
+    private void BuildDeclaredThrowsForms()
+    {
+        var built = new HashSet<string>();
+        while (true)
+        {
+            var wanted = _instances.Values
+                .Where(i => !i.Decl.IsLibrary && !i.Decl.IsRecovering && i.Decl.AnnotationNamed("throws") is not null
+                            && CanRecover(i.Decl) && !i.IsFailable && built.Add(i.Symbol))
+                .ToList();
+            if (wanted.Count == 0) return;
+            foreach (var inst in wanted) RequireInstance(RecoveringOf(inst.Decl), inst.Env);
+            while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        }
+    }
+
     /// Builds again every instance that read a list of crashables that grew after it was read, until none did: a
     /// routine that reaches itself (directly or through others) reads its own list before it is whole.
     private void FinishThrows()

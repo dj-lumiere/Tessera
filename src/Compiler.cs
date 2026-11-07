@@ -701,6 +701,7 @@ public sealed partial class Compiler
         // The entry comes after the program's own routines, so an error in one of them is reported first.
         PlanEntry();
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        BuildDeclaredThrowsForms();
         FinishThrows();
         if (InlineRecursion() is [var recursive, ..]) throw recursive;
         if (VerifyFixedConformances() is [var first, ..]) throw first;
@@ -854,7 +855,7 @@ public sealed partial class Compiler
         try { CheckEntryPair(); }
         catch (CompileError e) { errors.Add(e); }
         errors.AddRange(ExportsNamingCLibrarySymbols().Where(e => scope is null || scope(e.Pos.File)));
-        try { FinishThrows(); }
+        try { BuildDeclaredThrowsForms(); FinishThrows(); }
         catch (CompileError e) { errors.Add(e); }
         errors.AddRange(InlineRecursion());
         errors.AddRange(VerifyFixedConformances());
