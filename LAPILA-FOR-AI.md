@@ -946,7 +946,11 @@ routine start() -> None
   value doesn't fit (a bare call stops, `try x.to[U8]()` gives `None`), builds to the range test and no heap, and a
   widening one (`U16.to[U64]`) is a plain routine, just the extension. There is no `to_checked`: write `try x.to[T]()`. `_wrap` (modular) and `_clamp` (saturating)
   forms: `h.mul_wrap(PRIME)`, `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`. A shift never fails (by
-  the width or more it shifts every bit out). The operator protocols' requirements (`Addable.add`, ...,
+  the width or more it shifts every bit out). The whole product of two integers: `a.mul_wide(b)` is one value of the
+  next wider type (`U8`..`U128`, `S8`..`S128`), `a.widening_mul(b)` is `(low, high)` on every width `U8`..`U256` and
+  `S8`..`S256` (signed: `low` unsigned, `high` signed), `a.carrying_mul(b, carry)` is `a * b + carry` as `(low, high)`
+  on every unsigned width.
+- The operator protocols' requirements (`Addable.add`, ...,
   `ViewingIndexable.getitem`) are failable, and a type whose routine never fails meets them all the same (a float's
   `add`): in a generic instance, `try` over a call that can't fail is just the value.
 - Subtraction that can underflow crashes even if the result is unused later, so don't compute `len - 1` before the
