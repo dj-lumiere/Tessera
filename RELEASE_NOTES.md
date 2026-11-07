@@ -11,11 +11,11 @@ back by hand, and the build checks that every place is given back. The builder e
 2. Put the folder on your `PATH`.
 3. Install clang 21 or newer and put it on your `PATH` too. The package does not include it.
 
-Then `lapila run hello.lpa` builds and runs a file, and `lapila new <name>` starts a project with its `config.toml`.
+Then `lapila buildandrun hello.lpa` builds and runs a file, and `lapila new <name>` starts a project with its `config.toml`.
 
 ## What is in it
 
-- The builder commands: `check`, `build`, `run`, `test`, `fmt`, `lint`, `lsp`, `new` and `docs`. Every build setting
+- The builder commands: `check`, `build`, `buildandrun`, `codegen`, `test`, `fmt`, `lint`, `lsp`, `new` and `docs`. Every build setting
   is in `config.toml`.
 - Hosted targets: Linux, Windows and macOS, 64-bit, and 32-bit on Linux and Windows.
 - Targets without an operating system (32-bit ARM, riscv32, aarch64, x86_64): a board file gives the memory map, and

@@ -14,8 +14,10 @@ static partial class Cli
           lapila build                 build the solution its config.toml describes (here or above)
           lapila build <file.lpa>...    build the files: one file with a config.toml in its own folder takes that
                                         config.toml's settings, others build for this machine in debug
-          lapila run                   build it and run it
-          lapila run   <file.lpa>... [-- <argument>...]   build the files the same way and run the program
+          lapila buildandrun           build it and run it
+          lapila buildandrun <file.lpa>... [-- <argument>...]   build the files the same way and run the program
+          lapila codegen [<file.lpa>...] [<out.ll>]   write the program's LLVM IR without building it (next to the
+                                        first file, or to <out.ll>)
           lapila test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.lpa>...
           lapila fmt   [--check] <file-or-dir>...   format .lpa files in place (--check: list files that would change)
           lapila fmt   -               format the source on standard input to standard output (for an editor)
@@ -25,7 +27,7 @@ static partial class Cli
           lapila help                  print this text
           lapila version               print the builder's version
 
-        build and run take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
+        build, buildandrun and codegen take no flags: config.toml sets the build ([target] executable, triple, board, cpu, features,
                 mode, [debug] emit-llvm, trace, race-check, heap-check, ...), and a flag that it can say is an error
                 naming the key. Its output goes to build/ next to it. A config.toml with no executable under [target]
                 builds a library linked into another program: its sources files as LLVM IR, build/<package name>.ll,
@@ -104,7 +106,9 @@ static partial class Cli
             {
                 "new" => NewProject.Run(args[1..], BuilderVersion()),
                 "build" => Build(args[1..]),
-                "run" => Run(args[1..]),
+                "buildandrun" => Run(args[1..]),
+                "codegen" => Codegen(args[1..]),
+                "run" => Fail("there is no 'run' command: to build and run the program, use lapila buildandrun"),
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
                 "daemon" => BuildDaemon.Serve(),
@@ -412,7 +416,7 @@ static partial class Cli
         return BuildModes.Parse(name) ?? throw new ToolError(Li.BadOption, $"--mode is {BuildModes.Names}, not \"{name}\"");
     }
 
-    /// The files of `lapila build` or `lapila run`. The commands take files and nothing else: a flag that config.toml
+    /// The files of `lapila build` or `lapila buildandrun`. The commands take files and nothing else: a flag that config.toml
     /// can say is an error that names the key, and one that is gone is an error that says what does its work now.
     /// The message for a source file that still has an extension Lapila sources had before (`.te`, then `.li`), or null.
     public static string? OldSourceMessage(string file) =>
@@ -999,6 +1003,37 @@ static partial class Cli
         return 0;
     }
 
+    /// Writes the program's LLVM IR without building it: to the `.ll` file named last, else next to the first file
+    /// (`main.lpa` gives `main.ll`), else, for a solution, next to its executable. One file with a config.toml in its own
+    /// folder takes that config.toml's settings, as `build` does.
+    private static int Codegen(string[] args)
+    {
+        string? output = args.Length > 0 && args[^1].EndsWith(".ll", StringComparison.Ordinal) ? args[^1] : null;
+        var files = FilesOnly(output is null ? args : args[..^1]);
+        string ir;
+        string outPath;
+        if ((files.Count == 0 ? SolutionManifest() : ManifestBeside(files)) is { } m)
+        {
+            ir = Compile(m.Sources, m.Target, executable: !m.IsLibrary, roots: m.Roots, mode: m.Mode, trace: m.Traced,
+                heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames,
+                failureTraces: m.FailureTraces, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
+                crashMessageSize: m.CrashMessageSize, framePointers: m.IsLibrary);
+            outPath = output ?? (files.Count > 0
+                ? Path.ChangeExtension(files[0], ".ll")
+                : m.IsLibrary ? m.LibraryPath : Path.ChangeExtension(m.ExecutablePath, ".ll"));
+        }
+        else
+        {
+            var target = BuildTarget.Host();
+            var mode = BuildMode.Debug;
+            ir = Compile(files, target, mode: mode, raceCheck: mode.RaceCheckedByDefault(target));
+            outPath = output ?? Path.ChangeExtension(files[0], ".ll");
+        }
+        if (Path.GetDirectoryName(Path.GetFullPath(outPath)) is { } dir) Directory.CreateDirectory(dir);
+        File.WriteAllText(outPath, ir);
+        return 0;
+    }
+
     private static int Run(string[] args)
     {
         // What follows `--` goes to the program as its arguments (OsEnvironment.argument).
@@ -1279,7 +1314,7 @@ static partial class Cli
                 catch (ObjectDisposedException) { }
             });
         }
-        // A test (its output captured) gets limitSeconds. `lapila run` waits as long as the program runs: a long
+        // A test (its output captured) gets limitSeconds. `lapila buildandrun` waits as long as the program runs: a long
         // check, such as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
         // hangs with its pipes open still runs into the limit instead of blocking the read forever.
         if (!captureOutput)
