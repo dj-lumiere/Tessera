@@ -1,0 +1,97 @@
+name: Release
+
+# A Lapila release (v* tag, e.g. v0.5.0): each job publishes the builder as a NativeAOT binary for its host and packs it
+# with the standard library and Ingrid's library, the layout an installed builder looks for (Standard/ and Ingrid/ next
+# to the binary). The Linux job creates the release, the Windows and macOS jobs run after it and add their packages.
+# The packages carry no clang: the README asks for clang 21 or newer on PATH.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  package:
+    name: package (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-15
+            rid: osx-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout Ingrid
+        uses: actions/checkout@v4
+        with:
+          repository: dj-lumiere/Ingrid
+          path: ingrid-checkout
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish the builder
+        run: dotnet publish Lapila.csproj --configuration Release --runtime ${{ matrix.rid }} --output publish
+
+      - name: Pack
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="lapila-${version}-${{ matrix.rid }}"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp publish/lapila.exe "dist/$name/"
+          else
+            cp publish/lapila "dist/$name/"
+          fi
+          cp -R Standard "dist/$name/Standard"
+          cp -R ingrid-checkout/lapila "dist/$name/Ingrid"
+          cp README.md LICENSE "dist/$name/"
+          cd dist
+          if [ "${{ runner.os }}" = Windows ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            sha256sum "$name.zip" > "checksums-${{ matrix.rid }}.txt"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            shasum -a 256 "$name.tar.gz" > "checksums-${{ matrix.rid }}.txt"
+          fi
+
+      # The packed builder finds its own Standard/ and Ingrid/ and builds a program (clang comes from the runner).
+      - name: Check the package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dir="$PWD/dist/lapila-${version}-${{ matrix.rid }}"
+          mkdir -p smoke && cd smoke
+          "$dir/lapila" version
+          "$dir/lapila" check "$GITHUB_WORKSPACE/examples/fizzbuzz.lpa"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Lapila ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          prerelease: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums-*.txt
